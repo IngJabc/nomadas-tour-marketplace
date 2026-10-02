@@ -1,0 +1,87 @@
+import type { AppUser } from '@/lib/auth/types';
+import { ApiError } from '@/lib/errors/api-error';
+import { logoutInactiveAccount } from '@/lib/auth/session-handler';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+
+interface RequestOptions extends RequestInit {
+  params?: Record<string, string | undefined>;
+}
+
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { params, ...fetchOptions } = options;
+
+  let url = `${API_BASE}${path}`;
+  if (params) {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, val]) => {
+      if (val) searchParams.set(key, val);
+    });
+    const qs = searchParams.toString();
+    if (qs) url += `?${qs}`;
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(fetchOptions.headers as Record<string, string>),
+  };
+
+  // Include auth token from Supabase session if available
+  try {
+    const { createClient } = await import('./supabase/client');
+    const supabase = createClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+  } catch {
+    // Ignore if running server-side without window
+  }
+
+  const res = await fetch(url, { ...fetchOptions, headers });
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    const errorObj = data?.error;
+    const code = errorObj?.code;
+    const message = errorObj?.message || data?.error || 'API request failed';
+
+    if (code === 'ACCOUNT_INACTIVE' && !path.startsWith('/auth/login')) {
+      logoutInactiveAccount();
+    }
+
+    throw new ApiError(message, code || 'UNKNOWN', res.status);
+  }
+
+  return data;
+}
+
+// Auth (customer)
+export const authApi = {
+  login: (email: string, password: string) =>
+    request<{ token: string; refresh_token: string; user: AppUser }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  register: (payload: { email: string; password: string; full_name: string }) =>
+    request<{ token: string; refresh_token: string; user: AppUser }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  me: () => request<{ user: AppUser }>('/auth/me'),
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+};
+
+// Public catalog
+export const publicApi = {
+  trips: (params?: { origin?: string; destination?: string; date?: string }) =>
+    request<{ trips: unknown[] }>('/public/trips', { params }),
+  tripDetail: (tripId: string) =>
+    request<{ trip: unknown }>(`/public/trips/${tripId}`),
+  agencies: () => request<{ agencies: unknown[] }>('/public/agencies'),
+};

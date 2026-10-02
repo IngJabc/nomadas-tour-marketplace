@@ -1,0 +1,50 @@
+:root {
+  /* Brand colors */
+  --color-brand-cyan:       #00D4FF;
+  --color-brand-blue:       #0080FF;
+  --color-brand-navy:       #000024;
+  --color-brand-dark:       #00000C;
+  --color-brand-mid:        #0a0a2e;
+  --color-brand-surface:    #fdfdfd;
+  --color-brand-muted:      #6b7280;
+
+  /* Semantic aliases used across the app (map to brand tokens) */
+  --background: var(--color-brand-surface);
+  --foreground: var(--color-brand-navy);
+  --brand-navy: var(--color-brand-navy);
+  --brand-dark: var(--color-brand-dark);
+  --brand-mid: var(--color-brand-mid);
+  --brand-cyan: var(--color-brand-cyan);
+  --brand-blue: var(--color-brand-blue);
+  --brand-surface: var(--color-brand-surface);
+  --brand-muted: var(--color-brand-muted);
+
+  /* Semánticos — no cambiar */
+  --color-success:          #10b981;
+  --color-warning:          #f59e0b;
+  --color-danger:           #ef4444;
+  --color-page-bg:          #f1f5f9;
+
+  /* Semantic backgrounds (10% opacity) */
+  --color-success-bg:       rgba(16,185,129,0.1);
+  --color-warning-bg:       rgba(245,158,11,0.1);
+  --color-danger-bg:        rgba(239,68,68,0.1);
+  --color-cyan-bg:          rgba(0,212,255,0.1);
+  --color-brand-blue-bg:    rgba(0,128,255,0.1);
+  --color-brand-dark-bg:    rgba(0,0,12,0.08);
+  --color-brand-mid-bg:     rgba(10,10,46,0.08);
+
+  /* Tipografía */
+  --font-heading:           'Montserrat', sans-serif;
+  --font-body:              'Poppins', sans-serif;
+}
+
+/* Headings use Montserrat (loaded in layout.tsx) and body uses Poppins */
+h1, h2, h3, h4, h5 {
+  font-family: var(--font-heading), var(--font-sans), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
