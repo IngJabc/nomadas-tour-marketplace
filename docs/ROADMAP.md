@@ -23,7 +23,7 @@ diseño consolidadas). **Ninguna funcionalidad de producto implementada aún.**
 | Panel admin (pagos, comisiones) | ⏳ Diseño aprobado |
 | Comisiones + primer viaje gratis | ⏳ Diseño aprobado |
 | Workers (T-1, comisiones, emails) | ⏳ Diseño aprobado |
-| Migraciones marketplace (074+) | ⏳ Pendiente |
+| Migraciones marketplace (074–079) | Escritas 2026-09-30 en repo tour · falta aplicar |
 
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
 Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).

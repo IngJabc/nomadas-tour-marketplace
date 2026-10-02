@@ -18,8 +18,10 @@ commitear ese repo desde aquí.
 
 Ambos apuntan al **mismo proyecto Supabase** (BD compartida). Las migraciones
 de tour están en `../nomadas-tour/supabase/migrations` (001–073). Las del
-marketplace arrancan en **074** en `supabase/migrations/` de este repo y se
-aplican al MISMO proyecto.
+marketplace arrancan en **074** y **viven también en el repo de tour**
+(`../nomadas-tour/supabase/migrations/074…079_*.sql`), para mantener una sola
+historia de migraciones. `supabase/migrations/` de este repo es solo un
+puntero. Se aplican al MISMO proyecto, en orden estricto.
 
 ---
 
@@ -75,16 +77,24 @@ Todo lo detallado en [`business-rules.md`](business-rules.md):
 
 ---
 
-## 5. PENDING IMPLEMENTATION — de este repo hacia tour
+## 5. IMPLEMENTADO — schema marketplace (escrito 2026-09-30, NO aplicado)
+
+Los SQL viven en `../nomadas-tour/supabase/migrations/` (historia única).
+**Ninguno se ha aplicado todavía a la BD compartida.**
+
+| # | Item | Archivo | Notas |
+| - | ---- | ------- | ----- |
+| P1 | `customer` en `users.role_check` | `074_add_customer_role.sql` | ✅ Resuelto el CHECK por catálogo (011 no lo nombró). Sin esto, `/api/auth/register` falla |
+| P2 | `reservations.customer_id`, `source`, `payment_status` | `075_reservations_marketplace.sql` | `payment_status` **derivado**, NULL en `internal`. Se **agregan** los estados `locked`/`reserved` sin quitar los de tour |
+| P3 | `payments` + `payment_allocations` | `076_payments.sql` | Incluye `trips.seat_price` + `reservation_passengers.unit_price` (el schema no tenía precio) y el helper `reservation_passenger_balance()` |
+| P4 | `platform_config`, `commissions`, `reservation_refunds` | `077_platform_config_commissions_refunds.sql` | Fee default 30 centavos, `idempotency_key` único, `agencies.first_marketplace_trip_completed_at` |
+| P5 | `trips.installment_allowed`, `trips.installment_amount_cents` | `078_trips_installments.sql` | Sin tabla `installments` (el saldo se deriva) |
+| P6 | RPC `cancel_reservation_passenger` | `079_cancel_reservation_passenger.sql` | Cancela 1 pasajero, libera su seat, crea refund `required`, idempotente. Amplía `audit_log` para `customer` |
+
+### Sigue pendiente
 
 | # | Item | Notas |
 | - | ---- | ----- |
-| P1 | Migración 074: `customer` en `users.role_check` | Tour asume roles `superadmin\|agency`; validar CHECK actual |
-| P2 | Migración 075: `reservations.customer_id`, `source`, `payment_status` | Backfill `source='internal'` para filas existentes |
-| P3 | Migración 076: `payments` + `payment_allocations` | FK a `reservations` / `reservation_passengers` |
-| P4 | Migración 077: `platform_config`, `commissions`, `reservation_refunds` | Fee default 30; `idempotency_key` único |
-| P5 | Migración 078: `trips.installment_allowed`, `trips.installment_amount_cents` | Config de abono por viaje |
-| P6 | Migración 079: RPC `cancel_reservation_passenger` | Cancela 1 pasajero, libera su seat, `refund_required` |
 | P7 | RPC lock marketplace (TTL 900 decidido por servidor) | Reutiliza patrón de RPCs de lock de tour |
 | P8 | Wizard de reserva + mapa de asientos + comprobante | Frontend completo |
 | P9 | Verificación/rechazo admin por `payment_id` | Panel admin marketplace |

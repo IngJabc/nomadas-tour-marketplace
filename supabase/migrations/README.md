@@ -1,19 +1,26 @@
 # Migraciones — Nómadas Marketplace
 
-La BD es **compartida** con `nomadas-tour`.
+**Este directorio es solo un puntero. No hay archivos SQL aquí.**
 
-- Las migraciones de tour (001–073) viven en `../../nomadas-tour/supabase/migrations`.
-- Las de este repo arrancan en **074** y se aplican al MISMO proyecto Supabase.
+La BD es **compartida** con `nomadas-tour`, y por decisión de arquitectura
+(2026-09-30) las migraciones viven en **una sola historia**, la del repo de
+`nomadas-tour`:
 
-**Antes de crear cualquier migración aquí:** leer las migraciones de tour
-(tablas `users`, `seats`, `reservations`, `trips`, RLS `036`/`039`,
-RPCs `069`) para no romper sus CHECKs ni sus policies.
+- Tour: `001`–`073`
+- Marketplace: `074`–`079`
 
-Pendientes (ver `docs/NOMADAS_TOUR_INTEGRATION.md` § PENDING):
+📁 Ubicación real: `../../nomadas-tour/supabase/migrations/`
 
-- 074 — `customer` en `users.role_check`
-- 075 — `reservations.customer_id`, `source`, `payment_status`
-- 076 — `payments` + `payment_allocations`
-- 077 — `platform_config`, `commissions`, `reservation_refunds`
-- 078 — `trips.installment_allowed`, `trips.installment_amount_cents`
-- 079 — RPC `cancel_reservation_passenger`
+| # | Archivo | Contenido |
+| - | ------- | --------- |
+| 074 | `074_add_customer_role.sql` | `customer` en `users.role_check` |
+| 075 | `075_reservations_marketplace.sql` | `reservations.customer_id`, `source`, `payment_status` + estados `locked`/`reserved` + policy de lectura del cliente |
+| 076 | `076_payments.sql` | `trips.seat_price`, `reservation_passengers.unit_price`, `payments`, `payment_allocations`, helper de saldo |
+| 077 | `077_platform_config_commissions_refunds.sql` | `platform_config`, `commissions`, `reservation_refunds`, `agencies.first_marketplace_trip_completed_at` |
+| 078 | `078_trips_installments.sql` | `trips.installment_allowed`, `trips.installment_amount_cents` |
+| 079 | `079_cancel_reservation_passenger.sql` | RPC `cancel_reservation_passenger` + `customer` en `audit_log` |
+
+Aplicación: en orden estricto, sobre el proyecto Supabase compartido.
+Cada archivo indica su dry-run (`BEGIN; … ROLLBACK;`) en el encabezado.
+
+Antes de tocar la BD leer [`docs/NOMADAS_TOUR_INTEGRATION.md`](../../docs/NOMADAS_TOUR_INTEGRATION.md) §5 y §6.

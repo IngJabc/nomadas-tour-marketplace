@@ -78,9 +78,18 @@ export const authApi = {
 };
 
 // Public catalog
+export interface PublicTrip {
+  id: string;
+  departure_time: string;
+  capacity: number;
+  vehicle_type: string;
+  status: string;
+  route: { origin: string; destination: string };
+  lock_ttl_seconds?: number;
+}
+
 export const publicApi = {
-  trips: (params?: { origin?: string; destination?: string; date?: string }) =>
-    request<{ trips: unknown[] }>('/public/trips', { params }),
+  trips: () => request<{ trips: PublicTrip[] }>('/public/trips'),
   tripDetail: (tripId: string) =>
     request<{ trip: unknown }>(`/public/trips/${tripId}`),
   agencies: () => request<{ agencies: unknown[] }>('/public/agencies'),
