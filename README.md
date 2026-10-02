@@ -46,7 +46,7 @@ Configuración: copia `.env-example` → `.env` y
 
 ## Stack
 
-Next.js 16.3.5 · React 19 · TypeScript · Tailwind CSS v4 · Supabase
+Next.js 16.3.8 · React 19 · TypeScript · Tailwind CSS v4 · Supabase
 (Auth + Postgres + Realtime + RLS) · Express 5 (ESM) · Zod · Vitest.
 
 Detalle y versiones: [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) §2.
@@ -60,7 +60,7 @@ app/         → páginas Next.js (App Router)
 components/  → UI (Navbar, Toast, Auth)
 lib/         → API client, supabase, auth, utils
 backend/     → API Express (auth, catálogo, healthz)
-supabase/    → migraciones marketplace (074+)
+supabase/    → puntero a las migraciones (viven en nomadas-tour, 074+)
 docs/        → documentación completa
 ```
 

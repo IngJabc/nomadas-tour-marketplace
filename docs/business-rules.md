@@ -42,7 +42,15 @@ lo contradiga está mal.
 - **NO existe tabla `installments`.** El saldo se deriva:
   `saldo(pax) = seat_price − SUM(allocations verified)`.
 - Configuración de abono: `trips.installment_allowed`,
-  `trips.installment_amount_cents` (PENDING columnas).
+  `trips.installment_amount_cents` (columnas creadas en 078).
+- **Fuente del precio (decidido 2026-09-30 al escribir la migración 076):**
+  el schema de tour **no tenía ninguna columna de precio**, sin ellas la
+  fórmula de saldo no era calculable. Se agregaron:
+  - `trips.seat_price` — precio vigente del viaje, en centavos.
+  - `reservation_passengers.unit_price` — snapshot congelado al reservar.
+  El saldo se calcula con el **snapshot**, no con `trips.seat_price`, para que
+  un cambio de precio posterior no altere saldos ya pactados.
+  Helper de solo lectura: `public.reservation_passenger_balance(pax_uuid)`.
 - **Rechazo de pago inicial** → `cancel_agency_reservation` (atómico): libera
   TODOS los seats y cancela la reserva.
 - **Rechazo de abono posterior** → solo `payment.status='rejected'`; la reserva
@@ -136,7 +144,7 @@ cancelled`.
 
 ## Fuentes de verdad
 
-- Migraciones: `../supabase/migrations/` (tour, 001–073) + migraciones
-  marketplace (PENDING, a partir de 074).
+- Migraciones: `../nomadas-tour/supabase/migrations/` (historia única,
+  001–079; las marketplace 074–079 están escritas pero **no aplicadas**).
 - Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 - Spec: [`system-spec.md`](system-spec.md).

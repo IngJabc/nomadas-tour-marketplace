@@ -44,15 +44,35 @@
 
 Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
-- [ ] **MKT-001** — Migraciones marketplace 074–079 (schema:
+- [x] **MKT-001** — Migraciones marketplace 074–079 (schema:
   `customer`, `reservations.customer_id/source/payment_status`, `payments`,
   `payment_allocations`, `platform_config`, `commissions`,
   `reservation_refunds`, `trips.installment_*`, RPC cancel por pasajero)
-  - **Antes de escribirlas:** leer migraciones de
-    `../nomadas-tour/supabase/migrations` (001–073) y validar CHECKs/RLS
-    existentes.
-- [ ] **MKT-002** — Buscador público (origen/destino/fecha) contra
-  `GET /api/public/trips`
+  - Escritas el 2026-09-30 en **`../nomadas-tour/supabase/migrations/`**
+    (historia única de migraciones — no en este repo)
+  - **Aplicadas a STAGING el 2026-10-02** (074–079, en orden). Falta producción
+  - Decisiones tomadas al escribirlas:
+    - `trips.seat_price` + `reservation_passengers.unit_price` (snapshot):
+      el schema de tour **no tenía ninguna columna de precio**, sin ellas la
+      fórmula de saldo de `business-rules.md` §3 no era calculable
+    - `payment_status` es **derivado** (`pending|partial|fully_paid|refunded|
+      cancelled`), NULL en reservas `internal`
+    - Estados agregados a `reservations.status`: `locked`, `reserved`
+      (ninguno de los de tour se eliminó)
+    - `audit_log` ampliado para admitir `actor_role='customer'` y la acción
+      `reservation.passenger_cancelled` (CHECK ampliados, nada quitado)
+  - Archivos en UTF-8 sin BOM, solo ASCII (evita el mojibake de los SQL viejos)
+- [x] **MKT-002** — Buscador público (origen/destino/fecha) contra
+  `GET /api/public/trips` (2026-10-02)
+  - `app/viajes/page.tsx`: fetch al catálogo, filtros origen/destino/fecha
+    (filtrado client-side; el backend aun no aplica los query params),
+    skeleton de carga, estado de error con reintentar, empty state y
+    "sin resultados" con CTA, tarjetas con badge, fecha y capacidad
+  - Acción de tarjeta: botón "Reservar" deshabilitado + "Próximamente"
+    (se activa en MKT-003/004; evita links rotos)
+  - Tests: `app/viajes/__tests__/page.test.tsx` (6 casos: render, filtros
+    origen/destino/fecha con TZ de negocio, empty, error+reintento);
+    `test-setup.ts` registra jest-dom (`vitest.config.ts` include de `app/`)
 - [ ] **MKT-003** — Detalle de viaje + `BusLayout` (kia/bus, mismas reglas
   AGENTS.md)
 - [ ] **MKT-004** — Wizard de reserva con lock TTL 900 (servidor decide)

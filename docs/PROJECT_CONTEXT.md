@@ -95,7 +95,8 @@ Redis, BullMQ, React Native, otra BD, otro auth, microservicios.
 │       ├── observability/    → sentry.ts, init-from-env.ts
 │       ├── types/            → Role, RequestContext, tipos marketplace
 │       └── workers/runner.ts → PENDING (handlers marketplace)
-├── supabase/migrations/      → Migraciones marketplace (074+, PENDING)
+├── supabase/migrations/      → Puntero. Las migraciones (074+) viven en
+│                                 ../nomadas-tour/supabase/migrations/
 └── docs/                     → Toda la documentación (ver §8)
 ```
 
@@ -198,7 +199,7 @@ revisar siempre los flags del worker de `nomadas-tour` en Render.
 | Pagos/comprobantes + allocations | ⏳ PENDING (diseño aprobado) |
 | Panel admin marketplace | ⏳ PENDING |
 | Workers (T-1, comisiones) | ⏳ PENDING |
-| Migraciones marketplace (074+) | ⏳ PENDING |
+| Migraciones marketplace (074–079) | 📝 ESCRITAS 2026-09-30 (en repo tour) · ⏳ NO APLICADAS |
 | Docs de diseño (6 auditorías) | ✅ Consolidadas en business-rules.md |
 
 ---
