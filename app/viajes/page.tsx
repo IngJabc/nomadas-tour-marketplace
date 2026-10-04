@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   CalendarDays,
@@ -304,17 +305,12 @@ export default function ViajesPage() {
                   </div>
 
                   <div className="mt-auto pt-6">
-                    <button
-                      type="button"
-                      disabled
-                      aria-disabled="true"
-                      className="w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-2.5 text-sm font-semibold text-white opacity-40 transition-colors duration-200"
+                    <Link
+                      href={`/viajes/${trip.id}`}
+                      className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                     >
                       Reservar
-                    </button>
-                    <p className="mt-2 text-center text-xs text-brand-muted">
-                      Próximamente
-                    </p>
+                    </Link>
                   </div>
                 </article>
               ))}

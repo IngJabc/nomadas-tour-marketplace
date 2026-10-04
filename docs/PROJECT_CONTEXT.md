@@ -141,7 +141,7 @@ Frontend (`.env`, ver `.env-example`):
 ```
 NEXT_PUBLIC_SUPABASE_URL=         # proyecto Supabase compartido con tour
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
-NEXT_PUBLIC_API_URL=http://localhost:3001/api
+NEXT_PUBLIC_API_URL=http://localhost:3003/api
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_LOCK_TTL_SECONDS=900  # solo display; el TTL real lo decide el server
 ```
@@ -150,7 +150,7 @@ Backend (`backend/.env`, ver `backend/.env-example`):
 
 ```
 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / JWT_SECRET
-PORT=3001  NODE_ENV  CORS_ORIGIN  FRONTEND_URL
+PORT=3003  NODE_ENV  CORS_ORIGIN  FRONTEND_URL
 RESEND_API_KEY  EMAIL_FROM
 EMAIL_DELIVERY_MODE=normal        # poner disabled antes de mandar emails reales
 EMAIL_VIA_OUTBOX=false

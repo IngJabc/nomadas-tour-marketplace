@@ -43,15 +43,14 @@ describe('ViajesPage (MKT-002)', () => {
     expect(screen.getByText('1 viaje disponible')).toBeInTheDocument();
   });
 
-  it('la accion Reservar esta deshabilitada hasta MKT-003/004', async () => {
+  it('el CTA Reservar navega al detalle del viaje (MKT-003)', async () => {
     mockedTrips.mockResolvedValue({ trips: [trip] });
 
     render(<ViajesPage />);
     await screen.findByText('Barquisimeto → Ruta de prueba');
 
-    const reservar = screen.getByRole('button', { name: 'Reservar' });
-    expect(reservar).toBeDisabled();
-    expect(screen.getByText('Próximamente')).toBeInTheDocument();
+    const reservar = screen.getByRole('link', { name: 'Reservar' });
+    expect(reservar).toHaveAttribute('href', `/viajes/${trip.id}`);
   });
 
   it('filtra por destino y permite limpiar los filtros', async () => {

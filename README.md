@@ -28,9 +28,14 @@ boarding). Mismo stack, misma BD Supabase, repos separados.
 npm install
 npm install --prefix backend
 
-npm run dev                 # Frontend → http://localhost:3000
-npm run dev --prefix backend    # API → http://localhost:3001/healthz
+npm run dev                 # Frontend → http://localhost:3002
+npm run dev --prefix backend    # API → http://localhost:3003/healthz
 npm run dev:all             # ambos
+
+# Puertos locales (no colisionan con nomadas-tour):
+#   nomadas-tour  frontend 3000 · backend 3001
+#   marketplace   frontend 3002 · backend 3003
+# CORS_ORIGIN del backend debe coincidir con NEXT_PUBLIC_SITE_URL del frontend.
 
 npm run build               # build producción (Next.js)
 npm run build --prefix backend  # build producción (tsc)
