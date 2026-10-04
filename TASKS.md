@@ -68,13 +68,36 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
     (filtrado client-side; el backend aun no aplica los query params),
     skeleton de carga, estado de error con reintentar, empty state y
     "sin resultados" con CTA, tarjetas con badge, fecha y capacidad
-  - Acción de tarjeta: botón "Reservar" deshabilitado + "Próximamente"
-    (se activa en MKT-003/004; evita links rotos)
+  - Acción de tarjeta: "Reservar" → Link a `/viajes/[id]`
+    (activado en MKT-003; antes era botón deshabilitado)
   - Tests: `app/viajes/__tests__/page.test.tsx` (6 casos: render, filtros
     origen/destino/fecha con TZ de negocio, empty, error+reintento);
     `test-setup.ts` registra jest-dom (`vitest.config.ts` include de `app/`)
-- [ ] **MKT-003** — Detalle de viaje + `BusLayout` (kia/bus, mismas reglas
-  AGENTS.md)
+- [x] **MKT-003** — Detalle de viaje + `BusLayout` (kia/bus, mismas reglas
+  AGENTS.md) (2026-10-02)
+  - Backend `GET /api/public/trips/:id` (`backend/src/routes/public/trips.ts`):
+    valida UUID (404 `TRIP_NOT_FOUND`), trips con `seat_price` /
+    `installment_*` + `routes`, ofertas vía `trip_agencies` +
+    `agencies.status='active'` + `agency_settings`, seats
+    (`id, seat_code, status`), `availability` por estado y
+    `lock_ttl_seconds`; errores 500 con código
+  - Tests backend: `backend/src/routes/public/trips.test.ts` (7 casos)
+  - Frontend `app/viajes/[slug-or-id]/page.tsx` (cliente; `params` Promise +
+    `use()`): skeleton, detalle (ruta, fecha/hora TZ de negocio, precio con 2
+    decimales y abono, badges de disponibilidad), ofertas como radiogroup
+    seleccionable, mapa de asientos con selección **visual sin lock**
+    (MKT-004), aviso de sin disponibilidad, datos incompletos (precio nulo /
+    sin ofertas), 404 con CTA al catálogo, error + reintentar; CTA "Continuar
+    con la reserva" deshabilitado hasta MKT-004
+  - `components/bus/layouts.ts` + `BusLayout.tsx`: layouts estáticos kia (10) /
+    bus (31) con pasillo central, puerta frontal con label vertical, cabina
+    guía + conductor, ruedas, leyenda SIEMPRE encima, FONDO arriba / FRENTE
+    abajo, estados y colores AGENTS.md; solo asientos existentes en `seats`
+    con `available` (o ya seleccionados) son clicables
+  - `lib/api.ts`: tipos `PublicTripDetail` (+offers/seats/availability) y
+    `tripDetail`; `lib/price.ts`: `formatSeatPrice` (`$20,20`, es-VE)
+  - Tests frontend: `app/viajes/[slug-or-id]/__tests__/page.test.tsx` (8) +
+    `components/bus/__tests__/BusLayout.test.tsx` (5); suite total 28 en verde
 - [ ] **MKT-004** — Wizard de reserva con lock TTL 900 (servidor decide)
 
 ---

@@ -2,7 +2,7 @@ import type { AppUser } from '@/lib/auth/types';
 import { ApiError } from '@/lib/errors/api-error';
 import { logoutInactiveAccount } from '@/lib/auth/session-handler';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003/api';
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, string | undefined>;
@@ -91,6 +91,53 @@ export interface PublicTrip {
 export const publicApi = {
   trips: () => request<{ trips: PublicTrip[] }>('/public/trips'),
   tripDetail: (tripId: string) =>
-    request<{ trip: unknown }>(`/public/trips/${tripId}`),
+    request<{ trip: PublicTripDetail }>(`/public/trips/${tripId}`),
   agencies: () => request<{ agencies: unknown[] }>('/public/agencies'),
 };
+
+export interface PublicTripOffer {
+  agency_id: string;
+  name: string;
+  logo_url: string | null;
+  primary_color: string | null;
+  secondary_color: string | null;
+  accent_color: string | null;
+}
+
+export type PublicSeatStatus =
+  | 'available'
+  | 'reserved'
+  | 'locked'
+  | 'blocked'
+  | 'guide';
+
+export interface PublicTripSeat {
+  id: string;
+  seat_code: string;
+  status: PublicSeatStatus;
+}
+
+export interface PublicTripAvailability {
+  total: number;
+  available: number;
+  reserved: number;
+  locked: number;
+  blocked: number;
+  guide: number;
+}
+
+export interface PublicTripDetail {
+  id: string;
+  departure_time: string;
+  capacity: number;
+  vehicle_type: 'bus' | 'kia';
+  status: string;
+  route: { origin: string; destination: string };
+  seat_price: number | null;
+  installment_allowed: boolean;
+  installment_amount_cents: number | null;
+  lock_ttl_seconds: number;
+  offers: PublicTripOffer[];
+  seats: PublicTripSeat[];
+  availability: PublicTripAvailability;
+}
