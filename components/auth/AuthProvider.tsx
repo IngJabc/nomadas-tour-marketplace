@@ -113,3 +113,8 @@ export function useAuthUser(): AuthContextValue {
   }
   return ctx;
 }
+
+/** Igual que useAuthUser pero sin lanzar fuera de AuthProvider (tests, rutas sueltas). */
+export function useOptionalAuthUser(): AuthContextValue | null {
+  return useContext(AuthContext);
+}

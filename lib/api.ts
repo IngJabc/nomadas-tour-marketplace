@@ -141,3 +141,45 @@ export interface PublicTripDetail {
   seats: PublicTripSeat[];
   availability: PublicTripAvailability;
 }
+
+// Seat locks (MKT-004) — el TTL lo decide el servidor; el cliente nunca envía
+// `ttl_seconds`. El countdown se deriva siempre de `lock_expires_at`.
+export interface LockedSeatInfo {
+  id: string;
+  seat_code: string;
+}
+
+export interface LockSeatsResult {
+  locked: true;
+  trip_id: string;
+  ttl_seconds: number;
+  lock_expires_at: string;
+  seats: LockedSeatInfo[];
+}
+
+export interface MySeatLocksResult {
+  trip_id: string;
+  lock_expires_at: string | null;
+  seats: Array<{ id: string; seat_code: string; lock_expires_at: string }>;
+}
+
+export const seatApi = {
+  lockSeats: (tripId: string, seatIds: string[]) =>
+    request<LockSeatsResult>('/public/seats/lock', {
+      method: 'POST',
+      body: JSON.stringify({ trip_id: tripId, seat_ids: seatIds }),
+    }),
+  unlockSeats: (tripId: string, seatIds?: string[]) =>
+    request<{ unlocked: number }>('/public/seats/unlock', {
+      method: 'POST',
+      body: JSON.stringify(
+        seatIds && seatIds.length > 0
+          ? { trip_id: tripId, seat_ids: seatIds }
+          : { trip_id: tripId },
+      ),
+    }),
+  mySeatLocks: (tripId: string) =>
+    request<MySeatLocksResult>('/public/seats/locks', {
+      params: { trip_id: tripId },
+    }),
+};
