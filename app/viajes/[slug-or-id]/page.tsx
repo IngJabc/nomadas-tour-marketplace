@@ -1,22 +1,33 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   ArrowLeft,
   CalendarDays,
   Check,
+  LoaderCircle,
   RefreshCw,
 } from "lucide-react";
+import toast from "react-hot-toast";
 import {
   publicApi,
+  seatApi,
   type PublicTripDetail,
   type PublicTripOffer,
 } from "@/lib/api";
 import { ApiError, getApiErrorMessage } from "@/lib/errors/api-error";
 import { formatDateTimeShort, formatTime12h } from "@/lib/timezone";
 import { formatSeatPrice } from "@/lib/price";
+import { writeLockState } from "@/lib/booking/lock-state";
+import { applySeatRow, removeSeatRow } from "@/lib/booking/seat-map";
+import { useSeatLocking } from "@/lib/booking/useSeatLocking";
+import type {
+  RealtimeSeatRow,
+  SeatEventType,
+} from "@/lib/realtime/subscriptions";
 import { BusLayout } from "@/components/bus/BusLayout";
 
 interface TripDetailPageProps {
@@ -111,6 +122,7 @@ function OfferCard({
 
 export default function TripDetailPage({ params }: TripDetailPageProps) {
   const { "slug-or-id": slug } = use(params);
+  const router = useRouter();
 
   const [trip, setTrip] = useState<PublicTripDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -118,6 +130,7 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
   const [notFound, setNotFound] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<string | null>(null);
   const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
+  const [locking, setLocking] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -158,6 +171,131 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
         : [...prev, seatCode],
     );
   };
+
+  const refreshSeats = useCallback(async () => {
+    const refreshed = await publicApi.tripDetail(slug).catch(() => null);
+    if (!refreshed) return;
+    setTrip(refreshed.trip);
+    setSelectedSeats((prev) =>
+      prev.filter((code) =>
+        refreshed.trip.seats.some(
+          (seat) => seat.seat_code === code && seat.status === "available",
+        ),
+      ),
+    );
+  }, [slug]);
+
+  // ─── Realtime (estilo nomadas-tour) ─────────────────────────────────
+
+  const selectedSeatsRef = useRef<string[]>([]);
+  selectedSeatsRef.current = selectedSeats;
+  const lockingRef = useRef(false);
+  lockingRef.current = locking;
+  // Asientos que YA bloqueé con éxito en esta sesión: su evento realtime
+  // propio no debe deselectarlos mientras navegamos al wizard.
+  const lockedAwayRef = useRef<Set<string>>(new Set());
+  const tripEndedHandledRef = useRef(false);
+
+  const handleSeatEvent = useCallback(
+    (seat: RealtimeSeatRow, eventType: SeatEventType) => {
+      setTrip((prev) => {
+        if (!prev) return prev;
+        return eventType === "DELETE"
+          ? removeSeatRow(prev, seat.id)
+          : applySeatRow(prev, seat);
+      });
+
+      const wasSelected = selectedSeatsRef.current.includes(seat.seat_code);
+      if (!wasSelected) return;
+      if (lockingRef.current || lockedAwayRef.current.has(seat.seat_code)) {
+        return;
+      }
+      if (eventType === "DELETE" || seat.status !== "available") {
+        setSelectedSeats((prev) =>
+          prev.filter((code) => code !== seat.seat_code),
+        );
+        toast.error(`El asiento ${seat.seat_code} ya no está disponible`);
+      }
+    },
+    [],
+  );
+
+  const handleTripCancelled = useCallback(() => {
+    if (tripEndedHandledRef.current) return;
+    tripEndedHandledRef.current = true;
+    toast.error("Este viaje fue cancelado. Elige otro viaje disponible.");
+    void load();
+  }, [load]);
+
+  const handleTripCompleted = useCallback(() => {
+    if (tripEndedHandledRef.current) return;
+    tripEndedHandledRef.current = true;
+    toast.error("Este viaje ya fue completado. Elige otro viaje disponible.");
+    void load();
+  }, [load]);
+
+  useSeatLocking({
+    tripId: trip?.id ?? null,
+    onSeatEvent: handleSeatEvent,
+    onTripCancelled: handleTripCancelled,
+    onTripCompleted: handleTripCompleted,
+    onRefresh: refreshSeats,
+  });
+
+  const continueWithSelection = useCallback(async () => {
+    if (!trip || locking || selectedSeats.length === 0) return;
+
+    const seatIds = selectedSeats
+      .map((code) => trip.seats.find((seat) => seat.seat_code === code)?.id)
+      .filter((id): id is string => Boolean(id));
+    if (seatIds.length === 0) return;
+
+    setLocking(true);
+    try {
+      const result = await seatApi.lockSeats(trip.id, seatIds);
+      selectedSeats.forEach((code) => lockedAwayRef.current.add(code));
+      writeLockState({
+        trip_id: trip.id,
+        agency_id: selectedOffer,
+        seats: result.seats,
+        lock_expires_at: result.lock_expires_at,
+        passengers: [],
+      });
+      toast.success("Asientos bloqueados por 15 minutos.");
+      router.push("/reservas/nueva");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        toast.error("Inicia sesión para continuar con tu reserva");
+        router.push(`/login?redirect=${encodeURIComponent(`/viajes/${slug}`)}`);
+      } else if (e instanceof ApiError && e.status === 409) {
+        toast.error(
+          getApiErrorMessage(
+            e,
+            "Alguien tomó tus asientos. Actualizamos el mapa.",
+          ),
+        );
+        await seatApi.unlockSeats(trip.id).catch(() => undefined);
+        await refreshSeats();
+      } else {
+        toast.error(
+          getApiErrorMessage(
+            e,
+            "No pudimos bloquear tus asientos. Intenta de nuevo.",
+          ),
+        );
+      }
+    } finally {
+      setLocking(false);
+    }
+  }, [
+    locking,
+    refreshSeats,
+    router,
+    selectedOffer,
+    selectedSeats,
+    slug,
+    trip,
+  ]);
 
   if (loading) {
     return (
@@ -231,6 +369,7 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
   const soldOut = trip.availability.available === 0;
   const hasPrice = trip.seat_price !== null;
   const offers = trip.offers;
+  const canContinue = !soldOut && selectedSeats.length > 0;
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
@@ -316,7 +455,7 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
 
       <section className="mt-8">
         <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
-          Elige tu agencia
+          Elige con quien quieres viajar
         </h2>
         {offers.length === 0 ? (
           <p className="mt-4 rounded-2xl border border-black/[0.06] bg-brand-surface p-4 text-sm text-brand-muted shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -402,16 +541,35 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
       <div className="mt-8 flex flex-col items-center gap-2">
         <button
           type="button"
-          disabled
-          aria-disabled="true"
-          className="w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-8 py-3.5 text-sm font-semibold text-white opacity-40 transition-colors duration-200 sm:w-auto"
+          onClick={continueWithSelection}
+          disabled={!canContinue || locking}
+          aria-disabled={!canContinue || locking}
+          className={`w-full rounded-[10px] px-8 py-3.5 text-sm font-semibold text-white transition-colors duration-200 sm:w-auto ${
+            canContinue && !locking
+              ? "cursor-pointer bg-brand-cyan hover:bg-brand-blue"
+              : "cursor-not-allowed bg-brand-cyan opacity-40"
+          }`}
         >
-          {soldOut ? "Sin asientos disponibles" : "Continuar con la reserva"}
+          {locking ? (
+            <span className="inline-flex items-center justify-center gap-2">
+              <LoaderCircle
+                size={16}
+                strokeWidth={1.75}
+                className="animate-spin"
+                aria-hidden="true"
+              />
+              Bloqueando asientos…
+            </span>
+          ) : soldOut ? (
+            "Sin asientos disponibles"
+          ) : (
+            "Continuar con la reserva"
+          )}
         </button>
         <p className="text-xs text-brand-muted">
           {soldOut
             ? "Revisa el catálogo para encontrar otro viaje."
-            : "Próximamente: confirmarás asientos, pasajeros y pago en un solo paso."}
+            : "Al continuar bloqueamos tus asientos por 15 minutos mientras completas tus datos."}
         </p>
       </div>
     </main>

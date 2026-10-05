@@ -1,9 +1,49 @@
 import { Suspense } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { publicApi, type PublicTripDetail, type PublicTripSeat } from '@/lib/api';
+import toast from 'react-hot-toast';
+import {
+  publicApi,
+  seatApi,
+  type LockSeatsResult,
+  type PublicTripDetail,
+  type PublicTripSeat,
+} from '@/lib/api';
 import { ApiError } from '@/lib/errors/api-error';
 import TripDetailPage from '../page';
+
+const { pushMock, realtime } = vi.hoisted(() => ({
+  pushMock: vi.fn(),
+  realtime: {
+    seatHandlers: [] as Array<(payload: unknown) => void>,
+    tripHandlers: [] as Array<(payload: unknown) => void>,
+    cleanup: vi.fn(),
+    subscribeToTripSeats: vi.fn(),
+    subscribeToTrips: vi.fn(),
+  },
+}));
+
+realtime.subscribeToTripSeats.mockImplementation(
+  (_tripIds: string[], callback: (payload: unknown) => void) => {
+    realtime.seatHandlers.push(callback);
+    return realtime.cleanup;
+  },
+);
+realtime.subscribeToTrips.mockImplementation(
+  (_tripIds: string[], callback: (payload: unknown) => void) => {
+    realtime.tripHandlers.push(callback);
+    return realtime.cleanup;
+  },
+);
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+    back: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+}));
 
 vi.mock('@/lib/api', () => ({
   publicApi: {
@@ -11,9 +51,25 @@ vi.mock('@/lib/api', () => ({
     tripDetail: vi.fn(),
     agencies: vi.fn(),
   },
+  seatApi: {
+    lockSeats: vi.fn(),
+    unlockSeats: vi.fn(),
+    mySeatLocks: vi.fn(),
+  },
+}));
+
+vi.mock('@/lib/realtime/subscriptions', () => ({
+  subscribeToTripSeats: realtime.subscribeToTripSeats,
+  subscribeToTrips: realtime.subscribeToTrips,
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 const mockedTripDetail = vi.mocked(publicApi.tripDetail);
+const mockedLockSeats = vi.mocked(seatApi.lockSeats);
+const mockedUnlockSeats = vi.mocked(seatApi.unlockSeats);
 
 function buildSeats(
   count: number,
@@ -95,6 +151,9 @@ function seatButtons() {
 describe('TripDetailPage (MKT-003)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
+    realtime.seatHandlers.length = 0;
+    realtime.tripHandlers.length = 0;
   });
 
   it('muestra skeleton mientras consulta el viaje', async () => {
@@ -276,5 +335,309 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(
       screen.getByRole('button', { name: 'Continuar con la reserva' }),
     ).toBeDisabled();
+  });
+});
+
+describe('TripDetailPage — bloqueo de asientos (MKT-004)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    realtime.seatHandlers.length = 0;
+    realtime.tripHandlers.length = 0;
+  });
+
+  it('muestra estado de carga mientras bloquea, guarda la selección y navega al wizard', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    let resolveLock!: (result: LockSeatsResult) => void;
+    mockedLockSeats.mockReturnValue(
+      new Promise<LockSeatsResult>((resolve) => {
+        resolveLock = resolve;
+      }),
+    );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Asiento A5, disponible' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    );
+
+    const loadingButton = await screen.findByRole('button', {
+      name: /Bloqueando asientos/,
+    });
+    expect(loadingButton).toBeDisabled();
+    expect(mockedLockSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+
+    await act(async () => {
+      resolveLock({
+        locked: true,
+        trip_id: 'trip-1',
+        ttl_seconds: 900,
+        lock_expires_at: '2026-10-04T12:00:00.000Z',
+        seats: [{ id: 'seat-5', seat_code: 'A5' }],
+      });
+    });
+
+    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+    const stored = JSON.parse(
+      sessionStorage.getItem('mkt004.lock.v1') ?? 'null',
+    );
+    expect(stored).toMatchObject({
+      trip_id: 'trip-1',
+      agency_id: 'ag-1',
+      lock_expires_at: '2026-10-04T12:00:00.000Z',
+      seats: [{ id: 'seat-5', seat_code: 'A5' }],
+      passengers: [],
+    });
+  });
+
+  it('ante un conflicto 409 refresca el mapa y libera los locks propios', async () => {
+    const seats = buildSeats(31);
+    seats[4] = { ...seats[4], status: 'reserved' };
+    mockedTripDetail
+      .mockResolvedValueOnce({ trip: buildTrip() })
+      .mockResolvedValueOnce({
+        trip: buildTrip({
+          seats,
+          availability: {
+            total: 31,
+            available: 30,
+            reserved: 1,
+            locked: 0,
+            blocked: 0,
+            guide: 0,
+          },
+        }),
+      });
+    mockedLockSeats.mockRejectedValueOnce(
+      new ApiError(
+        'Asientos no disponibles: A5',
+        'SEAT_NOT_AVAILABLE',
+        409,
+      ),
+    );
+    mockedUnlockSeats.mockResolvedValue({ unlocked: 1 });
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Asiento A5, disponible' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    );
+
+    await waitFor(() => expect(mockedUnlockSeats).toHaveBeenCalledWith('trip-1'));
+    expect(mockedTripDetail).toHaveBeenCalledTimes(2);
+    expect(
+      await screen.findByRole('button', { name: 'Asiento A5, reservado' }),
+    ).toBeDisabled();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('mkt004.lock.v1')).toBeNull();
+  });
+
+  it('redirige al login cuando el backend responde 401', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockRejectedValue(
+      new ApiError('No autorizado', 'UNAUTHORIZED', 401),
+    );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Asiento A7, disponible' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    );
+
+    await waitFor(() =>
+      expect(pushMock).toHaveBeenCalledWith(
+        '/login?redirect=%2Fviajes%2Ftrip-1',
+      ),
+    );
+    expect(sessionStorage.getItem('mkt004.lock.v1')).toBeNull();
+  });
+
+  it('no intenta bloquear sin selección de asientos', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    );
+
+    expect(mockedLockSeats).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    ).toBeDisabled();
+  });
+});
+
+describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    realtime.seatHandlers.length = 0;
+    realtime.tripHandlers.length = 0;
+  });
+
+  it('actualiza el mapa en vivo y suelta tu selección cuando otro toma tu asiento', async () => {
+    const lockedSeats = buildSeats(31);
+    lockedSeats[4] = { ...lockedSeats[4], status: 'locked' };
+    mockedTripDetail
+      .mockResolvedValueOnce({ trip: buildTrip() })
+      .mockResolvedValue({
+        trip: buildTrip({
+          seats: lockedSeats,
+          availability: {
+            total: 31,
+            available: 30,
+            reserved: 0,
+            locked: 1,
+            blocked: 0,
+            guide: 0,
+          },
+        }),
+      });
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    expect(realtime.seatHandlers).toHaveLength(1);
+    expect(realtime.tripHandlers).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Asiento A5, disponible' }));
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+
+    await act(async () => {
+      realtime.seatHandlers[0]({
+        eventType: 'UPDATE',
+        seat: {
+          id: 'seat-5',
+          trip_id: 'trip-1',
+          seat_code: 'A5',
+          status: 'locked',
+          locked_by: 'otro-usuario',
+        },
+      });
+    });
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Asiento A5, bloqueado' }),
+    ).toBeDisabled();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'El asiento A5 ya no está disponible',
+    );
+    expect(screen.getByText('30 de 31 disponibles')).toBeInTheDocument();
+    expect(screen.getByText('30 disponibles')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    ).toBeDisabled();
+  });
+
+  it('no suelta tu selección cuando el evento realtime es tu propio bloqueo', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    let resolveLock!: (result: LockSeatsResult) => void;
+    mockedLockSeats.mockReturnValue(
+      new Promise<LockSeatsResult>((resolve) => {
+        resolveLock = resolve;
+      }),
+    );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Asiento A5, disponible' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Continuar con la reserva' }),
+    );
+    await screen.findByRole('button', { name: /Bloqueando asientos/ });
+
+    // Evento de MI lock mientras la petición sigue en curso
+    await act(async () => {
+      realtime.seatHandlers[0]({
+        eventType: 'UPDATE',
+        seat: {
+          id: 'seat-5',
+          trip_id: 'trip-1',
+          seat_code: 'A5',
+          status: 'locked',
+          locked_by: 'user-me',
+        },
+      });
+    });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+
+    await act(async () => {
+      resolveLock({
+        locked: true,
+        trip_id: 'trip-1',
+        ttl_seconds: 900,
+        lock_expires_at: '2026-10-04T12:00:00.000Z',
+        seats: [{ id: 'seat-5', seat_code: 'A5' }],
+      });
+    });
+    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+
+    // El evento tardío del mismo lock tampoco deselecta
+    await act(async () => {
+      realtime.seatHandlers[0]({
+        eventType: 'UPDATE',
+        seat: {
+          id: 'seat-5',
+          trip_id: 'trip-1',
+          seat_code: 'A5',
+          status: 'locked',
+          locked_by: 'user-me',
+        },
+      });
+    });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+  });
+
+  it('muestra el estado 404 con CTA si el viaje se cancela en tiempo real', async () => {
+    mockedTripDetail
+      .mockResolvedValueOnce({ trip: buildTrip() })
+      .mockRejectedValueOnce(
+        new ApiError('Viaje no encontrado', 'TRIP_NOT_FOUND', 404),
+      );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    expect(realtime.tripHandlers).toHaveLength(1);
+
+    await act(async () => {
+      realtime.tripHandlers[0]({
+        eventType: 'UPDATE',
+        trip: { id: 'trip-1', status: 'cancelled' },
+      });
+    });
+
+    expect(
+      await screen.findByRole('heading', { name: 'Viaje no encontrado' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'Este viaje fue cancelado. Elige otro viaje disponible.',
+    );
+    expect(
+      screen.getByRole('link', { name: /Ver viajes disponibles/ }),
+    ).toHaveAttribute('href', '/viajes');
   });
 });

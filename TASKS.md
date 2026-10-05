@@ -98,7 +98,56 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
     `tripDetail`; `lib/price.ts`: `formatSeatPrice` (`$20,20`, es-VE)
   - Tests frontend: `app/viajes/[slug-or-id]/__tests__/page.test.tsx` (8) +
     `components/bus/__tests__/BusLayout.test.tsx` (5); suite total 28 en verde
-- [ ] **MKT-004** — Wizard de reserva con lock TTL 900 (servidor decide)
+- [x] **MKT-004** — Wizard de reserva con lock TTL 900 (servidor decide) +
+  realtime (2026-10-05)
+  - Backend: `backend/src/services/seat-lock.service.ts` (lock atómico con
+    lazy-release de expirados, idempotencia por lock propio, rollback si otro
+    adquiere, unlock solo de locks propios, `mySeatLocks`) +
+    `backend/src/routes/public/seats.ts` (`POST /lock`, `POST /unlock`,
+    `GET /locks` — auth `customer`, zod sin `ttl_seconds`, rate limit 120/min)
+    montado en `app.ts`; TTL 900 lo decide el servidor (`LOCK_TTL_SECONDS`);
+    cleanup existente en `backend/src/index.ts` (60s) sin worker nuevo
+  - Frontend detalle `app/viajes/[slug-or-id]/page.tsx`: CTA "Continuar con
+    la reserva" bloquea vía `seatApi.lockSeats`, escribe `mkt004.lock.v1` en
+    sessionStorage, 401 → login, 409 → unlock + refetch + intersección
+  - Frontend wizard `app/reservas/nueva/page.tsx`: 4 pasos (asientos →
+    pasajeros → resumen → pago placeholder MKT-005), verificación dual
+    (`tripDetail` + `mySeatLocks`), estados `loading/missing/expired/error`,
+    countdown derivado de `lock_expires_at` (server), mínimo 1 asiento,
+    "Cambiar asientos" libera todo, pasajeros con teléfono requerido y
+    documentos duplicados rechazados
+  - **Realtime** (patrón `nomadas-tour`): `lib/realtime/subscriptions.ts`
+    (`subscribeToTripSeats`, `subscribeToTrips` sobre `postgres_changes` con
+    RLS `*_public_read` + publicación `supabase_realtime`),
+    `lib/booking/useSeatLocking.ts` (mapa en vivo, pérdida de asientos propios
+    por `locked_by`, viaje cancelado/completado, refetch con debounce 500ms),
+    `lib/booking/seat-map.ts` (`applySeatRow`/`removeSeatRow` con
+    recount de disponibilidad)
+  - Wizard en vivo: otro usuario toma tu asiento → deselect + toast + mapa
+    actualizado; si se pierden todos → estado expirado; viaje cancelado /
+    completado → toast + `clearLockState` + `/viajes`. Detalle en vivo:
+    contadores y estados del mapa al día, selección suelta si otro toma tu
+    asiento (con guardas para tu propio bloqueo en curso), viaje cancelado →
+    404 con CTA
+  - Archivos: `lib/api.ts` (`seatApi`), `lib/booking/{lock-state,passengers,
+    useLockCountdown}.ts`, `components/booking/{LockCountdown,PassengerCard}.tsx`,
+    `components/auth/AuthProvider.tsx` (`useOptionalAuthUser`)
+  - Tests: `backend .../seats.test.ts` (15) +
+    `app/viajes/[slug-or-id]/__tests__/page.test.tsx` (15) +
+    `app/reservas/nueva/__tests__/page.test.tsx` (12) +
+    `lib/booking/__tests__/useSeatLocking.test.ts` (10) +
+    `lib/realtime/__tests__/subscriptions.test.ts` (7); suite total 64
+    frontend + 30 backend en verde
+  - **E2E staging verificado (2026-10-05)**: backend local contra Supabase
+    staging con 2 customers reales — `POST /lock` 200 `ttl=900`; intento de
+    forzar `ttl_seconds=5` → servidor mantiene 900; idempotencia (repetir
+    devuelve mismos asientos); 409 `SEAT_LOCKED` para el otro usuario; request
+    mixto [libre+tomado] → 409 sin adquirir ninguno (atómico); `GET /locks`
+    devuelve los propios; 401 sin token; `unlock` → `unlocked=2` y seats
+    `available`; TTL 5s (env `LOCK_TTL_SECONDS=5`) → expirado invisible en
+    `GET /locks` y relevo por lazy-release. Limpieza: 0 locks y 0 usuarios
+    de prueba en staging. Nota: RLS `seats_public_read` + publicación
+    `supabase_realtime` confirmadas con anon key (lectura `seats`/`trips` OK)
 
 ---
 

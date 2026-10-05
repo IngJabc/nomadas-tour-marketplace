@@ -6,6 +6,7 @@ import { errorHandler } from './middlewares/error-handler.js';
 
 import authRoutes from './routes/auth/index.js';
 import publicTripsRoutes from './routes/public/trips.js';
+import publicSeatsRoutes from './routes/public/seats.js';
 
 const app = express();
 
@@ -66,6 +67,7 @@ app.get('/health', (_req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/public/trips', publicTripsRoutes);
+app.use('/api/public/seats', publicSeatsRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
