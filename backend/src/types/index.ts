@@ -10,7 +10,6 @@ export interface User {
   id: string;
   email: string;
   role: Role;
-  full_name: string | null;
 }
 
 /** Trip summary exposed on the public catalog (read-only). */

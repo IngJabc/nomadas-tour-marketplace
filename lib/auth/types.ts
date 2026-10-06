@@ -5,5 +5,4 @@ export interface AppUser {
   id: string;
   email: string;
   role: AppRole;
-  full_name: string | null;
 }

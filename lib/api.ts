@@ -68,7 +68,7 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
-  register: (payload: { email: string; password: string; full_name: string }) =>
+  register: (payload: { email: string; password: string }) =>
     request<{ token: string; refresh_token: string; user: AppUser }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
