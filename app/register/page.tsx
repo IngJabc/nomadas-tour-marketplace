@@ -14,22 +14,6 @@ export default function RegisterPage() {
         <form className="mt-8 space-y-5">
           <div>
             <label
-              htmlFor="full_name"
-              className="mb-1.5 block text-xs font-medium uppercase text-brand-muted"
-            >
-              Nombre completo
-            </label>
-            <input
-              id="full_name"
-              type="text"
-              autoComplete="name"
-              className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]"
-              placeholder="Tu nombre"
-            />
-          </div>
-
-          <div>
-            <label
               htmlFor="email"
               className="mb-1.5 block text-xs font-medium uppercase text-brand-muted"
             >

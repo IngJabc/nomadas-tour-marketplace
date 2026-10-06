@@ -74,7 +74,6 @@ function withSeatStatus(
 export default function NewReservationPage() {
   const router = useRouter();
   const auth = useOptionalAuthUser();
-  const fullName = auth?.user?.full_name ?? null;
 
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -163,17 +162,6 @@ export default function NewReservationPage() {
     if (phase !== 'ready' || !lock || lock.seats.length === 0) return;
     writeLockState({ ...lock, passengers });
   }, [phase, lock, passengers]);
-
-  useEffect(() => {
-    if (!fullName || phase !== 'ready') return;
-    setPassengers((prev) => {
-      const first = prev[0];
-      if (!first || first.first_name || first.last_name) return prev;
-      return prev.map((passenger, index) =>
-        index === 0 ? { ...passenger, first_name: fullName } : passenger,
-      );
-    });
-  }, [fullName, phase]);
 
   const handleExpired = useCallback(() => {
     setPhase((current) => (current === 'ready' ? 'expired' : current));

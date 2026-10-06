@@ -67,7 +67,6 @@ vi.mock('@/components/auth/AuthProvider', () => ({
       id: 'user-me',
       email: 'cliente@test.com',
       role: 'customer',
-      full_name: null,
     },
     loading: false,
     refresh: async () => {},

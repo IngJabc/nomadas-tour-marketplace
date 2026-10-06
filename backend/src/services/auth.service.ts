@@ -14,7 +14,7 @@ export class AuthService {
 
     const { data: dbUser, error: userError } = await supabaseAdmin
       .from('users')
-      .select('id, email, role, full_name')
+      .select('id, email, role')
       .eq('id', data.user.id)
       .single();
 
@@ -29,11 +29,11 @@ export class AuthService {
     return {
       token: data.session!.access_token,
       refresh_token: data.session!.refresh_token,
-      user: dbUser,
+      user: { id: dbUser.id, email: dbUser.email, role: dbUser.role },
     };
   }
 
-  async register(payload: { email: string; password: string; full_name: string }) {
+  async register(payload: { email: string; password: string }) {
     const { data, error } = await supabase.auth.signUp({
       email: payload.email,
       password: payload.password,
@@ -49,8 +49,8 @@ export class AuthService {
         {
           id: data.user.id,
           email: payload.email,
+          password_hash: '',
           role: 'customer',
-          full_name: payload.full_name,
         },
         { onConflict: 'id' },
       );
@@ -66,7 +66,7 @@ export class AuthService {
       return {
         token: data.session?.access_token ?? null,
         refresh_token: data.session?.refresh_token ?? null,
-        user: { id: data.user.id, email: payload.email, role: 'customer', full_name: payload.full_name },
+        user: { id: data.user.id, email: payload.email, role: 'customer' },
       };
     }
 
@@ -77,7 +77,6 @@ export class AuthService {
         id: data.user.id,
         email: payload.email,
         role: 'customer',
-        full_name: payload.full_name,
       },
     };
   }
@@ -85,7 +84,7 @@ export class AuthService {
   async getMe(userId: string) {
     const { data: dbUser, error } = await supabaseAdmin
       .from('users')
-      .select('id, email, role, full_name')
+      .select('id, email, role')
       .eq('id', userId)
       .single();
 
@@ -97,7 +96,7 @@ export class AuthService {
       throw new UnauthorizedError('Usuario no registrado');
     }
 
-    return dbUser;
+    return { id: dbUser.id, email: dbUser.email, role: dbUser.role };
   }
 }
 
