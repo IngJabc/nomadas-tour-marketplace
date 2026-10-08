@@ -35,8 +35,15 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Redirect to login if protected and not authenticated
-  const isProtected = protectedPaths.some((path) => pathname.startsWith(path));
+  // `/reservas/nueva` es el wizard de reserva y es PÚBLICO: funciona como
+  // guest (locks por cookie HttpOnly, claim al volver del login) y exige
+  // sesión recién en el paso de pago con el gate dentro de la propia página.
+  // Protegerlo aquí cortaba el flujo completo hacia el wizard.
+  const isNewReservationWizard =
+    pathname === '/reservas/nueva' || pathname.startsWith('/reservas/nueva/');
+  const isProtected =
+    protectedPaths.some((path) => pathname.startsWith(path)) &&
+    !isNewReservationWizard;
   if (isProtected && !user) {
     const url = request.nextUrl.clone();
     const originalPath = pathname + request.nextUrl.search;

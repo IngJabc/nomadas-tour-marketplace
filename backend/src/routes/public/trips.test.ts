@@ -29,7 +29,7 @@ type QueryResult = { data?: unknown; error?: { message: string } | null };
 
 function queryChain(result: QueryResult) {
   const chain: Record<string, unknown> = {};
-  for (const method of ['select', 'eq', 'order', 'limit', 'maybeSingle']) {
+  for (const method of ['select', 'eq', 'gte', 'order', 'limit', 'maybeSingle']) {
     chain[method] = vi.fn(() => chain);
   }
   chain.then = (
@@ -39,6 +39,7 @@ function queryChain(result: QueryResult) {
   return chain as {
     select: ReturnType<typeof vi.fn>;
     eq: ReturnType<typeof vi.fn>;
+    gte: ReturnType<typeof vi.fn>;
     order: ReturnType<typeof vi.fn>;
     limit: ReturnType<typeof vi.fn>;
     maybeSingle: ReturnType<typeof vi.fn>;
@@ -300,21 +301,20 @@ describe('GET /api/public/trips (catálogo)', () => {
   });
 
   it('lista los viajes activos con lock_ttl_seconds del servidor', async () => {
-    supabaseMock.from.mockReturnValueOnce(
-      queryChain({
-        data: [
-          {
-            id: TRIP_ID,
-            departure_time: '2026-10-04T11:00:00+00:00',
-            capacity: 31,
-            vehicle_type: 'bus',
-            status: 'active',
-            routes: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
-          },
-        ],
-        error: null,
-      }),
-    );
+    const listChain = queryChain({
+      data: [
+        {
+          id: TRIP_ID,
+          departure_time: '2026-10-04T11:00:00+00:00',
+          capacity: 31,
+          vehicle_type: 'bus',
+          status: 'active',
+          routes: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
+        },
+      ],
+      error: null,
+    });
+    supabaseMock.from.mockReturnValueOnce(listChain);
 
     server = await new Promise<Server>((resolve, reject) => {
       const s = app.listen(0, '127.0.0.1', () => resolve(s));
@@ -329,5 +329,14 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(body.trips).toHaveLength(1);
     expect(body.trips[0].id).toBe(TRIP_ID);
     expect(body.trips[0].lock_ttl_seconds).toBe(900);
+    // Nunca lista viajes cuya salida ya pasó.
+    expect(listChain.eq).toHaveBeenCalledWith('status', 'active');
+    expect(listChain.gte).toHaveBeenCalledWith(
+      'departure_time',
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    );
+    expect(listChain.order).toHaveBeenCalledWith('departure_time', {
+      ascending: true,
+    });
   });
 });

@@ -6,6 +6,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./test-setup.ts'],
+    // Los specs de páginas montan el mapa completo y el equipo suele estar
+    // cargado; el default de 5s hace timeouts intermitentes sin ser errores.
+    testTimeout: 15000,
+    hookTimeout: 15000,
     include: [
       '__tests__/**/*.test.ts',
       '__tests__/**/*.test.tsx',

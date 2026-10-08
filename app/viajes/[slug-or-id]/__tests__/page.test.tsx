@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import toast from 'react-hot-toast';
@@ -12,7 +12,7 @@ import {
 import { ApiError } from '@/lib/errors/api-error';
 import TripDetailPage from '../page';
 
-const { pushMock, realtime } = vi.hoisted(() => ({
+const { pushMock, realtime, authState } = vi.hoisted(() => ({
   pushMock: vi.fn(),
   realtime: {
     seatHandlers: [] as Array<(payload: unknown) => void>,
@@ -20,6 +20,14 @@ const { pushMock, realtime } = vi.hoisted(() => ({
     cleanup: vi.fn(),
     subscribeToTripSeats: vi.fn(),
     subscribeToTrips: vi.fn(),
+  },
+  authState: {
+    user: {
+      id: 'user-me',
+      email: 'cliente@test.com',
+      role: 'customer',
+    } as { id: string; email: string; role: string } | null,
+    loading: false,
   },
 }));
 
@@ -55,6 +63,10 @@ vi.mock('@/lib/api', () => ({
     lockSeats: vi.fn(),
     unlockSeats: vi.fn(),
     mySeatLocks: vi.fn(),
+    lockGuestSeats: vi.fn(),
+    getGuestLocks: vi.fn(),
+    unlockGuestSeats: vi.fn(),
+    claimGuestLocks: vi.fn(),
   },
 }));
 
@@ -67,9 +79,32 @@ vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+vi.mock('@/components/auth/AuthProvider', () => ({
+  AuthProvider: ({ children }: { children?: ReactNode }) => children,
+  useOptionalAuthUser: () => ({
+    user: authState.user,
+    loading: authState.loading,
+    refresh: async () => undefined,
+    signOut: async () => undefined,
+  }),
+  useAuthUser: () => ({
+    user: authState.user,
+    loading: authState.loading,
+    refresh: async () => undefined,
+    signOut: async () => undefined,
+  }),
+}));
+
 const mockedTripDetail = vi.mocked(publicApi.tripDetail);
 const mockedLockSeats = vi.mocked(seatApi.lockSeats);
 const mockedUnlockSeats = vi.mocked(seatApi.unlockSeats);
+const mockedMySeatLocks = vi.mocked(seatApi.mySeatLocks);
+const mockedLockGuestSeats = vi.mocked(seatApi.lockGuestSeats);
+const mockedGetGuestLocks = vi.mocked(seatApi.getGuestLocks);
+const mockedUnlockGuestSeats = vi.mocked(seatApi.unlockGuestSeats);
+const mockedClaimGuestLocks = vi.mocked(seatApi.claimGuestLocks);
+
+const LOCK_KEY = 'mkt004.lock.v1';
 
 function buildSeats(
   count: number,
@@ -128,33 +163,164 @@ function buildTrip(overrides: Partial<PublicTripDetail> = {}): PublicTripDetail 
   };
 }
 
-async function renderPage(id = 'trip-1') {
+/** Expiración futura arbitraria (el TTL real lo fija el servidor). */
+function futureExpiry(offsetMs = 900_000): string {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+/** `seat-5` → `A5` (así los construye `buildSeats`). */
+function codeForId(seatId: string): string {
+  return seatId.replace(/^seat-/, 'A');
+}
+
+function buildLockResult(
+  seatIds: string[],
+  lockExpiresAt: string,
+  tripId = 'trip-1',
+): LockSeatsResult {
+  return {
+    locked: true,
+    trip_id: tripId,
+    ttl_seconds: 900,
+    lock_expires_at: lockExpiresAt,
+    seats: seatIds.map((id) => ({ id, seat_code: codeForId(id) })),
+  };
+}
+
+/** Respuesta exitosa de lock para cualquier asiento (viaja con el TTL dado). */
+function autoLock(lockExpiresAt = futureExpiry()) {
+  return vi.fn(
+    async (tripId: string, seatIds: string[]) =>
+      buildLockResult(seatIds, lockExpiresAt, tripId),
+  );
+}
+
+/** Respuesta del endpoint guest: mismo contrato + metadata de sesión. */
+function buildGuestLockResult(
+  seatIds: string[],
+  lockExpiresAt: string,
+  tripId = 'trip-1',
+) {
+  return {
+    ...buildLockResult(seatIds, lockExpiresAt, tripId),
+    guest_session: {
+      trip_id: tripId,
+      status: 'active',
+      expires_at: lockExpiresAt,
+    },
+  };
+}
+
+function buildGuestLocksResult(
+  seats: Array<{ id: string; seat_code: string; lock_expires_at: string }>,
+  tripId = 'trip-1',
+) {
+  const expiries = seats.map((seat) => seat.lock_expires_at).sort();
+  return {
+    trip_id: tripId,
+    lock_expires_at: expiries[0] ?? null,
+    seats,
+    guest_session: {
+      trip_id: tripId,
+      status: 'active',
+      expires_at: expiries[0] ?? futureExpiry(),
+    },
+  };
+}
+
+function buildClaimResult(
+  seats: Array<{ id: string; seat_code: string; lock_expires_at: string }>,
+  tripId = 'trip-1',
+) {
+  const expiries = seats.map((seat) => seat.lock_expires_at).sort();
+  return {
+    claimed: true as const,
+    trip_id: tripId,
+    seats,
+    lock_expires_at: expiries[0] ?? null,
+    guest_session: {
+      trip_id: tripId,
+      status: 'claimed',
+      expires_at: expiries[0] ?? futureExpiry(),
+    },
+  };
+}
+
+function makeParams(id: string) {
+  return Promise.resolve({ 'slug-or-id': id });
+}
+
+async function renderPage(id = 'trip-1', params = makeParams(id)) {
   let view!: ReturnType<typeof render>;
   await act(async () => {
     view = render(
       <Suspense fallback={null}>
-        <TripDetailPage params={Promise.resolve({ 'slug-or-id': id })} />
+        <TripDetailPage params={params} />
       </Suspense>,
     );
   });
   return view;
 }
 
-function seatButtons() {
-  return screen
-    .getAllByRole('button')
-    .filter((button) =>
-      (button.getAttribute('aria-label') ?? '').startsWith('Asiento '),
+/** Re-render con el MISMO `params` (la identidad debe ser estable). */
+async function rerenderPage(
+  view: ReturnType<typeof render>,
+  params: Promise<{ 'slug-or-id': string }>,
+) {
+  await act(async () => {
+    view.rerender(
+      <Suspense fallback={null}>
+        <TripDetailPage params={params} />
+      </Suspense>,
     );
+  });
+}
+
+function btn(name: string | RegExp) {
+  return screen.getByRole('button', { name });
+}
+
+async function clickSeat(name: string) {
+  await act(async () => {
+    fireEvent.click(btn(name));
+  });
+}
+
+function resetTestState() {
+  vi.clearAllMocks();
+  sessionStorage.clear();
+  realtime.seatHandlers.length = 0;
+  realtime.tripHandlers.length = 0;
+  authState.user = { id: 'user-me', email: 'cliente@test.com', role: 'customer' };
+  authState.loading = false;
+  mockedTripDetail.mockReset();
+  mockedLockSeats.mockReset();
+  mockedUnlockSeats.mockReset();
+  mockedUnlockSeats.mockResolvedValue({ unlocked: 1 });
+  mockedMySeatLocks.mockReset();
+  mockedMySeatLocks.mockResolvedValue({
+    trip_id: 'trip-1',
+    lock_expires_at: null,
+    seats: [],
+  });
+  mockedLockGuestSeats.mockReset();
+  mockedUnlockGuestSeats.mockReset();
+  mockedUnlockGuestSeats.mockResolvedValue({ unlocked: 1, remaining: 0 });
+  mockedGetGuestLocks.mockReset();
+  // Por defecto: sin cookie guest (401), como en un visitante nuevo.
+  mockedGetGuestLocks.mockRejectedValue(
+    new ApiError('Sesión guest requerida', 'UNAUTHORIZED', 401),
+  );
+  mockedClaimGuestLocks.mockReset();
+}
+
+/** Marca al visitante como guest (sin sesión autenticada). */
+function becomeGuest() {
+  authState.user = null;
 }
 
 describe('TripDetailPage (MKT-003)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    sessionStorage.clear();
-    realtime.seatHandlers.length = 0;
-    realtime.tripHandlers.length = 0;
-  });
+  beforeEach(resetTestState);
 
   it('muestra skeleton mientras consulta el viaje', async () => {
     mockedTripDetail.mockReturnValue(new Promise(() => {}));
@@ -180,20 +346,18 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(screen.getAllByText(/4 oct 2026/)).toHaveLength(2);
     expect(screen.getByText('7:00 AM')).toBeInTheDocument();
 
-    expect(seatButtons()).toHaveLength(31);
     expect(
-      screen.getByRole('button', { name: 'Asiento A1, disponible' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Asiento A31, disponible' }),
-    ).toBeInTheDocument();
+      screen.getAllByRole('button').filter((button) =>
+        (button.getAttribute('aria-label') ?? '').startsWith('Asiento '),
+      ),
+    ).toHaveLength(31);
+    expect(btn('Asiento A1, disponible')).toBeInTheDocument();
+    expect(btn('Asiento A31, disponible')).toBeInTheDocument();
 
     expect(
       screen.getByRole('list', { name: 'Leyenda de asientos' }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    ).toBeDisabled();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
     expect(mockedTripDetail).toHaveBeenCalledWith('trip-1');
   });
 
@@ -212,32 +376,6 @@ describe('TripDetailPage (MKT-003)', () => {
 
     expect(radios[0]).toHaveAttribute('aria-checked', 'false');
     expect(radios[1]).toHaveAttribute('aria-checked', 'true');
-  });
-
-  it('selecciona asientos en el mapa sin llamar a la API de bloqueo', async () => {
-    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
-
-    await renderPage();
-    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Asiento A5, disponible' }));
-
-    expect(
-      screen.getByRole('button', { name: 'Asiento A5, seleccionado' }),
-    ).toHaveAttribute('data-state', 'selected');
-    expect(screen.getByRole('status')).toHaveTextContent(
-      '1 asiento seleccionado: A5',
-    );
-    expect(mockedTripDetail).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Asiento A5, seleccionado' }),
-    );
-
-    expect(
-      screen.getByRole('button', { name: 'Asiento A5, disponible' }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   it('muestra aviso y CTA bloqueado cuando el viaje no tiene disponibilidad', async () => {
@@ -266,12 +404,8 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Este viaje ya no tiene asientos disponibles',
     );
-    expect(
-      screen.getByRole('button', { name: 'Sin asientos disponibles' }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole('button', { name: 'Asiento A1, reservado' }),
-    ).toBeDisabled();
+    expect(btn('Sin asientos disponibles')).toBeDisabled();
+    expect(btn('Asiento A1, reservado')).toBeDisabled();
   });
 
   it('reintenta tras un error de la API', async () => {
@@ -332,22 +466,16 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(
       screen.getByText(/Las agencias de este viaje estarán disponibles pronto/),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    ).toBeDisabled();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
   });
 });
 
-describe('TripDetailPage — bloqueo de asientos (MKT-004)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    sessionStorage.clear();
-    realtime.seatHandlers.length = 0;
-    realtime.tripHandlers.length = 0;
-  });
+describe('TripDetailPage — bloqueo inmediato de asientos (MKT-004)', () => {
+  beforeEach(resetTestState);
 
-  it('muestra estado de carga mientras bloquea, guarda la selección y navega al wizard', async () => {
+  it('bloquea el asiento en el click y permite seguir en el mapa', async () => {
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    const expires = futureExpiry();
     let resolveLock!: (result: LockSeatsResult) => void;
     mockedLockSeats.mockReturnValue(
       new Promise<LockSeatsResult>((resolve) => {
@@ -358,48 +486,85 @@ describe('TripDetailPage — bloqueo de asientos (MKT-004)', () => {
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Asiento A5, disponible' }),
-    );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    );
+    await clickSeat('Asiento A5, disponible');
 
-    const loadingButton = await screen.findByRole('button', {
-      name: /Bloqueando asientos/,
-    });
-    expect(loadingButton).toBeDisabled();
+    expect(mockedLockSeats).toHaveBeenCalledTimes(1);
     expect(mockedLockSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+    expect(btn(/Bloqueando asientos/)).toBeDisabled();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
 
     await act(async () => {
-      resolveLock({
-        locked: true,
-        trip_id: 'trip-1',
-        ttl_seconds: 900,
-        lock_expires_at: '2026-10-04T12:00:00.000Z',
-        seats: [{ id: 'seat-5', seat_code: 'A5' }],
-      });
+      resolveLock(buildLockResult(['seat-5'], expires));
     });
 
-    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
-    const stored = JSON.parse(
-      sessionStorage.getItem('mkt004.lock.v1') ?? 'null',
+    expect(btn('Asiento A5, seleccionado')).toHaveAttribute(
+      'data-state',
+      'selected',
     );
-    expect(stored).toMatchObject({
-      trip_id: 'trip-1',
-      agency_id: 'ag-1',
-      lock_expires_at: '2026-10-04T12:00:00.000Z',
-      seats: [{ id: 'seat-5', seat_code: 'A5' }],
-      passengers: [],
-    });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      /Tu selección está reservada durante \d{2}:\d{2}/,
+    );
+    expect(btn('Continuar con la reserva')).toBeEnabled();
+    expect(screen.getByText('30 de 31 disponibles')).toBeInTheDocument();
+    expect(screen.getByText('30 disponibles')).toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('ante un conflicto 409 refresca el mapa y libera los locks propios', async () => {
+  it('acumula varios asientos sin navegar al wizard', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    await clickSeat('Asiento A3, disponible');
+
+    expect(mockedLockSeats).toHaveBeenCalledTimes(2);
+    expect(mockedLockSeats).toHaveBeenNthCalledWith(1, 'trip-1', ['seat-5']);
+    expect(mockedLockSeats).toHaveBeenNthCalledWith(2, 'trip-1', ['seat-3']);
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '2 asientos seleccionados: A5, A3',
+    );
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+    expect(btn('Continuar con la reserva')).toBeEnabled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('al re-elegir un asiento propio lo libera al instante', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    expect(screen.getByRole('status')).toBeInTheDocument();
+
+    await clickSeat('Asiento A5, seleccionado');
+
+    expect(mockedUnlockSeats).toHaveBeenCalledTimes(1);
+    expect(mockedUnlockSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+    expect(mockedLockSeats).toHaveBeenCalledTimes(1);
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      'Asiento A5 liberado',
+    );
+    expect(btn('Continuar con la reserva')).toBeDisabled();
+  });
+
+  it('ante un conflicto 409 refresca el mapa sin liberar tus otros locks', async () => {
     const seats = buildSeats(31);
     seats[4] = { ...seats[4], status: 'reserved' };
     mockedTripDetail
       .mockResolvedValueOnce({ trip: buildTrip() })
-      .mockResolvedValueOnce({
+      .mockResolvedValue({
         trip: buildTrip({
           seats,
           availability: {
@@ -419,26 +584,21 @@ describe('TripDetailPage — bloqueo de asientos (MKT-004)', () => {
         409,
       ),
     );
-    mockedUnlockSeats.mockResolvedValue({ unlocked: 1 });
 
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Asiento A5, disponible' }),
-    );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    );
+    await clickSeat('Asiento A5, disponible');
 
-    await waitFor(() => expect(mockedUnlockSeats).toHaveBeenCalledWith('trip-1'));
-    expect(mockedTripDetail).toHaveBeenCalledTimes(2);
-    expect(
-      await screen.findByRole('button', { name: 'Asiento A5, reservado' }),
-    ).toBeDisabled();
+    await waitFor(() => expect(mockedTripDetail).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'Asientos no disponibles: A5',
+    );
+    expect(btn('Asiento A5, reservado')).toBeDisabled();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
     expect(pushMock).not.toHaveBeenCalled();
-    expect(sessionStorage.getItem('mkt004.lock.v1')).toBeNull();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
   });
 
   it('redirige al login cuando el backend responde 401', async () => {
@@ -450,46 +610,184 @@ describe('TripDetailPage — bloqueo de asientos (MKT-004)', () => {
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Asiento A7, disponible' }),
-    );
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    );
+    await clickSeat('Asiento A7, disponible');
 
     await waitFor(() =>
       expect(pushMock).toHaveBeenCalledWith(
         '/login?redirect=%2Fviajes%2Ftrip-1',
       ),
     );
-    expect(sessionStorage.getItem('mkt004.lock.v1')).toBeNull();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'Inicia sesión para continuar con tu reserva',
+    );
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
   });
 
-  it('no intenta bloquear sin selección de asientos', async () => {
+  it('Continuar no vuelve a bloquear: solo persiste el estado y navega', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    const expires = futureExpiry();
+    mockedLockSeats.mockImplementation(autoLock(expires));
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    expect(mockedLockSeats).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.click(btn('Continuar con la reserva'));
+    });
+
+    expect(mockedLockSeats).toHaveBeenCalledTimes(1);
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
+    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+
+    const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? 'null');
+    expect(stored).toMatchObject({
+      trip_id: 'trip-1',
+      agency_id: 'ag-1',
+      seats: [{ id: 'seat-5', seat_code: 'A5' }],
+      passengers: [],
+    });
+    expect(stored.lock_expires_at).toBe(expires);
+  });
+
+  it('no permite continuar sin selección de asientos', async () => {
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
 
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    );
+    await act(async () => {
+      fireEvent.click(btn('Continuar con la reserva'));
+    });
 
     expect(mockedLockSeats).not.toHaveBeenCalled();
     expect(pushMock).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    ).toBeDisabled();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
+  });
+
+  it('restaura los locks vigentes guardados al volver al viaje', async () => {
+    const seats = buildSeats(31);
+    seats[4] = { ...seats[4], status: 'locked' };
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        seats,
+        availability: {
+          total: 31,
+          available: 30,
+          reserved: 0,
+          locked: 1,
+          blocked: 0,
+          guide: 0,
+        },
+      }),
+    });
+    sessionStorage.setItem(
+      LOCK_KEY,
+      JSON.stringify({
+        trip_id: 'trip-1',
+        agency_id: 'ag-1',
+        seats: [{ id: 'seat-5', seat_code: 'A5' }],
+        lock_expires_at: futureExpiry(),
+        passengers: [],
+      }),
+    );
+
+    await renderPage();
+
+    expect(btn('Asiento A5, seleccionado')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+    expect(btn('Continuar con la reserva')).toBeEnabled();
+    expect(mockedLockSeats).not.toHaveBeenCalled();
+  });
+
+  it('no restaura un lock que el servidor ya no marca como bloqueado', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    sessionStorage.setItem(
+      LOCK_KEY,
+      JSON.stringify({
+        trip_id: 'trip-1',
+        agency_id: 'ag-1',
+        seats: [{ id: 'seat-5', seat_code: 'A5' }],
+        lock_expires_at: futureExpiry(),
+        passengers: [],
+      }),
+    );
+
+    await renderPage();
+
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
+  });
+
+  it('el countdown usa la expiración más próxima entre tus locks', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats
+      .mockResolvedValueOnce(buildLockResult(['seat-5'], futureExpiry(900_000)))
+      .mockResolvedValueOnce(buildLockResult(['seat-3'], futureExpiry(100_000)));
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    await clickSeat('Asiento A3, disponible');
+
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      /^Tu selección está reservada durante 01:\d{2}$/,
+    );
+  });
+
+  it('libera los locks al abandonar la pantalla sin ir al wizard', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    const view = await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    expect(screen.getByRole('status')).toBeInTheDocument();
+
+    await act(async () => {
+      view.unmount();
+    });
+
+    expect(mockedUnlockSeats).toHaveBeenCalledWith(
+      'trip-1',
+      undefined,
+      { keepalive: true },
+    );
+  });
+
+  it('conserva los locks al navegar con Continuar', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    const view = await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    await act(async () => {
+      fireEvent.click(btn('Continuar con la reserva'));
+    });
+    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+
+    await act(async () => {
+      view.unmount();
+    });
+
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
   });
 });
 
 describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    sessionStorage.clear();
-    realtime.seatHandlers.length = 0;
-    realtime.tripHandlers.length = 0;
-  });
+  beforeEach(resetTestState);
 
   it('actualiza el mapa en vivo y suelta tu selección cuando otro toma tu asiento', async () => {
     const lockedSeats = buildSeats(31);
@@ -509,13 +807,14 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
           },
         }),
       });
+    mockedLockSeats.mockImplementation(autoLock());
 
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
     expect(realtime.seatHandlers).toHaveLength(1);
     expect(realtime.tripHandlers).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Asiento A5, disponible' }));
+    await clickSeat('Asiento A5, disponible');
     expect(screen.getByRole('status')).toHaveTextContent(
       '1 asiento seleccionado: A5',
     );
@@ -534,21 +833,18 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
     });
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Asiento A5, bloqueado' }),
-    ).toBeDisabled();
+    expect(btn('Asiento A5, bloqueado')).toBeDisabled();
     expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
       'El asiento A5 ya no está disponible',
     );
     expect(screen.getByText('30 de 31 disponibles')).toBeInTheDocument();
     expect(screen.getByText('30 disponibles')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    ).toBeDisabled();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
   });
 
   it('no suelta tu selección cuando el evento realtime es tu propio bloqueo', async () => {
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    const expires = futureExpiry();
     let resolveLock!: (result: LockSeatsResult) => void;
     mockedLockSeats.mockReturnValue(
       new Promise<LockSeatsResult>((resolve) => {
@@ -559,11 +855,8 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
     await renderPage();
     await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Asiento A5, disponible' }));
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Continuar con la reserva' }),
-    );
-    await screen.findByRole('button', { name: /Bloqueando asientos/ });
+    await clickSeat('Asiento A5, disponible');
+    expect(btn(/Bloqueando asientos/)).toBeDisabled();
 
     // Evento de MI lock mientras la petición sigue en curso
     await act(async () => {
@@ -578,20 +871,15 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
         },
       });
     });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveLock(buildLockResult(['seat-5'], expires));
+    });
     expect(screen.getByRole('status')).toHaveTextContent(
       '1 asiento seleccionado: A5',
     );
-
-    await act(async () => {
-      resolveLock({
-        locked: true,
-        trip_id: 'trip-1',
-        ttl_seconds: 900,
-        lock_expires_at: '2026-10-04T12:00:00.000Z',
-        seats: [{ id: 'seat-5', seat_code: 'A5' }],
-      });
-    });
-    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+    expect(pushMock).not.toHaveBeenCalled();
 
     // El evento tardío del mismo lock tampoco deselecta
     await act(async () => {
@@ -610,6 +898,41 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
       '1 asiento seleccionado: A5',
     );
     expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+  });
+
+  it('suelta tu selección cuando el backend libera tu lock', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    await clickSeat('Asiento A5, disponible');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+
+    // El cleanup del backend (cada 60s) emite el lock vencido como `available`
+    await act(async () => {
+      realtime.seatHandlers[0]({
+        eventType: 'UPDATE',
+        seat: {
+          id: 'seat-5',
+          trip_id: 'trip-1',
+          seat_code: 'A5',
+          status: 'available',
+        },
+      });
+    });
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'El asiento A5 ya no está disponible',
+    );
+    expect(screen.getByText('31 de 31 disponibles')).toBeInTheDocument();
   });
 
   it('muestra el estado 404 con CTA si el viaje se cancela en tiempo real', async () => {
@@ -639,5 +962,375 @@ describe('TripDetailPage — realtime de asientos (MKT-004)', () => {
     expect(
       screen.getByRole('link', { name: /Ver viajes disponibles/ }),
     ).toHaveAttribute('href', '/viajes');
+  });
+});
+
+describe('TripDetailPage — guest lock ownership + claim (Fase 4)', () => {
+  beforeEach(resetTestState);
+
+  /** Visitante NO autenticado que ya bloqueó A5 vía endpoint guest. */
+  async function renderGuestWithSeat(params = makeParams('trip-1')) {
+    becomeGuest();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockGuestSeats.mockResolvedValue(
+      buildGuestLockResult(['seat-5'], futureExpiry(600_000)),
+    );
+
+    const view = await renderPage('trip-1', params);
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+    return view;
+  }
+
+  function authenticate() {
+    authState.user = {
+      id: 'user-me',
+      email: 'cliente@test.com',
+      role: 'customer',
+    };
+  }
+
+  it('guest bloquea con el endpoint guest y nunca usa el autenticado', async () => {
+    becomeGuest();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockGuestSeats.mockResolvedValue(
+      buildGuestLockResult(['seat-5'], futureExpiry()),
+    );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    expect(mockedLockGuestSeats).toHaveBeenCalledTimes(1);
+    expect(mockedLockGuestSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+    expect(mockedLockSeats).not.toHaveBeenCalled();
+    expect(btn('Asiento A5, seleccionado')).toHaveAttribute(
+      'data-state',
+      'selected',
+    );
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+  });
+
+  it('el countdown del guest deriva de lock_expires_at del servidor', async () => {
+    becomeGuest();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    // 30s: si el cliente calculara Date.now()+900000 veríamos 15:00.
+    mockedLockGuestSeats.mockResolvedValue(
+      buildGuestLockResult(['seat-5'], futureExpiry(30_000)),
+    );
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      /^Tu selección expira en 00:\d{2}$/,
+    );
+  });
+
+  it('recupera los locks guest tras un refresh usando solo la cookie', async () => {
+    becomeGuest();
+    const expires = futureExpiry();
+    const seats = buildSeats(31);
+    seats[4] = { ...seats[4], status: 'locked' };
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        seats,
+        availability: {
+          total: 31,
+          available: 30,
+          reserved: 0,
+          locked: 1,
+          blocked: 0,
+          guide: 0,
+        },
+      }),
+    });
+    mockedGetGuestLocks.mockResolvedValue(
+      buildGuestLocksResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: expires },
+      ]),
+    );
+
+    await renderPage();
+
+    expect(mockedGetGuestLocks).toHaveBeenCalledWith('trip-1');
+    expect(btn('Asiento A5, seleccionado')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '1 asiento seleccionado: A5',
+    );
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+    // Sin estado local: la propiedad sale de la cookie, no del storage.
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(mockedLockGuestSeats).not.toHaveBeenCalled();
+  });
+
+  it('sin cookie guest no restaura selección y el mapa sigue usable', async () => {
+    becomeGuest();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    expect(mockedGetGuestLocks).toHaveBeenCalledWith('trip-1');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(btn('Continuar con la reserva')).toBeDisabled();
+    expect(btn('Asiento A1, disponible')).toBeInTheDocument();
+  });
+
+  it('al autenticarse reclama UNA vez, conserva los seats y no re-lockea', async () => {
+    const expires = futureExpiry(600_000);
+    const params = makeParams('trip-1');
+    const view = await renderGuestWithSeat(params);
+    expect(mockedLockGuestSeats).toHaveBeenCalledTimes(1);
+
+    mockedGetGuestLocks.mockResolvedValue(
+      buildGuestLocksResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: expires },
+      ]),
+    );
+    mockedClaimGuestLocks.mockResolvedValue(
+      buildClaimResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: expires },
+      ]),
+    );
+
+    authenticate();
+    await rerenderPage(view, params);
+
+    await waitFor(() => expect(mockedClaimGuestLocks).toHaveBeenCalledTimes(1));
+    expect(mockedClaimGuestLocks).toHaveBeenCalledWith('trip-1');
+    expect(btn('Asiento A5, seleccionado')).toBeInTheDocument();
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      'Tus asientos siguen bloqueados con tu cuenta',
+    );
+    // No se re-lockea: el TTL lo preserva el backend en el claim.
+    expect(mockedLockGuestSeats).toHaveBeenCalledTimes(1);
+    expect(mockedLockSeats).not.toHaveBeenCalled();
+
+    // Un nuevo render NO dispara un segundo claim.
+    await rerenderPage(view, params);
+    expect(mockedClaimGuestLocks).toHaveBeenCalledTimes(1);
+  });
+
+  it('claim 401 GUEST_SESSION_EXPIRED limpia la selección guest y avisa', async () => {
+    const params = makeParams('trip-1');
+    const view = await renderGuestWithSeat(params);
+
+    mockedGetGuestLocks.mockResolvedValue(
+      buildGuestLocksResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: futureExpiry() },
+      ]),
+    );
+    mockedClaimGuestLocks.mockRejectedValue(
+      new ApiError('La sesión guest expiró', 'GUEST_SESSION_EXPIRED', 401),
+    );
+
+    authenticate();
+    await rerenderPage(view, params);
+
+    await waitFor(() => expect(mockedClaimGuestLocks).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByRole('status')).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'Tu selección expiró. Elige tus asientos de nuevo.',
+    );
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  it('claim 409 GUEST_SESSION_CLAIMED recupera el estado desde el backend', async () => {
+    const expires = futureExpiry(600_000);
+    const params = makeParams('trip-1');
+    const view = await renderGuestWithSeat(params);
+
+    mockedGetGuestLocks.mockResolvedValue(
+      buildGuestLocksResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: expires },
+      ]),
+    );
+    mockedClaimGuestLocks.mockRejectedValue(
+      new ApiError('La sesión guest ya fue reclamada', 'GUEST_SESSION_CLAIMED', 409),
+    );
+    mockedMySeatLocks.mockResolvedValue({
+      trip_id: 'trip-1',
+      lock_expires_at: expires,
+      seats: [{ id: 'seat-5', seat_code: 'A5', lock_expires_at: expires }],
+    });
+
+    authenticate();
+    await rerenderPage(view, params);
+
+    await waitFor(() => expect(mockedClaimGuestLocks).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockedMySeatLocks).toHaveBeenCalledWith('trip-1'),
+    );
+    expect(btn('Asiento A5, seleccionado')).toBeInTheDocument();
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      'Tus asientos siguen bloqueados con tu cuenta',
+    );
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+  });
+
+  it('claim 409 GUEST_CLAIM_CONFLICT no asume propiedad y refresca', async () => {
+    const params = makeParams('trip-1');
+    const view = await renderGuestWithSeat(params);
+
+    mockedGetGuestLocks.mockResolvedValue(
+      buildGuestLocksResult([
+        { id: 'seat-5', seat_code: 'A5', lock_expires_at: futureExpiry() },
+      ]),
+    );
+    mockedClaimGuestLocks.mockRejectedValue(
+      new ApiError(
+        'Los locks cambiaron durante el claim; no se adoptó ningún asiento',
+        'GUEST_CLAIM_CONFLICT',
+        409,
+      ),
+    );
+    const serverExpiry = futureExpiry(300_000);
+    mockedMySeatLocks.mockResolvedValue({
+      trip_id: 'trip-1',
+      lock_expires_at: serverExpiry,
+      seats: [
+        { id: 'seat-3', seat_code: 'A3', lock_expires_at: serverExpiry },
+      ],
+    });
+
+    authenticate();
+    await rerenderPage(view, params);
+
+    await waitFor(() => expect(mockedClaimGuestLocks).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(btn('Asiento A3, seleccionado')).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('status')).not.toHaveTextContent('A5');
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'Los locks cambiaron durante el claim; no se adoptó ningún asiento',
+    );
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+  });
+
+  it('usuario autenticado usa /lock y nunca crea sesión guest', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    expect(mockedLockSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+    expect(mockedLockGuestSeats).not.toHaveBeenCalled();
+    expect(btn('Asiento A5, seleccionado')).toBeInTheDocument();
+  });
+
+  it('guest libera con unlock-guest al re-elegir su asiento', async () => {
+    await renderGuestWithSeat();
+    await clickSeat('Asiento A5, seleccionado');
+
+    expect(mockedUnlockGuestSeats).toHaveBeenCalledTimes(1);
+    expect(mockedUnlockGuestSeats).toHaveBeenCalledWith('trip-1', ['seat-5']);
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
+    expect(btn('Asiento A5, disponible')).toBeInTheDocument();
+  });
+
+  it('guest que abandona la pantalla libera con unlock-guest, no con /unlock', async () => {
+    const view = await renderGuestWithSeat();
+
+    await act(async () => {
+      view.unmount();
+    });
+
+    expect(mockedUnlockGuestSeats).toHaveBeenCalledWith(
+      'trip-1',
+      undefined,
+      { keepalive: true },
+    );
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
+  });
+
+  it('customer que abandona la pantalla libera con /unlock, no con unlock-guest', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockSeats.mockImplementation(autoLock());
+
+    const view = await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    await act(async () => {
+      view.unmount();
+    });
+
+    expect(mockedUnlockSeats).toHaveBeenCalledWith(
+      'trip-1',
+      undefined,
+      { keepalive: true },
+    );
+    expect(mockedUnlockGuestSeats).not.toHaveBeenCalled();
+  });
+
+  it('guest Continuar conserva los locks, persiste la selección y navega', async () => {
+    const expires = futureExpiry(600_000);
+    becomeGuest();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLockGuestSeats.mockResolvedValue(
+      buildGuestLockResult(['seat-5'], expires),
+    );
+
+    const view = await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+    await clickSeat('Asiento A5, disponible');
+
+    await act(async () => {
+      fireEvent.click(btn('Continuar con la reserva'));
+    });
+
+    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva');
+    const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? 'null');
+    expect(stored).toMatchObject({
+      trip_id: 'trip-1',
+      seats: [{ id: 'seat-5', seat_code: 'A5' }],
+      lock_expires_at: expires,
+    });
+
+    // Al navegar con Continuar se conservan los locks: NO se liberan al salir.
+    await act(async () => {
+      view.unmount();
+    });
+    expect(mockedUnlockGuestSeats).not.toHaveBeenCalled();
+    expect(mockedUnlockSeats).not.toHaveBeenCalled();
+  });
+
+  it('no identifica al propietario de un asiento ajeno', async () => {
+    const seats = buildSeats(31);
+    seats[4] = { ...seats[4], status: 'locked' };
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        seats,
+        availability: {
+          total: 31,
+          available: 30,
+          reserved: 0,
+          locked: 1,
+          blocked: 0,
+          guide: 0,
+        },
+      }),
+    });
+
+    await renderPage();
+
+    expect(btn('Asiento A5, bloqueado')).toBeInTheDocument();
+    expect(screen.queryByText(/user-me/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/guest/i)).not.toBeInTheDocument();
   });
 });
