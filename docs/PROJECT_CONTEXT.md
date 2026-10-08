@@ -199,7 +199,7 @@ revisar siempre los flags del worker de `nomadas-tour` en Render.
 | Pagos/comprobantes + allocations | ⏳ PENDING (diseño aprobado) |
 | Panel admin marketplace | ⏳ PENDING |
 | Workers (T-1, comisiones) | ⏳ PENDING |
-| Migraciones marketplace (074–079) | 📝 ESCRITAS 2026-09-30 (en repo tour) · ⏳ NO APLICADAS |
+| Migraciones marketplace (074–080) | 📝 ESCRITAS 2026-09-30/10-06 (en repo tour) · ✅ APLICADAS (verificado en vivo 2026-10-06) |
 | Docs de diseño (6 auditorías) | ✅ Consolidadas en business-rules.md |
 
 ---

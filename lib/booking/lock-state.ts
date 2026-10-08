@@ -14,6 +14,12 @@ export interface LockState {
   seats: LockedSeatInfo[];
   lock_expires_at: string;
   passengers: PassengerDraft[];
+  /**
+   * Seteado por `POST /api/public/reservations` cuando la reserva ya existe
+   * (Fase B). Desde ese punto el checkout no vuelve a crearla.
+   * `customer_id`, `unit_price`, `status` y `source` viven solo en el backend.
+   */
+  reservation_id?: string;
 }
 
 const LOCK_STATE_KEY = 'mkt004.lock.v1';
@@ -39,7 +45,9 @@ function isValid(state: unknown): state is LockState {
       (seat) =>
         typeof seat?.id === 'string' && typeof seat?.seat_code === 'string',
     ) &&
-    Array.isArray(candidate.passengers)
+    Array.isArray(candidate.passengers) &&
+    (candidate.reservation_id === undefined ||
+      typeof candidate.reservation_id === 'string')
   );
 }
 

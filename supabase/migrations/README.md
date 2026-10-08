@@ -7,7 +7,7 @@ La BD es **compartida** con `nomadas-tour`, y por decisión de arquitectura
 `nomadas-tour`:
 
 - Tour: `001`–`073`
-- Marketplace: `074`–`079`
+- Marketplace: `074`–`082`
 
 📁 Ubicación real: `../../nomadas-tour/supabase/migrations/`
 
@@ -19,6 +19,9 @@ La BD es **compartida** con `nomadas-tour`, y por decisión de arquitectura
 | 077 | `077_platform_config_commissions_refunds.sql` | `platform_config`, `commissions`, `reservation_refunds`, `agencies.first_marketplace_trip_completed_at` |
 | 078 | `078_trips_installments.sql` | `trips.installment_allowed`, `trips.installment_amount_cents` |
 | 079 | `079_cancel_reservation_passenger.sql` | RPC `cancel_reservation_passenger` + `customer` en `audit_log` |
+| 080 | `080_marketplace_guest_lock_sessions.sql` | `guest_sessions`, `seats.guest_session_id`, invariante de owner único y aislamiento por viaje · aplicada en el proyecto compartido (verificado en vivo 2026-10-06) |
+| 081 | `081_create_marketplace_reservation.sql` | RPC `create_marketplace_reservation`: crea la reserva en `locked`, reserves seats, dispara `reservation.created` (source `marketplace`) |
+| 082 | `082_outbox_reservation_created_scope.sql` | Emisión `reservation.created` acotada: el trigger de INSERT no emite para reservas `marketplace` en `locked`, y un trigger de UPDATE emite solo en la promoción `locked → reserved` (los flujos Tour `internal/confirmed` no cambian) |
 
 Aplicación: en orden estricto, sobre el proyecto Supabase compartido.
 Cada archivo indica su dry-run (`BEGIN; … ROLLBACK;`) en el encabezado.

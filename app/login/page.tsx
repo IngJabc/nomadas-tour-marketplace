@@ -1,6 +1,57 @@
-import Link from "next/link";
+"use client";
 
-export default function LoginPage() {
+import { Suspense, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { LoaderCircle } from "lucide-react";
+import { authApi } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/errors/api-error";
+import { establishSupabaseSession } from "@/lib/auth/session";
+import { useOptionalAuthUser } from "@/components/auth/AuthProvider";
+
+/** Solo rutas internas: evita open redirect con el parámetro `redirect`. */
+function safeRedirect(value: string | null): string {
+  if (value && value.startsWith("/") && !value.startsWith("//")) return value;
+  return "/viajes";
+}
+
+function LoginForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const auth = useOptionalAuthUser();
+
+  const redirect = safeRedirect(searchParams.get("redirect"));
+  const registerHref = searchParams.get("redirect")
+    ? `/register?redirect=${encodeURIComponent(redirect)}`
+    : "/register";
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (busy) return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const session = await authApi.login(email.trim(), password);
+      // La sesión vive en Supabase (cookies): AuthProvider, el middleware y el
+      // header Authorization de lib/api.ts leen de ahí.
+      await establishSupabaseSession(session.token, session.refresh_token);
+      await auth?.refresh();
+      router.push(redirect);
+    } catch (e) {
+      setError(
+        getApiErrorMessage(e, "No pudimos iniciar sesión. Intenta de nuevo."),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <main className="flex flex-1 items-center justify-center px-8 pt-24 pb-16">
       <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-brand-surface p-8 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -11,7 +62,7 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form className="mt-8 space-y-5">
+        <form className="mt-8 space-y-5" onSubmit={submit} noValidate>
           <div>
             <label
               htmlFor="email"
@@ -22,7 +73,10 @@ export default function LoginPage() {
             <input
               id="email"
               type="email"
+              required
               autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]"
               placeholder="tu@correo.com"
             />
@@ -38,28 +92,63 @@ export default function LoginPage() {
             <input
               id="password"
               type="password"
+              required
               autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]"
               placeholder="••••••••"
             />
           </div>
 
+          {error && (
+            <p
+              role="alert"
+              className="rounded-[10px] bg-[#fef2f2] px-4 py-3 text-sm text-[#ef4444]"
+            >
+              {error}
+            </p>
+          )}
+
           <button
-            type="button"
-            disabled
-            className="w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-3 text-sm font-semibold text-white opacity-40 transition-colors"
+            type="submit"
+            disabled={busy}
+            className={`flex w-full items-center justify-center gap-2 rounded-[10px] px-5 py-3 text-sm font-semibold text-white transition-colors ${
+              busy
+                ? "cursor-not-allowed bg-brand-cyan opacity-40"
+                : "bg-brand-cyan hover:bg-brand-blue"
+            }`}
           >
-            Iniciar sesión
+            {busy && (
+              <LoaderCircle
+                size={16}
+                strokeWidth={1.75}
+                className="animate-spin"
+                aria-hidden="true"
+              />
+            )}
+            {busy ? "Iniciando sesión…" : "Iniciar sesión"}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-brand-muted">
           ¿Aún no tienes cuenta?{" "}
-          <Link href="/register" className="font-semibold text-brand-blue hover:underline">
+          <Link
+            href={registerHref}
+            className="font-semibold text-brand-blue hover:underline"
+          >
             Regístrate
           </Link>
         </p>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }

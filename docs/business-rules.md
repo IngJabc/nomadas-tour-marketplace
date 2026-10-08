@@ -145,6 +145,7 @@ cancelled`.
 ## Fuentes de verdad
 
 - Migraciones: `../nomadas-tour/supabase/migrations/` (historia única,
-  001–079; las marketplace 074–079 están escritas pero **no aplicadas**).
+  001–080; las marketplace 074–080 están escritas y **aplicadas** —
+  verificado en vivo 2026-10-06).
 - Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 - Spec: [`system-spec.md`](system-spec.md).

@@ -6,9 +6,14 @@ export interface LockedSeat {
   id: string;
   seat_code: string;
   status: 'locked';
-  locked_by: string;
+  locked_by: string | null;
+  guest_session_id?: string | null;
   lock_expires_at: string;
 }
+
+export type SeatLockOwner =
+  | { kind: 'customer'; userId: string }
+  | { kind: 'guest'; sessionId: string };
 
 export interface LockSeatsResult {
   locked: true;
@@ -20,6 +25,7 @@ export interface LockSeatsResult {
 
 export interface UnlockSeatsResult {
   unlocked: number;
+  remaining?: number;
 }
 
 export interface MySeatLocksResult {
@@ -34,11 +40,20 @@ interface SeatRow {
   seat_code: string;
   status: string;
   locked_by: string | null;
+  guest_session_id: string | null;
   lock_expires_at: string | null;
 }
 
 function seatCodes(rows: SeatRow[]): string {
   return rows.map((row) => row.seat_code).join(', ');
+}
+
+function isOwnedBy(seat: SeatRow, owner: SeatLockOwner): boolean {
+  if (seat.status !== 'locked') return false;
+  if (owner.kind === 'customer') {
+    return seat.locked_by === owner.userId && seat.guest_session_id == null;
+  }
+  return seat.guest_session_id === owner.sessionId && seat.locked_by == null;
 }
 
 /**
@@ -53,6 +68,35 @@ export class SeatLockService {
     tripId: string,
     seatIds: string[],
     userId: string,
+  ): Promise<LockSeatsResult> {
+    return this.lockSeatsForOwner(tripId, seatIds, {
+      kind: 'customer',
+      userId,
+    });
+  }
+
+  async lockGuestSeats(
+    tripId: string,
+    seatIds: string[],
+    sessionId: string,
+  ): Promise<LockSeatsResult> {
+    return this.lockSeatsForOwner(tripId, seatIds, {
+      kind: 'guest',
+      sessionId,
+    });
+  }
+
+  private applyOwnerMatch(query: any, owner: SeatLockOwner): any {
+    if (owner.kind === 'customer') {
+      return query.eq('locked_by', owner.userId);
+    }
+    return query.eq('guest_session_id', owner.sessionId);
+  }
+
+  private async lockSeatsForOwner(
+    tripId: string,
+    seatIds: string[],
+    owner: SeatLockOwner,
   ): Promise<LockSeatsResult> {
     const { data: trip, error: tripError } = await supabaseAdmin
       .from('trips')
@@ -84,6 +128,7 @@ export class SeatLockService {
         locked_by: null,
         locked_at: null,
         lock_expires_at: null,
+        guest_session_id: null,
       })
       .in('id', seatIds)
       .eq('status', 'locked')
@@ -96,7 +141,9 @@ export class SeatLockService {
 
     const { data: seatRows, error: seatsError } = await supabaseAdmin
       .from('seats')
-      .select('id, trip_id, seat_code, status, locked_by, lock_expires_at')
+      .select(
+        'id, trip_id, seat_code, status, locked_by, guest_session_id, lock_expires_at',
+      )
       .in('id', seatIds);
 
     if (seatsError) {
@@ -125,7 +172,7 @@ export class SeatLockService {
     }
 
     const heldByOther = seats.filter(
-      (seat) => seat.status === 'locked' && seat.locked_by !== userId,
+      (seat) => seat.status === 'locked' && !isOwnedBy(seat, owner),
     );
     if (heldByOther.length > 0) {
       throw new AppError(
@@ -135,22 +182,31 @@ export class SeatLockService {
       );
     }
 
-    const alreadyMine = seats.filter(
-      (seat) => seat.status === 'locked' && seat.locked_by === userId,
-    );
+    const alreadyMine = seats.filter((seat) => isOwnedBy(seat, owner));
     const freeIds = seats
       .filter((seat) => seat.status === 'available')
       .map((seat) => seat.id);
 
     if (freeIds.length > 0) {
+      const ownerUpdate =
+        owner.kind === 'customer'
+          ? {
+              status: 'locked',
+              locked_by: owner.userId,
+              locked_at: now,
+              lock_expires_at: expiresAt,
+              guest_session_id: null,
+            }
+          : {
+              status: 'locked',
+              locked_by: null,
+              locked_at: now,
+              lock_expires_at: expiresAt,
+              guest_session_id: owner.sessionId,
+            };
       const { data: updated, error: updateError } = await supabaseAdmin
         .from('seats')
-        .update({
-          status: 'locked',
-          locked_by: userId,
-          locked_at: now,
-          lock_expires_at: expiresAt,
-        })
+        .update(ownerUpdate)
         .in('id', freeIds)
         .eq('status', 'available')
         .select('id');
@@ -164,19 +220,19 @@ export class SeatLockService {
 
       if (missed.length > 0) {
         if (acquired.size > 0) {
-          await supabaseAdmin
+          const rollbackQuery = supabaseAdmin
             .from('seats')
             .update({
               status: 'available',
               locked_by: null,
               locked_at: null,
               lock_expires_at: null,
+              guest_session_id: null,
             })
             .in('id', Array.from(acquired))
             .eq('status', 'locked')
-            .eq('locked_by', userId)
-            .eq('lock_expires_at', expiresAt)
-            .select('id');
+            .eq('lock_expires_at', expiresAt);
+          await this.applyOwnerMatch(rollbackQuery, owner).select('id');
         }
         throw new AppError(
           'Algunos asientos ya no están disponibles. Actualizamos el mapa, vuelve a intentarlo.',
@@ -187,16 +243,18 @@ export class SeatLockService {
     }
 
     if (alreadyMine.length > 0) {
-      const { error: extendError } = await supabaseAdmin
+      const extendQuery = supabaseAdmin
         .from('seats')
         .update({ locked_at: now, lock_expires_at: expiresAt })
         .in(
           'id',
           alreadyMine.map((seat) => seat.id),
         )
-        .eq('status', 'locked')
-        .eq('locked_by', userId)
-        .select('id');
+        .eq('status', 'locked');
+      const { error: extendError } = await this.applyOwnerMatch(
+        extendQuery,
+        owner,
+      ).select('id');
 
       if (extendError) {
         throw new AppError(extendError.message, 500, 'SEAT_LOCK_ERROR');
@@ -214,7 +272,10 @@ export class SeatLockService {
         id,
         seat_code: byId.get(id)!.seat_code,
         status: 'locked',
-        locked_by: userId,
+        locked_by: owner.kind === 'customer' ? owner.userId : null,
+        ...(owner.kind === 'guest'
+          ? { guest_session_id: owner.sessionId }
+          : {}),
         lock_expires_at: expiresAt,
       })),
     };
@@ -225,6 +286,70 @@ export class SeatLockService {
     userId: string,
     seatIds?: string[],
   ): Promise<UnlockSeatsResult> {
+    return this.unlockSeatsForOwner(
+      tripId,
+      { kind: 'customer', userId },
+      seatIds,
+    );
+  }
+
+  async unlockGuestSeats(
+    tripId: string,
+    sessionId: string,
+    seatIds?: string[],
+  ): Promise<UnlockSeatsResult> {
+    return this.unlockSeatsForOwner(
+      tripId,
+      { kind: 'guest', sessionId },
+      seatIds,
+    );
+  }
+
+  private async assertGuestUnlockTargets(
+    tripId: string,
+    seatIds: string[],
+    sessionId: string,
+  ): Promise<void> {
+    const { data: seatRows, error } = await supabaseAdmin
+      .from('seats')
+      .select('id, trip_id, seat_code, status, locked_by, guest_session_id')
+      .in('id', seatIds);
+
+    if (error) {
+      throw new AppError(error.message, 500, 'SEATS_QUERY_ERROR');
+    }
+
+    const seats = (seatRows ?? []) as SeatRow[];
+    if (seats.length !== seatIds.length) {
+      throw new AppError('Algunos asientos no existen', 404, 'SEAT_NOT_FOUND');
+    }
+    if (seats.some((seat) => seat.trip_id !== tripId)) {
+      throw new ValidationError('Algunos asientos no pertenecen a este viaje');
+    }
+
+    const foreign = seats.filter(
+      (seat) =>
+        seat.status === 'locked' &&
+        (seat.guest_session_id !== sessionId || seat.locked_by != null),
+    );
+    if (foreign.length > 0) {
+      throw new AppError(
+        `Asientos bloqueados por otro usuario: ${seatCodes(foreign)}`,
+        409,
+        'SEAT_LOCKED',
+      );
+    }
+  }
+
+  private async unlockSeatsForOwner(
+    tripId: string,
+    owner: SeatLockOwner,
+    seatIds?: string[],
+  ): Promise<UnlockSeatsResult> {
+    if (owner.kind === 'guest' && seatIds && seatIds.length > 0) {
+      await this.assertGuestUnlockTargets(tripId, seatIds, owner.sessionId);
+    }
+
     let query = supabaseAdmin
       .from('seats')
       .update({
@@ -232,10 +357,11 @@ export class SeatLockService {
         locked_by: null,
         locked_at: null,
         lock_expires_at: null,
+        guest_session_id: null,
       })
       .eq('trip_id', tripId)
-      .eq('status', 'locked')
-      .eq('locked_by', userId);
+      .eq('status', 'locked');
+    query = this.applyOwnerMatch(query, owner);
 
     if (seatIds && seatIds.length > 0) {
       query = query.in('id', seatIds);
@@ -246,17 +372,40 @@ export class SeatLockService {
       throw new AppError(error.message, 500, 'SEAT_UNLOCK_ERROR');
     }
 
-    return { unlocked: (data ?? []).length };
+    if (owner.kind === 'customer') {
+      return { unlocked: (data ?? []).length };
+    }
+
+    const remaining = await this.getLocksForOwner(tripId, owner);
+    return { unlocked: (data ?? []).length, remaining: remaining.seats.length };
   }
 
   async getMyLocks(tripId: string, userId: string): Promise<MySeatLocksResult> {
-    const { data, error } = await supabaseAdmin
+    return this.getLocksForOwner(tripId, { kind: 'customer', userId });
+  }
+
+  async getGuestLocks(
+    tripId: string,
+    sessionId: string,
+  ): Promise<MySeatLocksResult> {
+    return this.getLocksForOwner(tripId, { kind: 'guest', sessionId });
+  }
+
+  private async getLocksForOwner(
+    tripId: string,
+    owner: SeatLockOwner,
+  ): Promise<MySeatLocksResult> {
+    let query = supabaseAdmin
       .from('seats')
       .select('id, seat_code, lock_expires_at')
       .eq('trip_id', tripId)
-      .eq('status', 'locked')
-      .eq('locked_by', userId)
-      .gt('lock_expires_at', new Date().toISOString());
+      .eq('status', 'locked');
+    query = this.applyOwnerMatch(query, owner);
+
+    const { data, error } = await query.gt(
+      'lock_expires_at',
+      new Date().toISOString(),
+    );
 
     if (error) {
       throw new AppError(error.message, 500, 'SEATS_QUERY_ERROR');
@@ -267,7 +416,11 @@ export class SeatLockService {
       seat_code: string;
       lock_expires_at: string | null;
     }>)
-      .filter((seat) => !!seat.lock_expires_at)
+      .filter(
+        (seat) =>
+          !!seat.lock_expires_at &&
+          Date.parse(seat.lock_expires_at) > Date.now(),
+      )
       .map((seat) => ({
         id: seat.id,
         seat_code: seat.seat_code,

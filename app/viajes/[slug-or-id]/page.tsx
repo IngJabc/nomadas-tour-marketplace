@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useCallback, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -15,19 +15,26 @@ import toast from "react-hot-toast";
 import {
   publicApi,
   seatApi,
+  type ClaimGuestLocksResult,
   type PublicTripDetail,
   type PublicTripOffer,
 } from "@/lib/api";
 import { ApiError, getApiErrorMessage } from "@/lib/errors/api-error";
 import { formatDateTimeShort, formatTime12h } from "@/lib/timezone";
 import { formatSeatPrice } from "@/lib/price";
-import { writeLockState } from "@/lib/booking/lock-state";
+import { readLockState, writeLockState } from "@/lib/booking/lock-state";
+import {
+  claimPendingGuestLocks,
+  type GuestClaimResult,
+} from "@/lib/booking/guest-claim";
 import { applySeatRow, removeSeatRow } from "@/lib/booking/seat-map";
 import { useSeatLocking } from "@/lib/booking/useSeatLocking";
 import type {
   RealtimeSeatRow,
   SeatEventType,
 } from "@/lib/realtime/subscriptions";
+import { useOptionalAuthUser } from "@/components/auth/AuthProvider";
+import { LockCountdown } from "@/components/booking/LockCountdown";
 import { BusLayout } from "@/components/bus/BusLayout";
 
 interface TripDetailPageProps {
@@ -38,6 +45,92 @@ function vehicleLabel(vehicleType: string): string {
   if (vehicleType === "bus") return "Autobús";
   if (vehicleType === "kia") return "Kia";
   return vehicleType;
+}
+
+/**
+ * Asiento bloqueado por el cliente actual. El lock ocurre en el click, así que
+ * el estado local conserva los valores reales devueltos por el servidor
+ * (`lock_expires_at`, `locked_by`) y no solo el código del asiento.
+ *
+ * `owner` refleja QUÉ endpoint creó el lock (guest → cookie HttpOnly,
+ * customer → `locked_by`): decide con qué API se libera. Es un reflejo de lo
+ * que el servidor ya confirmó, nunca una autoridad paralela.
+ */
+interface HeldSeat {
+  id: string;
+  seat_code: string;
+  status: "locked";
+  locked_by: string | null;
+  lock_expires_at: string;
+  owner: "guest" | "customer";
+}
+
+function parseExpiry(expiresAt: string): number | null {
+  const timestamp = Date.parse(expiresAt);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+/** El countdown siempre deriva de la expiración MÁS PRÓXIMA entre los locks. */
+function earliestExpiry(seats: HeldSeat[]): string | null {
+  let earliest: number | null = null;
+  for (const seat of seats) {
+    const expires = parseExpiry(seat.lock_expires_at);
+    if (expires === null) continue;
+    if (earliest === null || expires < earliest) earliest = expires;
+  }
+  return earliest === null ? null : new Date(earliest).toISOString();
+}
+
+/**
+ * Recupera los locks vigentes que el usuario ya había confirmado (se escriben
+ * al pulsar "Continuar"). Solo se aceptan asientos que el servidor sigue
+ * marcando como `locked`, así un lock vencido o liberado no reaparece.
+ * Aplica al customer autenticado; el guest se restaura desde la cookie vía
+ * `GET /guest-locks` (la autoridad es el servidor, no el storage local).
+ */
+function restoreHeldSeats(trip: PublicTripDetail): HeldSeat[] {
+  const stored = readLockState();
+  if (!stored || stored.trip_id !== trip.id) return [];
+  const storedExpiry = parseExpiry(stored.lock_expires_at);
+  if (storedExpiry === null || storedExpiry <= Date.now()) return [];
+
+  const byId = new Map(trip.seats.map((seat) => [seat.id, seat]));
+  return stored.seats.flatMap(({ id }) => {
+    const seat = byId.get(id);
+    if (!seat || seat.status !== "locked") return [];
+    return [
+      {
+        id: seat.id,
+        seat_code: seat.seat_code,
+        status: "locked" as const,
+        locked_by: null,
+        lock_expires_at: stored.lock_expires_at,
+        owner: "customer" as const,
+      },
+    ];
+  });
+}
+
+/** Locks guest devueltos por el servidor → estado local (solo si existen). */
+function toHeldSeats(
+  trip: PublicTripDetail,
+  seats: Array<{ id: string; seat_code: string; lock_expires_at: string }>,
+): HeldSeat[] {
+  const byId = new Map(trip.seats.map((seat) => [seat.id, seat]));
+  return seats.flatMap((item) => {
+    const seat = byId.get(item.id);
+    if (!seat || seat.status !== "locked") return [];
+    return [
+      {
+        id: seat.id,
+        seat_code: seat.seat_code,
+        status: "locked" as const,
+        locked_by: null,
+        lock_expires_at: item.lock_expires_at,
+        owner: "guest" as const,
+      },
+    ];
+  });
 }
 
 function InfoItem({ label, value }: { label: string; value: string }) {
@@ -124,13 +217,48 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
   const { "slug-or-id": slug } = use(params);
   const router = useRouter();
 
+  const auth = useOptionalAuthUser();
+  const userId = auth?.user?.id ?? null;
+
   const [trip, setTrip] = useState<PublicTripDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<string | null>(null);
-  const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
-  const [locking, setLocking] = useState(false);
+  // Asientos que YO tengo bloqueados ahora mismo (lock confirmado por el
+  // servidor). De aquí se derivan la selección visual, el countdown y los ids
+  // que se envían al wizard.
+  const [heldSeats, setHeldSeats] = useState<HeldSeat[]>([]);
+  // Operaciones de lock/unlock en curso, por asiento: permite varios clicks
+  // simultáneos sin bloquear toda la selección.
+  const [pendingCount, setPendingCount] = useState(0);
+
+  const heldRef = useRef<HeldSeat[]>([]);
+  heldRef.current = heldSeats;
+  const pendingRef = useRef<Set<string>>(new Set());
+  const tripId = trip?.id ?? null;
+  const tripIdRef = useRef<string | null>(null);
+  tripIdRef.current = tripId;
+  const userIdRef = useRef<string | null>(null);
+  userIdRef.current = userId;
+  // `Continuar` conserva los locks al navegar; el resto de desmontajes los libera.
+  const retainLocksRef = useRef(false);
+  const unlockSentRef = useRef(false);
+  const restoreDoneRef = useRef(false);
+  const restoredRef = useRef(false);
+  const claimStartedRef = useRef(false);
+  const tripEndedHandledRef = useRef(false);
+
+  const selectedSeats = useMemo(
+    () => heldSeats.map((seat) => seat.seat_code),
+    [heldSeats],
+  );
+  const mySeatIds = useMemo(
+    () => heldSeats.map((seat) => seat.id),
+    [heldSeats],
+  );
+  const lockExpiresAt = useMemo(() => earliestExpiry(heldSeats), [heldSeats]);
+  const locking = pendingCount > 0;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -140,7 +268,10 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
       const response = await publicApi.tripDetail(slug);
       setTrip(response.trip);
       setSelectedOffer(response.trip.offers[0]?.agency_id ?? null);
-      setSelectedSeats([]);
+      // Recargas posteriores (viaje cancelado/completado) nunca restauran:
+      // la primera restauración la resuelve el efecto según la identidad.
+      if (restoreDoneRef.current) setHeldSeats([]);
+      restoreDoneRef.current = true;
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) {
         setNotFound(true);
@@ -161,40 +292,258 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
     load();
   }, [load]);
 
-  const toggleSeat = (seatCode: string) => {
-    if (!trip) return;
-    const seat = trip.seats.find((s) => s.seat_code === seatCode);
-    if (!seat || seat.status !== "available") return;
-    setSelectedSeats((prev) =>
-      prev.includes(seatCode)
-        ? prev.filter((code) => code !== seatCode)
-        : [...prev, seatCode],
-    );
-  };
-
   const refreshSeats = useCallback(async () => {
     const refreshed = await publicApi.tripDetail(slug).catch(() => null);
     if (!refreshed) return;
+    // Solo refresca el mapa: la pertenencia de un lock propio nunca se deduce
+    // de la respuesta pública (no incluye `locked_by`). Las pérdidas reales
+    // llegan por realtime vía `onSeatLost`.
     setTrip(refreshed.trip);
-    setSelectedSeats((prev) =>
-      prev.filter((code) =>
-        refreshed.trip.seats.some(
-          (seat) => seat.seat_code === code && seat.status === "available",
-        ),
-      ),
-    );
   }, [slug]);
 
-  // ─── Realtime (estilo nomadas-tour) ─────────────────────────────────
+  // ─── Restauración de locks al cargar ────────────────────────────────
+  // Customer: valida su selección guardada contra el servidor (flujo MKT-004).
+  // Guest: la fuente de verdad es la cookie HttpOnly vía GET /guest-locks;
+  // el storage local nunca decide la propiedad de un lock guest.
+  useEffect(() => {
+    if (!trip || restoredRef.current) return;
+    if (auth?.loading) return;
+    restoredRef.current = true;
 
-  const selectedSeatsRef = useRef<string[]>([]);
-  selectedSeatsRef.current = selectedSeats;
-  const lockingRef = useRef(false);
-  lockingRef.current = locking;
-  // Asientos que YA bloqueé con éxito en esta sesión: su evento realtime
-  // propio no debe deselectarlos mientras navegamos al wizard.
-  const lockedAwayRef = useRef<Set<string>>(new Set());
-  const tripEndedHandledRef = useRef(false);
+    if (userId) {
+      setHeldSeats(restoreHeldSeats(trip));
+      return;
+    }
+
+    const guestTrip = trip;
+    setHeldSeats([]);
+    void seatApi
+      .getGuestLocks(guestTrip.id)
+      .then((locks) => {
+        const restored = toHeldSeats(guestTrip, locks.seats);
+        if (restored.length === 0) return;
+        setHeldSeats((prev) => {
+          const restoredIds = new Set(restored.map((seat) => seat.id));
+          return [
+            ...restored,
+            ...prev.filter((item) => !restoredIds.has(item.id)),
+          ];
+        });
+      })
+      .catch(() => {
+        // Sin cookie o sesión guest resuelta: no hay nada que restaurar.
+      });
+  }, [trip, auth, userId]);
+
+  // ─── Claim automático guest → customer ──────────────────────────────
+
+  /** ownership real desde el servidor cuando el claim no pudo transferir. */
+  const syncCustomerLocks = useCallback(async () => {
+    const tripId = tripIdRef.current;
+    if (!tripId) return;
+    const locks = await seatApi.mySeatLocks(tripId).catch(() => null);
+    if (!locks) return;
+    setHeldSeats(
+      locks.seats.map((seat) => ({
+        id: seat.id,
+        seat_code: seat.seat_code,
+        status: "locked" as const,
+        locked_by: userIdRef.current,
+        lock_expires_at: seat.lock_expires_at,
+        owner: "customer" as const,
+      })),
+    );
+    void refreshSeats();
+  }, [refreshSeats]);
+
+  /**
+   * Claim exitoso: el backend devuelve los MISMOS seats con la misma
+   * expiración (nunca se reinicia el TTL), solo cambia el ownership.
+   */
+  const adoptClaimedSeats = useCallback((claim: ClaimGuestLocksResult) => {
+    const claimed: HeldSeat[] = claim.seats.map((seat) => ({
+      id: seat.id,
+      seat_code: seat.seat_code,
+      status: "locked" as const,
+      locked_by: userIdRef.current,
+      lock_expires_at: seat.lock_expires_at,
+      owner: "customer" as const,
+    }));
+    setHeldSeats((prev) => {
+      const claimedIds = new Set(claimed.map((seat) => seat.id));
+      return [...prev.filter((item) => !claimedIds.has(item.id)), ...claimed];
+    });
+  }, []);
+
+  const handleClaimResult = useCallback(
+    async (result: GuestClaimResult) => {
+      if (result.outcome === "no-pending") return;
+
+      switch (result.outcome) {
+        case "claimed":
+          if (result.claim) adoptClaimedSeats(result.claim);
+          toast.success("Tus asientos siguen bloqueados con tu cuenta");
+          break;
+        case "already-claimed":
+          // Otra pestaña ya lo reclamó: el ownership real manda.
+          await syncCustomerLocks();
+          toast.success("Tus asientos siguen bloqueados con tu cuenta");
+          break;
+        case "expired":
+          setHeldSeats((prev) =>
+            prev.filter((seat) => seat.owner !== "guest"),
+          );
+          toast.error("Tu selección expiró. Elige tus asientos de nuevo.");
+          void refreshSeats();
+          break;
+        case "empty":
+          await syncCustomerLocks();
+          toast.error(
+            "Tu selección ya no está disponible. Elige tus asientos de nuevo.",
+          );
+          break;
+        case "conflict":
+          await syncCustomerLocks();
+          toast.error(
+            getApiErrorMessage(
+              result.error,
+              "No pudimos conservar tus asientos. Revisa tu selección.",
+            ),
+          );
+          break;
+        default:
+          toast.error(
+            getApiErrorMessage(
+              result.error,
+              "No pudimos reclamar tus asientos. Intenta de nuevo.",
+            ),
+          );
+      }
+    },
+    [adoptClaimedSeats, refreshSeats, syncCustomerLocks],
+  );
+
+  // Solo UN claim por transición guest → authenticated, nunca por render.
+  useEffect(() => {
+    if (!tripId || !userId || auth?.loading) return;
+    if (claimStartedRef.current) return;
+    claimStartedRef.current = true;
+    void claimPendingGuestLocks(tripId).then(handleClaimResult);
+  }, [auth, handleClaimResult, tripId, userId]);
+
+  const beginPending = useCallback((seatId: string) => {
+    pendingRef.current.add(seatId);
+    setPendingCount(pendingRef.current.size);
+  }, []);
+
+  const endPending = useCallback((seatId: string) => {
+    pendingRef.current.delete(seatId);
+    setPendingCount(pendingRef.current.size);
+  }, []);
+
+  const handleLockError = useCallback(
+    (e: unknown, options: { guest?: boolean; seatId?: string } = {}) => {
+      const { guest = false, seatId } = options;
+      if (e instanceof ApiError && e.status === 401) {
+        if (guest) {
+          // La sesión guest venció o ya no existe: el servidor no la reconoce,
+          // así que el asiento deja de ser nuestro de inmediato.
+          if (seatId) {
+            setHeldSeats((prev) =>
+              prev.filter((item) => item.id !== seatId),
+            );
+          }
+          toast.error("Tu selección expiró. Elige tus asientos de nuevo.");
+          void refreshSeats();
+          return;
+        }
+        toast.error("Inicia sesión para continuar con tu reserva");
+        retainLocksRef.current = false;
+        router.push(`/login?redirect=${encodeURIComponent(`/viajes/${slug}`)}`);
+      } else if (e instanceof ApiError && e.status === 409) {
+        toast.error(
+          getApiErrorMessage(e, "Ese asiento ya no está disponible."),
+        );
+        void refreshSeats();
+      } else {
+        toast.error(
+          getApiErrorMessage(
+            e,
+            "No pudimos actualizar el asiento. Intenta de nuevo.",
+          ),
+        );
+      }
+    },
+    [refreshSeats, router, slug],
+  );
+
+  /**
+   * Click en un asiento → lock/unlock INMEDIATO (patrón de `nomadas-tour`).
+   * El usuario permanece en el mapa y puede acumular varios locks.
+   * Customer → `/lock` y `/unlock`; guest → `/lock-guest` y `/unlock-guest`
+   * con la cookie HttpOnly. Nunca se usan los dos sistemas a la vez.
+   */
+  const toggleSeat = useCallback(
+    async (seatCode: string) => {
+      if (!trip) return;
+      const seat = trip.seats.find((item) => item.seat_code === seatCode);
+      if (!seat) return;
+      if (pendingRef.current.has(seat.id)) return;
+
+      const held = heldRef.current.find((item) => item.id === seat.id);
+      const mine = Boolean(held);
+
+      if (!mine && seat.status !== "available") return;
+
+      const asGuest = held
+        ? held.owner === "guest"
+        : userIdRef.current === null;
+
+      beginPending(seat.id);
+      try {
+        if (mine) {
+          if (asGuest) {
+            await seatApi.unlockGuestSeats(trip.id, [seat.id]);
+          } else {
+            await seatApi.unlockSeats(trip.id, [seat.id]);
+          }
+          setHeldSeats((prev) => prev.filter((item) => item.id !== seat.id));
+          setTrip((prev) =>
+            prev ? applySeatRow(prev, { ...seat, status: "available" }) : prev,
+          );
+          toast.success(`Asiento ${seatCode} liberado`);
+        } else {
+          const result = asGuest
+            ? await seatApi.lockGuestSeats(trip.id, [seat.id])
+            : await seatApi.lockSeats(trip.id, [seat.id]);
+          unlockSentRef.current = false;
+          setHeldSeats((prev) => [
+            ...prev.filter((item) => item.id !== seat.id),
+            {
+              id: seat.id,
+              seat_code: seat.seat_code,
+              status: "locked",
+              locked_by: asGuest
+                ? null
+                : (result.seats[0]?.locked_by ?? userIdRef.current ?? null),
+              lock_expires_at: result.lock_expires_at,
+              owner: asGuest ? "guest" : "customer",
+            },
+          ]);
+          setTrip((prev) =>
+            prev ? applySeatRow(prev, { ...seat, status: "locked" }) : prev,
+          );
+        }
+      } catch (e) {
+        handleLockError(e, { guest: asGuest, seatId: seat.id });
+      } finally {
+        endPending(seat.id);
+      }
+    },
+    [beginPending, endPending, handleLockError, trip],
+  );
+
+  // ─── Realtime (estilo nomadas-tour) ─────────────────────────────────
 
   const handleSeatEvent = useCallback(
     (seat: RealtimeSeatRow, eventType: SeatEventType) => {
@@ -204,21 +553,16 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
           ? removeSeatRow(prev, seat.id)
           : applySeatRow(prev, seat);
       });
-
-      const wasSelected = selectedSeatsRef.current.includes(seat.seat_code);
-      if (!wasSelected) return;
-      if (lockingRef.current || lockedAwayRef.current.has(seat.seat_code)) {
-        return;
-      }
-      if (eventType === "DELETE" || seat.status !== "available") {
-        setSelectedSeats((prev) =>
-          prev.filter((code) => code !== seat.seat_code),
-        );
-        toast.error(`El asiento ${seat.seat_code} ya no está disponible`);
-      }
     },
     [],
   );
+
+  // Un lock propio dejó de ser mío: venció, lo liberé o alguien lo tomó.
+  const handleSeatLost = useCallback((seat: RealtimeSeatRow) => {
+    if (pendingRef.current.has(seat.id)) return;
+    setHeldSeats((prev) => prev.filter((item) => item.id !== seat.id));
+    toast.error(`El asiento ${seat.seat_code} ya no está disponible`);
+  }, []);
 
   const handleTripCancelled = useCallback(() => {
     if (tripEndedHandledRef.current) return;
@@ -236,66 +580,71 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
 
   useSeatLocking({
     tripId: trip?.id ?? null,
+    mySeatIds,
+    userId,
     onSeatEvent: handleSeatEvent,
+    onSeatLost: handleSeatLost,
     onTripCancelled: handleTripCancelled,
     onTripCompleted: handleTripCompleted,
     onRefresh: refreshSeats,
   });
 
-  const continueWithSelection = useCallback(async () => {
-    if (!trip || locking || selectedSeats.length === 0) return;
+  // El countdown llegó a cero: los locks vencidos dejan de ser seleccionables.
+  // La liberación definitiva de la BD la hace el backend (cleanup cada 60s).
+  const handleLockExpired = useCallback(() => {
+    setHeldSeats((prev) =>
+      prev.filter((seat) => (parseExpiry(seat.lock_expires_at) ?? 0) > Date.now()),
+    );
+    void refreshSeats();
+  }, [refreshSeats]);
 
-    const seatIds = selectedSeats
-      .map((code) => trip.seats.find((seat) => seat.seat_code === code)?.id)
-      .filter((id): id is string => Boolean(id));
-    if (seatIds.length === 0) return;
-
-    setLocking(true);
-    try {
-      const result = await seatApi.lockSeats(trip.id, seatIds);
-      selectedSeats.forEach((code) => lockedAwayRef.current.add(code));
-      writeLockState({
-        trip_id: trip.id,
-        agency_id: selectedOffer,
-        seats: result.seats,
-        lock_expires_at: result.lock_expires_at,
-        passengers: [],
-      });
-      toast.success("Asientos bloqueados por 15 minutos.");
-      router.push("/reservas/nueva");
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        toast.error("Inicia sesión para continuar con tu reserva");
-        router.push(`/login?redirect=${encodeURIComponent(`/viajes/${slug}`)}`);
-      } else if (e instanceof ApiError && e.status === 409) {
-        toast.error(
-          getApiErrorMessage(
-            e,
-            "Alguien tomó tus asientos. Actualizamos el mapa.",
-          ),
-        );
-        await seatApi.unlockSeats(trip.id).catch(() => undefined);
-        await refreshSeats();
-      } else {
-        toast.error(
-          getApiErrorMessage(
-            e,
-            "No pudimos bloquear tus asientos. Intenta de nuevo.",
-          ),
-        );
-      }
-    } finally {
-      setLocking(false);
+  // Al abandonar la pantalla sin haber ido al wizard, se liberan los locks
+  // propios para no dejar asientos huérfanos durante el TTL.
+  // Cada lock se libera con EL MISMO sistema que lo creó: guest → cookie
+  // HttpOnly (`/unlock-guest`), customer → `/unlock`. Nunca los dos sin más.
+  const sendUnlockKeepalive = useCallback(() => {
+    if (retainLocksRef.current || unlockSentRef.current) return;
+    const activeTripId = tripIdRef.current;
+    const held = heldRef.current;
+    if (!activeTripId || held.length === 0) return;
+    unlockSentRef.current = true;
+    if (held.some((seat) => seat.owner === "guest")) {
+      void Promise.resolve(
+        seatApi.unlockGuestSeats(activeTripId, undefined, { keepalive: true }),
+      ).catch(() => undefined);
     }
-  }, [
-    locking,
-    refreshSeats,
-    router,
-    selectedOffer,
-    selectedSeats,
-    slug,
-    trip,
-  ]);
+    if (held.some((seat) => seat.owner === "customer")) {
+      void Promise.resolve(
+        seatApi.unlockSeats(activeTripId, undefined, { keepalive: true }),
+      ).catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("beforeunload", sendUnlockKeepalive);
+    return () => {
+      window.removeEventListener("beforeunload", sendUnlockKeepalive);
+      sendUnlockKeepalive();
+    };
+  }, [sendUnlockKeepalive]);
+
+  /**
+   * `Continuar` ya NO bloquea: los locks se hicieron en cada click. Su trabajo
+   * es validar la selección, persistir el estado del booking y navegar.
+   */
+  const continueWithSelection = useCallback(() => {
+    if (!trip || locking || heldSeats.length === 0 || !lockExpiresAt) return;
+
+    retainLocksRef.current = true;
+    writeLockState({
+      trip_id: trip.id,
+      agency_id: selectedOffer,
+      seats: heldSeats.map(({ id, seat_code }) => ({ id, seat_code })),
+      lock_expires_at: lockExpiresAt,
+      passengers: [],
+    });
+    router.push("/reservas/nueva");
+  }, [heldSeats, lockExpiresAt, locking, router, selectedOffer, trip]);
 
   if (loading) {
     return (
@@ -532,9 +881,18 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
           </div>
         )}
 
+        {selectedSeats.length > 0 && lockExpiresAt && (
+          <div className="mt-4 flex justify-center">
+            <LockCountdown
+              expiresAt={lockExpiresAt}
+              onExpired={handleLockExpired}
+            />
+          </div>
+        )}
+
         <p className="mt-4 text-center text-xs text-brand-muted">
-          La selección se confirma en el siguiente paso, junto con tus datos de
-          contacto.
+          Cada asiento que eliges queda bloqueado al instante durante 15
+          minutos. Tócalo de nuevo para liberarlo.
         </p>
       </section>
 
@@ -569,7 +927,9 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
         <p className="text-xs text-brand-muted">
           {soldOut
             ? "Revisa el catálogo para encontrar otro viaje."
-            : "Al continuar bloqueamos tus asientos por 15 minutos mientras completas tus datos."}
+            : userId
+              ? "Tus asientos ya están bloqueados por 15 minutos. Continúa para completar tus datos."
+              : "Tus asientos quedan bloqueados al instante. Al continuar te pediremos iniciar sesión para conservarlos."}
         </p>
       </div>
     </main>

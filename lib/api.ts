@@ -38,7 +38,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     // Ignore if running server-side without window
   }
 
-  const res = await fetch(url, { ...fetchOptions, headers });
+  const res = await fetch(url, { credentials: 'include', ...fetchOptions, headers });
 
   if (res.status === 204) {
     return undefined as T;
@@ -69,7 +69,11 @@ export const authApi = {
       body: JSON.stringify({ email, password }),
     }),
   register: (payload: { email: string; password: string }) =>
-    request<{ token: string; refresh_token: string; user: AppUser }>('/auth/register', {
+    request<{
+      token: string | null;
+      refresh_token: string | null;
+      user: AppUser;
+    }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -147,6 +151,9 @@ export interface PublicTripDetail {
 export interface LockedSeatInfo {
   id: string;
   seat_code: string;
+  status?: 'locked';
+  locked_by?: string | null;
+  lock_expires_at?: string | null;
 }
 
 export interface LockSeatsResult {
@@ -163,13 +170,44 @@ export interface MySeatLocksResult {
   seats: Array<{ id: string; seat_code: string; lock_expires_at: string }>;
 }
 
+// Guest session metadata devuelta por los endpoints guest. Informativa: la
+// autoridad sigue siendo el backend; el navegador solo recibe la cookie
+// HttpOnly (Path=/api/public/seats) que nunca es legible desde JavaScript.
+export interface GuestSessionInfo {
+  trip_id: string;
+  status: string;
+  expires_at: string;
+}
+
+export interface GuestLockSeatsResult extends LockSeatsResult {
+  guest_session: GuestSessionInfo;
+}
+
+export interface GuestLocksResult extends MySeatLocksResult {
+  guest_session: GuestSessionInfo;
+}
+
+export interface ClaimGuestSeat {
+  id: string;
+  seat_code: string;
+  lock_expires_at: string;
+}
+
+export interface ClaimGuestLocksResult {
+  claimed: true;
+  trip_id: string;
+  seats: ClaimGuestSeat[];
+  lock_expires_at: string | null;
+  guest_session: GuestSessionInfo;
+}
+
 export const seatApi = {
   lockSeats: (tripId: string, seatIds: string[]) =>
     request<LockSeatsResult>('/public/seats/lock', {
       method: 'POST',
       body: JSON.stringify({ trip_id: tripId, seat_ids: seatIds }),
     }),
-  unlockSeats: (tripId: string, seatIds?: string[]) =>
+  unlockSeats: (tripId: string, seatIds?: string[], init?: RequestInit) =>
     request<{ unlocked: number }>('/public/seats/unlock', {
       method: 'POST',
       body: JSON.stringify(
@@ -177,9 +215,80 @@ export const seatApi = {
           ? { trip_id: tripId, seat_ids: seatIds }
           : { trip_id: tripId },
       ),
+      ...init,
     }),
   mySeatLocks: (tripId: string) =>
     request<MySeatLocksResult>('/public/seats/locks', {
       params: { trip_id: tripId },
+    }),
+  // ── Guest lock ownership (Fase 4) ────────────────────────────────────
+  // El navegador solo maneja la cookie HttpOnly: nunca enviamos token,
+  // hash, guest_session_id, customer_id ni TTL como autoridad.
+  lockGuestSeats: (tripId: string, seatIds: string[]) =>
+    request<GuestLockSeatsResult>('/public/seats/lock-guest', {
+      method: 'POST',
+      body: JSON.stringify({ trip_id: tripId, seat_ids: seatIds }),
+    }),
+  getGuestLocks: (tripId: string) =>
+    request<GuestLocksResult>('/public/seats/guest-locks', {
+      params: { trip_id: tripId },
+    }),
+  unlockGuestSeats: (tripId: string, seatIds?: string[], init?: RequestInit) =>
+    request<{ unlocked: number; remaining?: number }>(
+      '/public/seats/unlock-guest',
+      {
+        method: 'POST',
+        body: JSON.stringify(
+          seatIds && seatIds.length > 0
+            ? { trip_id: tripId, seat_ids: seatIds }
+            : { trip_id: tripId },
+        ),
+        ...init,
+      },
+    ),
+  claimGuestLocks: (tripId: string) =>
+    request<ClaimGuestLocksResult>('/public/seats/claim-guest', {
+      method: 'POST',
+      body: JSON.stringify({ trip_id: tripId }),
+    }),
+};
+
+// ── Reserva marketplace (MKT-004 Fase B) ───────────────────────────────────
+// El cliente aporta SOLO trip, oferta de agencia seleccionada, asientos y
+// pasajeros. `customer_id`, `status`, `source` y `unit_price` los decide el
+// backend; `unit_price` es snapshot de `trips.seat_price` en el RPC.
+export interface CreateReservationPassenger {
+  seat_id: string;
+  first_name: string;
+  last_name: string;
+  document: string;
+  phone: string;
+}
+
+export interface CreateReservationPayload {
+  trip_id: string;
+  agency_id: string;
+  seat_ids: string[];
+  passengers: CreateReservationPassenger[];
+}
+
+export interface CreateReservationResult {
+  reservation_id: string;
+  trip_id: string;
+  agency_id: string;
+  customer_id: string;
+  status: string;
+  source: string;
+  unit_price: number;
+  passenger_count: number;
+  seat_ids: string[];
+  idempotent: boolean;
+}
+
+export const reservationApi = {
+  create: (payload: CreateReservationPayload) =>
+    request<CreateReservationResult>('/public/reservations', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 };

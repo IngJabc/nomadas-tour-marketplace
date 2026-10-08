@@ -77,10 +77,10 @@ Todo lo detallado en [`business-rules.md`](business-rules.md):
 
 ---
 
-## 5. IMPLEMENTADO — schema marketplace (escrito 2026-09-30, NO aplicado)
+## 5. IMPLEMENTADO — schema marketplace (escrito 2026-09-30, aplicado)
 
 Los SQL viven en `../nomadas-tour/supabase/migrations/` (historia única).
-**Ninguno se ha aplicado todavía a la BD compartida.**
+**074–080 verificados como aplicados en la BD compartida (en vivo 2026-10-06).**
 
 | # | Item | Archivo | Notas |
 | - | ---- | ------- | ----- |

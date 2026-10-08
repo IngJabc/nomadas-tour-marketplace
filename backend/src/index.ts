@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './app.js';
 import { env } from './config/env.js';
 import { supabaseAdmin } from './config/database.js';
+import { expireStaleGuestSessions } from './services/guest-session.service.js';
 import { initSentryFromEnv } from './observability/init-from-env.js';
 import {
   captureException,
@@ -44,7 +45,13 @@ setInterval(async () => {
   try {
     const { data, error } = await supabaseAdmin
       .from('seats')
-      .update({ status: 'available', locked_by: null, locked_at: null, lock_expires_at: null })
+      .update({
+        status: 'available',
+        locked_by: null,
+        locked_at: null,
+        lock_expires_at: null,
+        guest_session_id: null,
+      })
       .eq('status', 'locked')
       .lt('lock_expires_at', new Date().toISOString())
       .select();
@@ -57,6 +64,8 @@ setInterval(async () => {
     } else if ((data || []).length > 0) {
       console.log(`[LockCleanup] Released ${data!.length} expired lock(s)`);
     }
+
+    await expireStaleGuestSessions();
   } catch (err: any) {
     console.error('[LockCleanup] Error:', err.message);
     captureException(err, {

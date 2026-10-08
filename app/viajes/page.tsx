@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { publicApi, type PublicTrip } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
-import { formatDateTimeShort, toBusinessDateString } from "@/lib/timezone";
+import { formatDateTimeShort, isDepartureTimeInFuture, toBusinessDateString } from "@/lib/timezone";
 
 interface Filters {
   origin: string;
@@ -54,7 +54,11 @@ export default function ViajesPage() {
     setError(null);
     try {
       const response = await publicApi.trips();
-      setTrips(response.trips);
+      // Un viaje cuya salida ya pasó no es reservable: no se lista, aunque el
+      // backend lo devuelva (defensa en profundidad).
+      setTrips(
+        response.trips.filter((trip) => isDepartureTimeInFuture(trip.departure_time)),
+      );
     } catch (e) {
       setError(
         getApiErrorMessage(
@@ -306,7 +310,7 @@ export default function ViajesPage() {
 
                   <div className="mt-auto pt-6">
                     <Link
-                      href={`/viajes/${trip.id}`}
+                      href={`/reservas/nueva?trip=${trip.id}`}
                       className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                     >
                       Reservar

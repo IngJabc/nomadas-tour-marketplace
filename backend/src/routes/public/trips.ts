@@ -10,7 +10,9 @@ const UUID_RE =
 
 /**
  * GET /api/public/trips
- * Catálogo público de viajes activos (solo lectura, sin PII).
+ * Catálogo público de viajes activos y aún no departidos (solo lectura,
+ * sin PII). Un viaje cuya salida ya pasó no es reservable, así que no se
+ * lista.
  * Query: origin, destination, date (YYYY-MM-DD)
  */
 router.get('/', async (_req, res, next) => {
@@ -19,6 +21,7 @@ router.get('/', async (_req, res, next) => {
       .from('trips')
       .select('id, departure_time, capacity, vehicle_type, status, routes(origin, destination)')
       .eq('status', 'active')
+      .gte('departure_time', new Date().toISOString())
       .order('departure_time', { ascending: true })
       .limit(100);
 
