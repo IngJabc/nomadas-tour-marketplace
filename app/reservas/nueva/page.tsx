@@ -22,20 +22,24 @@ import {
   seatApi,
   type PublicTripDetail,
   type PublicTripSeat,
+  type SubmitPaymentProofResult,
 } from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
-import { formatDateTimeShort, formatTime12h } from '@/lib/timezone';
-import { formatSeatPrice } from '@/lib/price';
+import { formatDateTimeShort } from '@/lib/timezone';
+import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from '@/lib/price';
 import { BusLayout } from '@/components/bus/BusLayout';
 import { LockCountdown } from '@/components/booking/LockCountdown';
 import { PassengerCard } from '@/components/booking/PassengerCard';
+import { ProofUploader } from '@/components/booking/ProofUploader';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
 import {
   clearLockState,
+  isValidPaymentMarker,
   readLockState,
   writeLockState,
   type LockState,
   type PassengerDraft,
+  type PaymentPendingMarker,
 } from '@/lib/booking/lock-state';
 import {
   emptyPassenger,
@@ -48,10 +52,10 @@ import { claimPendingGuestLocks } from '@/lib/booking/guest-claim';
 import { useSeatLocking } from '@/lib/booking/useSeatLocking';
 import type { RealtimeSeatRow, SeatEventType } from '@/lib/realtime/subscriptions';
 
-type Phase = 'loading' | 'missing' | 'expired' | 'unpriced' | 'error' | 'ready';
+type Phase = 'loading' | 'missing' | 'expired' | 'error' | 'ready';
 
-// Aviso compartido por el estado temprano y por la defensa del POST: el RPC
-// sigue validando TRIP_PRICE_MISSING, pero el usuario no debe llegar hasta ahí.
+// Mensaje del error del backend: el RPC sigue validando TRIP_PRICE_MISSING,
+// así que "Confirmar y pagar" sobre un viaje sin precio termina aquí.
 const UNPRICED_MESSAGE =
   'Este viaje no tiene un precio configurado y no puede reservarse en este momento.';
 
@@ -132,6 +136,13 @@ function NewReservationContent() {
   // Dedupe en vuelo: evita doble POST por Strict Mode, re-renders o dos
   // clics concurrentes. El backend además es idempotente (201 → 200).
   const creatingRef = useRef(false);
+  // El comprobante enviado sobrevive a los callbacks de expiración del lock
+  // original: los callbacks sin deps leen el valor desde el ref.
+  // El marcador solo cuenta si pasa `isValidPaymentMarker` (status pending y
+  // tipos correctos): un marcador inválido nunca llega aquí descartado al leer.
+  const paymentPending = isValidPaymentMarker(lock?.payment);
+  const paymentPendingRef = useRef(false);
+  paymentPendingRef.current = paymentPending;
 
   useEffect(() => {
     // Sin la identidad resuelta no se puede decidir guest vs customer.
@@ -146,17 +157,6 @@ function NewReservationContent() {
       try {
         const response = await publicApi.tripDetail(tripId);
         if (cancelled) return;
-        // Validación temprana: sin trips.seat_price no hay precio que cobrar,
-        // así que el checkout se bloquea ANTES de elegir asientos.
-        if (response.trip.seat_price === null) {
-          setTrip(response.trip);
-          setLock(null);
-          setPassengers([]);
-          setFieldErrors([]);
-          setCreateError(null);
-          setPhase('unpriced');
-          return;
-        }
         setTrip(response.trip);
         setLock({
           trip_id: response.trip.id,
@@ -208,6 +208,35 @@ function NewReservationContent() {
       setPhase('loading');
       setError(null);
 
+      // MKT-005 Fase 3: con el comprobante ya enviado, la reserva se
+      // restaura TAL CUAL. No se reclama la sesión guest ni se revalidan los
+      // locks temporales: eso podría borrar la reserva del estado local
+      // (el TTL original ya venció o vencerá) y el pago ya está en revisión.
+      // Tampoco se renueva `lock_expires_at` ni se consulta ninguna URL
+      // pública del comprobante: la API no devuelve una.
+      if (stored.payment && stored.reservation_id) {
+        try {
+          const response = await publicApi.tripDetail(stored.trip_id);
+          if (cancelled) return;
+          setTrip(response.trip);
+          setLock(stored);
+          setPassengers(reconcilePassengers(stored, stored.passengers));
+          setFieldErrors([]);
+          setCreateError(null);
+          setPhase('ready');
+        } catch (e) {
+          if (cancelled) return;
+          setPhase('error');
+          setError(
+            getApiErrorMessage(
+              e,
+              'No pudimos cargar tu reserva. Intenta de nuevo.',
+            ),
+          );
+        }
+        return;
+      }
+
       // Claim guest → customer ANTES de verificar con el endpoint autenticado.
       // Un guest que llega aquí después del login conserva sus locks con la
       // MISMA expiración; sin este paso `mySeatLocks` no los vería como propios.
@@ -242,16 +271,6 @@ function NewReservationContent() {
       }
 
       const tripData = tripResult.value.trip;
-
-      // Validación temprana sobre la selección ya persistida: el viaje dejó
-      // de tener precio (o nunca lo tuvo). Se bloquea el checkout sin tocar
-      // la LockState del usuario; el backend sigue validando TRIP_PRICE_MISSING.
-      if (tripData.seat_price === null) {
-        setTrip(tripData);
-        setLock(stored);
-        setPhase('unpriced');
-        return;
-      }
 
       const locks = locksResult.value;
       const heldIds = new Set(
@@ -293,7 +312,11 @@ function NewReservationContent() {
   }, [phase, lock, passengers]);
 
   const handleExpired = useCallback(() => {
-    setPhase((current) => (current === 'ready' ? 'expired' : current));
+    // Tras enviar el comprobante el lock original ya no gobierna la pantalla:
+    // la expiración no puede borrar la revisión del pago ni devolver al mapa.
+    setPhase((current) =>
+      current === 'ready' && !paymentPendingRef.current ? 'expired' : current,
+    );
   }, []);
 
   const handleCreateError = useCallback((err: unknown) => {
@@ -343,12 +366,10 @@ function NewReservationContent() {
     if (!sessionUser) return; // gate: sin sesión no hay POST
     if (sessionUser.role !== 'customer') return; // backend: CUSTOMER_REQUIRED
     if (!lock.agency_id) return; // sin oferta de agencia no hay payload válido
-    // Defensa en profundidad: el viaje sin precio nunca debe llegar al POST
-    // (el estado 'unpriced' ni siquiera renderiza este botón).
-    if (trip?.seat_price === null) {
-      setCreateError(UNPRICED_MESSAGE);
-      return;
-    }
+    // Sin precio publicado no hay POST: el payload jamás lleva precio (lo
+    // decide el RPC) y el backend respondería TRIP_PRICE_MISSING. La UI ya
+    // oculta el CTA, pero el guard cubre handlers directos y restauraciones.
+    if (!trip || trip.seat_price === null) return;
     if (passengers.length === 0 || passengers.length !== lock.seats.length) {
       return;
     }
@@ -397,6 +418,37 @@ function NewReservationContent() {
     }
   }, [handleCreateError, lock, passengers, trip]);
 
+  // ─── Comprobante de pago (MKT-005 Fase 3) ────────────────────────────
+  // El marcador se persiste con la LockState y solo indica que la interfaz
+  // registró el envío: la reserva nunca se pinta como pagada ni confirmada.
+  const persistPaymentPending = useCallback(
+    (payment: PaymentPendingMarker) => {
+      if (!lock) return;
+      writeLockState({ ...lock, passengers, payment });
+      setLock((prev) => (prev ? { ...prev, payment } : prev));
+    },
+    [lock, passengers],
+  );
+
+  const handleProofSubmitted = useCallback(
+    (result: SubmitPaymentProofResult) => {
+      persistPaymentPending({
+        status: 'pending',
+        payment_id: result.payment_id,
+        submitted_at: result.submitted_at,
+      });
+      toast.success('Comprobante enviado. Tu pago está pendiente de revisión.');
+    },
+    [persistPaymentPending],
+  );
+
+  const handleAlreadySubmitted = useCallback(() => {
+    // El servidor ya tenía el comprobante: conservar la revisión sin pedir
+    // un segundo envío y sin inventar ids que esta respuesta no trajo.
+    persistPaymentPending({ status: 'pending' });
+    toast.success('Tu comprobante ya estaba enviado y sigue en revisión.');
+  }, [persistPaymentPending]);
+
   // ─── Realtime (estilo nomadas-tour) ─────────────────────────────────
 
   const handleSeatEvent = useCallback(
@@ -412,6 +464,10 @@ function NewReservationContent() {
   );
 
   const handleSeatLost = useCallback((seat: RealtimeSeatRow) => {
+    // Con el comprobante en revisión la selección ya no se toca: un lock que
+    // expira (o lo toman) no puede ni vaciar los asientos ni mostrar el
+    // estado expirado.
+    if (paymentPendingRef.current) return;
     toast.error(`El asiento ${seat.seat_code} ya no está disponible`);
     setLock((prev) =>
       prev
@@ -464,7 +520,10 @@ function NewReservationContent() {
   // Si la realtime vació la selección, la reserva queda expirada.
   // `lock_expires_at` distingue el estado inicial (0 asientos, sin lock real,
   // entrada fresca desde el catálogo) de una selección realmente perdida.
+  // Con el comprobante enviado la selección ya no se vacía (ver handleSeatLost),
+  // así que este efecto no puede borrar la revisión del pago.
   useEffect(() => {
+    if (paymentPending) return;
     if (
       phase === 'ready' &&
       lock &&
@@ -473,7 +532,7 @@ function NewReservationContent() {
     ) {
       setPhase('expired');
     }
-  }, [phase, lock]);
+  }, [phase, lock, paymentPending]);
 
   const handleToggleSeat = useCallback(
     async (seatCode: string) => {
@@ -659,8 +718,12 @@ function NewReservationContent() {
     [lock],
   );
 
+  // Precio real del viaje: `seat_price` está en centavos COP y el total para
+  // N asientos es exactamente seat_price × N. Sin precio publicado no se pinta
+  // ningún importe (el RPC además rechaza la reserva con TRIP_PRICE_MISSING).
+  const priceMissing = !!trip && trip.seat_price === null;
   const totalCents =
-    trip && trip.seat_price !== null && lock
+    trip && lock && trip.seat_price !== null
       ? trip.seat_price * lock.seats.length
       : null;
 
@@ -755,31 +818,6 @@ function NewReservationContent() {
     );
   }
 
-  if (phase === 'unpriced') {
-    return (
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
-        <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fffbeb]">
-            <AlertTriangle size={24} strokeWidth={1.75} className="text-[#92400e]" aria-hidden="true" />
-          </div>
-          <h1 className="mt-4 text-[24px] font-bold text-brand-navy">
-            Reserva no disponible
-          </h1>
-          <p className="mt-2 max-w-md text-sm text-brand-muted">
-            {UNPRICED_MESSAGE}
-          </p>
-          <Link
-            href="/viajes"
-            className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-          >
-            <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
-            Ver otros viajes
-          </Link>
-        </div>
-      </main>
-    );
-  }
-
   if (phase === 'error' || !trip || !lock) {
     return (
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
@@ -809,6 +847,7 @@ function NewReservationContent() {
 
   const lockedAfterCreation = !!lock.reservation_id;
   const formLocked = busy || lockedAfterCreation;
+  const reservationId = lock.reservation_id;
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
@@ -849,6 +888,7 @@ function NewReservationContent() {
           <LockCountdown
             expiresAt={lock.lock_expires_at}
             onExpired={handleExpired}
+            hidden={paymentPending}
           />
           <span>Los asientos están retenidos mientras completas tu reserva.</span>
         </div>
@@ -1012,9 +1052,32 @@ function NewReservationContent() {
                   </div>
                 ) : null}
                 <p className="mt-3 text-sm text-brand-muted">
-                  Aquí aparecerán las opciones de pago. Tus asientos están
-                  confirmados y tus pasajeros quedaron guardados.
+                  Tus asientos están reservados y tus pasajeros quedaron
+                  guardados.
                 </p>
+              </div>
+            ) : priceMissing ? (
+              // Viaje sin precio publicado: no hay reserva ni pago posible.
+              // El backend rechazaría con TRIP_PRICE_MISSING; aquí se corta
+              // el flujo antes de cualquier POST y sin tocar el TTL del bloqueo.
+              <div className="mt-5">
+                <div className="rounded-[10px] bg-[#fffbeb] px-4 py-3">
+                  <p className="text-sm font-semibold text-[#92400e]">
+                    Este viaje todavía no tiene un precio publicado.
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    No es posible reservarlo ni enviar un pago hasta que la
+                    agencia defina el precio por asiento. Tus asientos siguen
+                    bloqueados y la selección se conserva hasta que expire.
+                  </p>
+                </div>
+                <Link
+                  href="/viajes"
+                  className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#f1f5f9] px-6 py-3 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
+                >
+                  <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+                  Ver otros viajes
+                </Link>
               </div>
             ) : auth?.loading ? (
               <div className="mt-5 flex items-center gap-2">
@@ -1128,7 +1191,7 @@ function NewReservationContent() {
             )}
           </section>
 
-          {lock.reservation_id ? (
+          {reservationId ? (
             <section
               aria-label="Comprobante"
               className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
@@ -1137,8 +1200,14 @@ function NewReservationContent() {
                 <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
                   Comprobante de pago
                 </h2>
-                <span className="rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]">
-                  Confirmada
+                <span
+                  className={
+                    paymentPending
+                      ? 'rounded-full bg-[#fffbeb] px-3 py-1 text-[11px] font-semibold text-[#92400e]'
+                      : 'rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted'
+                  }
+                >
+                  {paymentPending ? 'Pendiente de revisión' : 'Pago pendiente'}
                 </span>
               </div>
 
@@ -1152,8 +1221,7 @@ function NewReservationContent() {
                 <div className="flex items-start justify-between gap-4">
                   <dt className="text-brand-muted">Salida</dt>
                   <dd className="text-right font-semibold text-brand-navy">
-                    {formatDateTimeShort(trip.departure_time)} ·{' '}
-                    {formatTime12h(trip.departure_time)}
+                    {formatDateTimeShort(trip.departure_time)}
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4">
@@ -1171,7 +1239,7 @@ function NewReservationContent() {
                 <div className="flex items-start justify-between gap-4">
                   <dt className="text-brand-muted">Referencia</dt>
                   <dd className="text-right font-semibold text-brand-navy">
-                    {lock.reservation_id}
+                    {reservationId}
                   </dd>
                 </div>
               </dl>
@@ -1203,6 +1271,31 @@ function NewReservationContent() {
                     : 'Precio no disponible'}
                 </span>
               </div>
+
+              {paymentPending ? (
+                // Vista de solo lectura: no hay forma de enviar otro comprobante
+                // para esta reserva y jamás se pinta como pagada/confirmada.
+                <div className="mt-5 rounded-[10px] bg-[#fffbeb] px-4 py-4">
+                  <p className="text-sm font-semibold text-[#92400e]">
+                    Comprobante enviado. Tu pago está pendiente de revisión.
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Recibimos el comprobante y la agencia lo está revisando.
+                    No vuelvas a enviarlo; te avisaremos cuando sea confirmado.
+                  </p>
+                  {lock.payment?.submitted_at ? (
+                    <p className="mt-2 text-xs text-brand-muted">
+                      Enviado el {formatDateTimeShort(lock.payment.submitted_at)}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <ProofUploader
+                  reservationId={reservationId}
+                  onSubmitted={handleProofSubmitted}
+                  onAlreadySubmitted={handleAlreadySubmitted}
+                />
+              )}
             </section>
           ) : null}
         </div>
@@ -1221,7 +1314,6 @@ function NewReservationContent() {
                 <CalendarDays size={16} strokeWidth={1.75} aria-hidden="true" />
                 {formatDateTimeShort(trip.departure_time)}
               </span>
-              <span>{formatTime12h(trip.departure_time)}</span>
               {agencyName ? <span>{agencyName}</span> : null}
             </p>
 
@@ -1252,19 +1344,38 @@ function NewReservationContent() {
               </ul>
             ) : null}
 
-            <div className="mt-4 flex items-center justify-between rounded-[10px] bg-[#f1f5f9] px-4 py-3">
-              <span className="text-sm font-semibold text-brand-navy">
-                {lock.seats.length === 0
-                  ? 'Sin asientos'
-                  : `Total ${lock.seats.length} asiento${
-                      lock.seats.length === 1 ? '' : 's'
-                    }`}
-              </span>
-              <span className="text-[24px] font-extrabold leading-none text-brand-navy">
-                {lock.seats.length > 0 && totalCents !== null
-                  ? formatSeatPrice(totalCents)
-                  : '—'}
-              </span>
+            <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-brand-muted">Precio por asiento</span>
+                {trip.seat_price === null ? (
+                  <span className="text-sm font-semibold text-brand-muted">
+                    {TRIP_PRICE_PENDING_LABEL}
+                  </span>
+                ) : (
+                  <span className="text-sm font-semibold text-brand-navy">
+                    {formatSeatPrice(trip.seat_price)}
+                  </span>
+                )}
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-3 border-t border-black/[0.06] pt-3">
+                <span className="text-sm font-semibold text-brand-navy">
+                  {lock.seats.length === 0
+                    ? 'Sin asientos'
+                    : `Total ${lock.seats.length} asiento${
+                        lock.seats.length === 1 ? '' : 's'
+                      }`}
+                </span>
+                <span className="text-[24px] font-extrabold leading-none text-brand-navy">
+                  {lock.seats.length > 0 && totalCents !== null
+                    ? formatSeatPrice(totalCents)
+                    : '—'}
+                </span>
+              </div>
+              {priceMissing ? (
+                <p className="mt-2 text-right text-xs text-brand-muted">
+                  Este viaje aún no tiene un precio publicado.
+                </p>
+              ) : null}
             </div>
           </section>
 

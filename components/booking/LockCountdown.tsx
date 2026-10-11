@@ -6,14 +6,25 @@ import { useLockCountdown } from '@/lib/booking/useLockCountdown';
 interface LockCountdownProps {
   expiresAt: string | null | undefined;
   onExpired?: () => void;
+  /**
+   * Oculta la píldora sin detener el countdown: el hook sigue corriendo y
+   * `onExpired` sigue disparándose (MKT-005: con el comprobante en revisión
+   * la expiración no debe pintarse en pantalla).
+   */
+  hidden?: boolean;
 }
 
-export function LockCountdown({ expiresAt, onExpired }: LockCountdownProps) {
+export function LockCountdown({
+  expiresAt,
+  onExpired,
+  hidden,
+}: LockCountdownProps) {
   const { remainingSeconds, formattedTime, expired } = useLockCountdown(
     expiresAt,
     onExpired,
   );
 
+  if (hidden) return null;
   if (remainingSeconds === null || formattedTime === null) return null;
 
   const urgent = !expired && remainingSeconds <= 60;

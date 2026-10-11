@@ -21,8 +21,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (qs) url += `?${qs}`;
   }
 
+  // `Content-Type: application/json` solo aplica a payloads JSON. Con
+  // `FormData` lo fija el navegador (boundary incluido); declararlo a mano
+  // rompería el parser multipart del backend.
+  const isFormData =
+    typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
+
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(fetchOptions.headers as Record<string, string>),
   };
 
@@ -89,6 +95,7 @@ export interface PublicTrip {
   vehicle_type: string;
   status: string;
   route: { origin: string; destination: string };
+  seat_price: number | null;
   lock_ttl_seconds?: number;
 }
 
@@ -291,4 +298,35 @@ export const reservationApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+};
+
+// ── Comprobante de pago (MKT-005) ─────────────────────────────────────────
+// El cliente aporta SOLO el archivo (`proof`) y la clave de idempotencia en
+// el header. El monto, la moneda, el estado y la identidad del pagador los
+// decide el backend; la respuesta nunca incluye `proof_url`.
+export interface SubmitPaymentProofResult {
+  payment_id: string;
+  reservation_id: string;
+  /** El backend solo crea pagos `pending`: la verificación es fase posterior. */
+  payment_status: 'pending';
+  reservation_status: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string;
+  idempotent: boolean;
+}
+
+export const paymentApi = {
+  submitProof: (reservationId: string, file: File, idempotencyKey: string) => {
+    const form = new FormData();
+    form.append('proof', file);
+    return request<SubmitPaymentProofResult>(
+      `/public/reservations/${encodeURIComponent(reservationId)}/payments`,
+      {
+        method: 'POST',
+        body: form,
+        headers: { 'Idempotency-Key': idempotencyKey },
+      },
+    );
+  },
 };

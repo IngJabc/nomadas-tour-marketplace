@@ -7,7 +7,7 @@ La BD es **compartida** con `nomadas-tour`, y por decisión de arquitectura
 `nomadas-tour`:
 
 - Tour: `001`–`073`
-- Marketplace: `074`–`082`
+- Marketplace: `074`–`083`
 
 📁 Ubicación real: `../../nomadas-tour/supabase/migrations/`
 
@@ -22,6 +22,7 @@ La BD es **compartida** con `nomadas-tour`, y por decisión de arquitectura
 | 080 | `080_marketplace_guest_lock_sessions.sql` | `guest_sessions`, `seats.guest_session_id`, invariante de owner único y aislamiento por viaje · aplicada en el proyecto compartido (verificado en vivo 2026-10-06) |
 | 081 | `081_create_marketplace_reservation.sql` | RPC `create_marketplace_reservation`: crea la reserva en `locked`, reserves seats, dispara `reservation.created` (source `marketplace`) |
 | 082 | `082_outbox_reservation_created_scope.sql` | Emisión `reservation.created` acotada: el trigger de INSERT no emite para reservas `marketplace` en `locked`, y un trigger de UPDATE emite solo en la promoción `locked → reserved` (los flujos Tour `internal/confirmed` no cambian) |
+| 083 | `083_marketplace_payment_submission.sql` | Bucket privado `payment-proofs` (5 MB, imágenes/PDF, escritura solo con `service_role`) + RPC `submit_marketplace_payment`: idempotente por namespace `mkt005:…`, inserta `payments` (`pending`, COP, monto = `SUM(unit_price)` server-side), promueve la reserva `locked → reserved` (emisión única vía 082) y pasa los seats `locked → reserved` limpiando los campos de lock |
 
 Aplicación: en orden estricto, sobre el proyecto Supabase compartido.
 Cada archivo indica su dry-run (`BEGIN; … ROLLBACK;`) en el encabezado.

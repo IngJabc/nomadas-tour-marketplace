@@ -21,7 +21,7 @@ import {
 } from "@/lib/api";
 import { ApiError, getApiErrorMessage } from "@/lib/errors/api-error";
 import { formatDateTimeShort, formatTime12h } from "@/lib/timezone";
-import { formatSeatPrice } from "@/lib/price";
+import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from "@/lib/price";
 import { readLockState, writeLockState } from "@/lib/booking/lock-state";
 import {
   claimPendingGuestLocks,
@@ -486,6 +486,12 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
   const toggleSeat = useCallback(
     async (seatCode: string) => {
       if (!trip) return;
+      // Sin precio publicado no se pueden bloquear asientos: no habrá reserva
+      // posible y un lock solo ocuparía el asiento para los demás.
+      if (trip.seat_price === null) {
+        toast.error("Este viaje aún no tiene un precio publicado.");
+        return;
+      }
       const seat = trip.seats.find((item) => item.seat_code === seatCode);
       if (!seat) return;
       if (pendingRef.current.has(seat.id)) return;
@@ -718,7 +724,7 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
   const soldOut = trip.availability.available === 0;
   const hasPrice = trip.seat_price !== null;
   const offers = trip.offers;
-  const canContinue = !soldOut && selectedSeats.length > 0;
+  const canContinue = !soldOut && hasPrice && selectedSeats.length > 0;
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
@@ -767,24 +773,23 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
             <p className="text-[11px] font-medium uppercase text-brand-muted">
               Precio por asiento
             </p>
-            {hasPrice ? (
-              <>
-                <p className="mt-1 text-[28px] font-extrabold leading-none text-brand-navy">
-                  {formatSeatPrice(trip.seat_price as number)}
-                </p>
-                {trip.installment_allowed &&
-                  trip.installment_amount_cents !== null && (
-                    <p className="mt-2 text-xs text-brand-muted">
-                      Abono desde{" "}
-                      {formatSeatPrice(trip.installment_amount_cents)}
-                    </p>
-                  )}
-              </>
+            {trip.seat_price !== null ? (
+              <p className="mt-1 text-[28px] font-extrabold leading-none text-brand-navy">
+                {formatSeatPrice(trip.seat_price)}
+              </p>
             ) : (
-              <p className="mt-2 text-sm font-semibold text-brand-muted">
-                Precio no disponible
+              <p className="mt-1 text-[17px] font-semibold text-brand-muted">
+                {TRIP_PRICE_PENDING_LABEL}
               </p>
             )}
+            {hasPrice &&
+              trip.installment_allowed &&
+              trip.installment_amount_cents !== null && (
+                <p className="mt-2 text-xs text-brand-muted">
+                  Abono desde{" "}
+                  {formatSeatPrice(trip.installment_amount_cents)}
+                </p>
+              )}
           </div>
         </div>
 
@@ -920,16 +925,20 @@ export default function TripDetailPage({ params }: TripDetailPageProps) {
             </span>
           ) : soldOut ? (
             "Sin asientos disponibles"
+          ) : !hasPrice ? (
+            "Reserva no disponible"
           ) : (
             "Continuar con la reserva"
           )}
         </button>
         <p className="text-xs text-brand-muted">
-          {soldOut
-            ? "Revisa el catálogo para encontrar otro viaje."
-            : userId
-              ? "Tus asientos ya están bloqueados por 15 minutos. Continúa para completar tus datos."
-              : "Tus asientos quedan bloqueados al instante. Al continuar te pediremos iniciar sesión para conservarlos."}
+          {!hasPrice
+            ? "Este viaje aún no tiene un precio publicado. Vuelve pronto o elige otro viaje del catálogo."
+            : soldOut
+              ? "Revisa el catálogo para encontrar otro viaje."
+              : userId
+                ? "Tus asientos ya están bloqueados por 15 minutos. Continúa para completar tus datos."
+                : "Tus asientos quedan bloqueados al instante. Al continuar te pediremos iniciar sesión para conservarlos."}
         </p>
       </div>
     </main>

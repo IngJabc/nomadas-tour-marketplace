@@ -4,10 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useOptionalAuthUser } from "@/components/auth/AuthProvider";
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const pathname = usePathname();
+  const auth = useOptionalAuthUser();
+  const signedIn = !!auth?.user;
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -49,12 +52,22 @@ export function Navbar() {
           >
             Viajes
           </Link>
-          <Link
-            href="/login"
-            className="rounded-full bg-brand-cyan px-5 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-          >
-            Iniciar sesión
-          </Link>
+          {signedIn ? (
+            <button
+              type="button"
+              onClick={() => void auth?.signOut()}
+              className="rounded-full bg-brand-cyan px-5 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+            >
+              Cerrar sesión
+            </button>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-full bg-brand-cyan px-5 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+            >
+              Iniciar sesión
+            </Link>
+          )}
         </nav>
       </div>
     </header>

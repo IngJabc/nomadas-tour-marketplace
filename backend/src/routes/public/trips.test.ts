@@ -309,6 +309,7 @@ describe('GET /api/public/trips (catálogo)', () => {
           capacity: 31,
           vehicle_type: 'bus',
           status: 'active',
+          seat_price: 2020,
           routes: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
         },
       ],
@@ -328,9 +329,13 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(res.status).toBe(200);
     expect(body.trips).toHaveLength(1);
     expect(body.trips[0].id).toBe(TRIP_ID);
+    expect(body.trips[0].seat_price).toBe(2020);
     expect(body.trips[0].lock_ttl_seconds).toBe(900);
     // Nunca lista viajes cuya salida ya pasó.
     expect(listChain.eq).toHaveBeenCalledWith('status', 'active');
+    expect(listChain.select).toHaveBeenCalledWith(
+      expect.stringContaining('seat_price'),
+    );
     expect(listChain.gte).toHaveBeenCalledWith(
       'departure_time',
       expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
@@ -338,5 +343,36 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(listChain.order).toHaveBeenCalledWith('departure_time', {
       ascending: true,
     });
+  });
+
+  it('devuelve seat_price null cuando el viaje no tiene precio', async () => {
+    supabaseMock.from.mockReturnValueOnce(
+      queryChain({
+        data: [
+          {
+            id: TRIP_ID,
+            departure_time: '2026-10-04T11:00:00+00:00',
+            capacity: 10,
+            vehicle_type: 'kia',
+            status: 'active',
+            seat_price: null,
+            routes: { origin: 'A', destination: 'B' },
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+    const port = (server.address() as AddressInfo).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/public/trips`);
+    const body = (await res.json()) as Record<string, any>;
+
+    expect(res.status).toBe(200);
+    expect(body.trips[0].seat_price).toBeNull();
   });
 });

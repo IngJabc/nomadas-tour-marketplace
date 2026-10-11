@@ -19,7 +19,7 @@ router.get('/', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('trips')
-      .select('id, departure_time, capacity, vehicle_type, status, routes(origin, destination)')
+      .select('id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination)')
       .eq('status', 'active')
       .gte('departure_time', new Date().toISOString())
       .order('departure_time', { ascending: true })
@@ -35,6 +35,7 @@ router.get('/', async (_req, res, next) => {
       capacity: row.capacity,
       vehicle_type: row.vehicle_type,
       status: row.status,
+      seat_price: row.seat_price ?? null,
       route: row.routes ?? { origin: '', destination: '' },
       lock_ttl_seconds: env.LOCK_TTL_SECONDS,
     }));
