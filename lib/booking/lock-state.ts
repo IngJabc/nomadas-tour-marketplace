@@ -8,6 +8,19 @@ export interface PassengerDraft {
   phone: string;
 }
 
+/**
+ * Marcador local del envío del comprobante (MKT-005 Fase 3).
+ *
+ * Solo representa que la interfaz registró el envío: NO es prueba de un pago
+ * aceptado por el servidor, ni permite afirmar `paid`/`confirmed`. Nunca
+ * guarda el binario del archivo ni tokens de sesión.
+ */
+export interface PaymentPendingMarker {
+  status: 'pending';
+  payment_id?: string;
+  submitted_at?: string;
+}
+
 export interface LockState {
   trip_id: string;
   agency_id: string | null;
@@ -20,6 +33,12 @@ export interface LockState {
    * `customer_id`, `unit_price`, `status` y `source` viven solo en el backend.
    */
   reservation_id?: string;
+  /**
+   * Seteado por `POST /api/public/reservations/:id/payments` cuando el
+   * comprobante ya fue enviado. Persiste con la LockState y sobrevive a la
+   * recarga; no extiende el TTL del lock original.
+   */
+  payment?: PaymentPendingMarker;
 }
 
 const LOCK_STATE_KEY = 'mkt004.lock.v1';
@@ -31,6 +50,27 @@ function storage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Fuente única de verdad para "marcador de pago pendiente válido".
+ *
+ * Una LockState que incumple esto se descarta entera al leerla, así que en la
+ * UI solo llega un marcador que ya pasó por aquí. La exporta la pantalla de
+ * reserva para decidir si debe ocultarse el indicador de expiración.
+ */
+export function isValidPaymentMarker(
+  payment: unknown,
+): payment is PaymentPendingMarker {
+  if (!payment || typeof payment !== 'object') return false;
+  const candidate = payment as Partial<PaymentPendingMarker>;
+  return (
+    candidate.status === 'pending' &&
+    (candidate.payment_id === undefined ||
+      typeof candidate.payment_id === 'string') &&
+    (candidate.submitted_at === undefined ||
+      typeof candidate.submitted_at === 'string')
+  );
 }
 
 function isValid(state: unknown): state is LockState {
@@ -47,7 +87,11 @@ function isValid(state: unknown): state is LockState {
     ) &&
     Array.isArray(candidate.passengers) &&
     (candidate.reservation_id === undefined ||
-      typeof candidate.reservation_id === 'string')
+      typeof candidate.reservation_id === 'string') &&
+    // Un marcador malformado invalida toda la LockState: nunca se debe
+    // confiar en datos persistidos rotos para restaurar la revisión del pago.
+    (candidate.payment === undefined ||
+      isValidPaymentMarker(candidate.payment))
   );
 }
 

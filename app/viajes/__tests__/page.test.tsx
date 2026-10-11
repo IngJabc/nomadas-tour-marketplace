@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { publicApi, type PublicTrip } from '@/lib/api';
+import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort, toBusinessDateString } from '@/lib/timezone';
 import ViajesPage from '../page';
 
@@ -30,6 +31,7 @@ const trip: PublicTrip = {
   vehicle_type: 'bus',
   status: 'active',
   route: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
+  seat_price: 2020,
   lock_ttl_seconds: 900,
 };
 
@@ -40,6 +42,7 @@ const pastTrip: PublicTrip = {
   vehicle_type: 'kia',
   status: 'active',
   route: { origin: 'Maracaibo', destination: 'Ruta pasada' },
+  seat_price: 2020,
   lock_ttl_seconds: 900,
 };
 
@@ -62,7 +65,44 @@ describe('ViajesPage (MKT-002)', () => {
     expect(screen.getByText(/31 asientos disponibles/)).toBeInTheDocument();
     expect(screen.getByText('Disponible')).toBeInTheDocument();
     expect(screen.getByText('Autobús · 31 asientos')).toBeInTheDocument();
+    expect(screen.getByText('Precio por asiento')).toBeInTheDocument();
+    expect(screen.getByText(formatSeatPrice(2020))).toBeInTheDocument();
+    expect(screen.queryByText('Precio por definir')).not.toBeInTheDocument();
     expect(screen.getByText('1 viaje disponible')).toBeInTheDocument();
+  });
+
+  it('marca el precio como "Precio por definir" y bloquea el CTA cuando el viaje no tiene seat_price', async () => {
+    mockedTrips.mockResolvedValue({ trips: [{ ...trip, seat_price: null }] });
+
+    render(<ViajesPage />);
+
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    expect(screen.getByText('Precio por asiento')).toBeInTheDocument();
+    expect(screen.getByText('Precio por definir')).toBeInTheDocument();
+    // Ningún importe ficticio ni badge de placeholder.
+    expect(screen.queryByText('$250,00')).not.toBeInTheDocument();
+    expect(screen.queryByText('Placeholder')).not.toBeInTheDocument();
+    // El viaje permanece visible, pero no se puede iniciar la reserva.
+    const reservar = screen.getByRole('button', { name: 'Reservar' });
+    expect(reservar).toBeDisabled();
+    expect(screen.queryByRole('link', { name: 'Reservar' })).not.toBeInTheDocument();
+  });
+
+  it('trata el precio cero como valor explícito distinto de null', async () => {
+    mockedTrips.mockResolvedValue({ trips: [{ ...trip, seat_price: 0 }] });
+
+    render(<ViajesPage />);
+
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    expect(screen.getByText('$0,00')).toBeInTheDocument();
+    expect(screen.queryByText('Precio por definir')).not.toBeInTheDocument();
+    const reservar = screen.getByRole('link', { name: 'Reservar' });
+    expect(reservar).toHaveAttribute(
+      'href',
+      `/reservas/nueva?trip=${trip.id}`,
+    );
   });
 
   it('no lista viajes cuya salida ya pasó', async () => {

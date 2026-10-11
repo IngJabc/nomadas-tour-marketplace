@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { publicApi, type PublicTrip } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
+import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from "@/lib/price";
 import { formatDateTimeShort, isDepartureTimeInFuture, toBusinessDateString } from "@/lib/timezone";
 
 interface Filters {
@@ -308,13 +309,43 @@ export default function ViajesPage() {
                     </p>
                   </div>
 
+                  <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-medium uppercase text-brand-muted">
+                        Precio por asiento
+                      </span>
+                      {trip.seat_price === null ? (
+                        <span className="text-sm font-semibold text-brand-muted">
+                          {TRIP_PRICE_PENDING_LABEL}
+                        </span>
+                      ) : (
+                        <span className="text-[17px] font-extrabold leading-none text-brand-navy">
+                          {formatSeatPrice(trip.seat_price)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="mt-auto pt-6">
-                    <Link
-                      href={`/reservas/nueva?trip=${trip.id}`}
-                      className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-                    >
-                      Reservar
-                    </Link>
+                    {trip.seat_price === null ? (
+                      // Sin precio publicado no hay reserva posible: el CTA
+                      // queda deshabilitado en lugar de enviar al checkout.
+                      <button
+                        type="button"
+                        disabled
+                        aria-disabled="true"
+                        className="block w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white opacity-40"
+                      >
+                        Reservar
+                      </button>
+                    ) : (
+                      <Link
+                        href={`/reservas/nueva?trip=${trip.id}`}
+                        className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                      >
+                        Reservar
+                      </Link>
+                    )}
                   </div>
                 </article>
               ))}

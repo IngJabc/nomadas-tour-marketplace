@@ -43,6 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
+  const userRef = useRef<AppUser | null>(null);
+  userRef.current = user;
 
   const loadProfile = useCallback(async () => {
     const supabase = createClient();
@@ -69,16 +71,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadProfile();
 
     const supabase = createClient();
-    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'TOKEN_REFRESHED') return;
-      if (event === 'SIGNED_OUT') {
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      loadProfile();
-    });
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        if (event === 'TOKEN_REFRESHED') return;
+        if (event === 'SIGNED_OUT') {
+          userRef.current = null;
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+        // El effect de arranque ya cargó el perfil; procesarlo de nuevo solo
+        // provoca un segundo ciclo de carga.
+        if (event === 'INITIAL_SESSION') return;
+        // Supabase re-emite SIGNED_IN al recuperar la sesión cuando el usuario
+        // vuelve a la pestaña. Si la identidad no cambió no hay nada que
+        // recargar: recargar con `loading=true` reinicia las pantallas que
+        // dependen de la sesión y provoca el parpadeo en blanco del checkout.
+        if (session?.user?.id && session.user.id === userRef.current?.id) {
+          return;
+        }
+        setLoading(true);
+        loadProfile();
+      },
+    );
 
     return () => {
       mountedRef.current = false;

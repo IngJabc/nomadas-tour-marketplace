@@ -447,7 +447,7 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(mockedTripDetail).toHaveBeenCalledWith('no-existe');
   });
 
-  it('tolera datos incompletos: precio nulo y sin ofertas de agencias', async () => {
+  it('tolera datos incompletos: precio nulo muestra "Precio por definir" y no hay ofertas', async () => {
     mockedTripDetail.mockResolvedValue({
       trip: buildTrip({
         seat_price: null,
@@ -462,10 +462,27 @@ describe('TripDetailPage (MKT-003)', () => {
     expect(
       await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Precio no disponible')).toBeInTheDocument();
+    expect(screen.getByText('Precio por definir')).toBeInTheDocument();
+    // Ningún importe ficticio ni badge de placeholder.
+    expect(screen.queryByText('$250,00')).not.toBeInTheDocument();
+    expect(screen.queryByText('Placeholder')).not.toBeInTheDocument();
     expect(
       screen.getByText(/Las agencias de este viaje estarán disponibles pronto/),
     ).toBeInTheDocument();
+    expect(btn('Reserva no disponible')).toBeDisabled();
+    expect(
+      screen.queryByRole('button', { name: 'Continuar con la reserva' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('con seat_price en cero pinta $0,00 y permite continuar', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip({ seat_price: 0 }) });
+
+    await renderPage();
+    await screen.findByRole('heading', { name: 'Barquisimeto → Caracas' });
+
+    expect(screen.getByText('$0,00')).toBeInTheDocument();
+    expect(screen.queryByText('Precio por definir')).not.toBeInTheDocument();
     expect(btn('Continuar con la reserva')).toBeDisabled();
   });
 });
