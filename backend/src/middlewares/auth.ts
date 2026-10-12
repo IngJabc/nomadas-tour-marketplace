@@ -22,7 +22,17 @@ async function extractContext(user: { id: string }): Promise<RequestContext> {
     throw new UnauthorizedError('Usuario no registrado');
   }
 
-  if (dbUser.role !== 'superadmin' && dbUser.role !== 'customer') {
+  if (
+    dbUser.role !== 'superadmin' &&
+    dbUser.role !== 'customer' &&
+    dbUser.role !== 'agency'
+  ) {
+    throw new UnauthorizedError('Usuario no registrado');
+  }
+
+  // Un usuario de agency SIEMPRE debe tener agency_id: es la base del
+  // aislamiento multi-tenant. Sin él no hay ownership verificable.
+  if (dbUser.role === 'agency' && !dbUser.agency_id) {
     throw new UnauthorizedError('Usuario no registrado');
   }
 

@@ -585,3 +585,719 @@ export async function submitPaymentProof(
     idempotent: row.idempotent === true,
   };
 }
+
+// ── Revisión administrativa (MKT-006 Fase 6.2B — agencia) ───────────────────
+
+export interface VerifyPaymentInput {
+  paymentId: string;
+  actorUserId: string;
+}
+
+export interface RejectPaymentInput {
+  paymentId: string;
+  actorUserId: string;
+  reason: string;
+}
+
+export interface VerifyPaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  already_verified: boolean;
+  amount_cents: number;
+  currency: string;
+  allocation_count: number;
+  total_expected_cents: number;
+  verified_at: string;
+  verified_by: string;
+  payment_status: string;
+  audit_id: string;
+}
+
+export interface RejectPaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  already_rejected: boolean;
+  rejection_reason: string;
+  outcome: string;
+  cancelled_reservation: boolean;
+  reservation_status: string;
+  payment_status: string;
+  freed_seat_count: number;
+  cancelled_passenger_count: number;
+  refund_required: boolean;
+  refund_amount_cents: number;
+  payment_audit_id: string;
+  reservation_audit_id: string | null;
+}
+
+/**
+ * Traduce los RAISE EXCEPTION de `verify_marketplace_payment` y
+ * `reject_marketplace_payment` (085) al envelope estándar del backend.
+ * Los códigos ERR_* se conservan; los mensajes SQL no llegan al cliente.
+ * El error de ownership (AGENCY_MISMATCH) responde 404 para no filtrar
+ * la existencia de pagos de otras agencias.
+ */
+function mapAdminRpcError(error: { message: string }): AppError {
+  const code = rpcErrorCode(error.message || '');
+
+  switch (code) {
+    case 'ERR_PAYMENT_INPUT':
+      return paymentError('Datos inválidos', 400, 'PAYMENT_INPUT_INVALID');
+    case 'ERR_PAYMENT_NOT_FOUND':
+    case 'ERR_PAYMENT_AGENCY_MISMATCH':
+      // Mismo 404 para "no existe" y "es de otra agencia".
+      return paymentError('Pago no encontrado', 404, 'PAYMENT_NOT_FOUND');
+    case 'ERR_PAYMENT_RESERVATION_NOT_FOUND':
+      return paymentError('Reserva no encontrada', 404, 'PAYMENT_RESERVATION_NOT_FOUND');
+    case 'ERR_PAYMENT_NOT_MARKETPLACE':
+      return paymentError('Pago no encontrado', 404, 'PAYMENT_NOT_FOUND');
+    case 'ERR_PAYMENT_ADMIN_NOT_FOUND':
+    case 'ERR_PAYMENT_ADMIN_ROLE':
+    case 'ERR_PAYMENT_ADMIN_AGENCY':
+      return paymentError('No autorizado', 403, 'FORBIDDEN');
+    case 'ERR_PAYMENT_ALREADY_REJECTED':
+      return paymentError(
+        'Este pago ya fue rechazado',
+        409,
+        'PAYMENT_ALREADY_REJECTED',
+      );
+    case 'ERR_PAYMENT_VERIFIED_NO_REJECT':
+      return paymentError(
+        'Un pago verificado no puede ser rechazado',
+        409,
+        'PAYMENT_VERIFIED_NO_REJECT',
+      );
+    case 'ERR_PAYMENT_NOT_PENDING':
+      return paymentError(
+        'El pago ya no está pendiente de revisión',
+        409,
+        'PAYMENT_NOT_PENDING',
+      );
+    case 'ERR_PAYMENT_RESERVATION_STATE':
+      return paymentError(
+        'La reserva no está en un estado compatible con esta operación',
+        409,
+        'PAYMENT_RESERVATION_STATE',
+      );
+    case 'ERR_PAYMENT_REJECT_REASON':
+      return paymentError(
+        'El motivo de rechazo es obligatorio (1-500 caracteres)',
+        400,
+        'PAYMENT_REJECT_REASON',
+      );
+    case 'ERR_PAYMENT_VERIFY_NO_PASSENGERS':
+    case 'ERR_PAYMENT_VERIFY_PRICE':
+    case 'ERR_PAYMENT_VERIFY_SEATS':
+    case 'ERR_PAYMENT_VERIFY_AMOUNT':
+    case 'ERR_PAYMENT_VERIFY_SEAT_TRIP':
+    case 'ERR_PAYMENT_VERIFY_SEAT_STATE':
+    case 'ERR_PAYMENT_VERIFY_SEAT_MISSING':
+    case 'ERR_PAYMENT_VERIFY_ALLOCATIONS':
+    case 'ERR_PAYMENT_VERIFY_ALLOC_COUNT':
+      return paymentError(
+        'No se pudo verificar el pago: los datos de la reserva no son consistentes',
+        422,
+        'PAYMENT_VERIFY_INCONSISTENT',
+      );
+    case 'ERR_PAYMENT_VERIFY_RACE':
+    case 'ERR_PAYMENT_RESERVATION':
+    case 'ERR_PAYMENT_REJECT_RACE':
+    case 'ERR_PAYMENT_REJECT_PASSENGERS':
+    case 'ERR_PAYMENT_REJECT_RESERVATION':
+      return paymentError(
+        'El estado del pago cambió durante la operación. Intenta de nuevo',
+        409,
+        'PAYMENT_STATE_CHANGED',
+      );
+    default:
+      return paymentError(
+        'No se pudo procesar la operación. Intenta de nuevo',
+        500,
+        'PAYMENT_ADMIN_ERROR',
+      );
+  }
+}
+
+/**
+ * Verifica un comprobante marketplace (RPC 085 `verify_marketplace_payment`).
+ * El actor SIEMPRE es el usuario autenticado de la agencia; el backend
+ * nunca acepta un agency_id del cliente. La autorización de ownership ya
+ * la hizo el middleware `verifyAgencyOwnership`; aquí se invoca el RPC
+ * como autoridad de negocio (locks, allocations, idempotencia).
+ */
+export async function verifyPayment(
+  input: VerifyPaymentInput,
+): Promise<VerifyPaymentResult> {
+  const { data, error } = await supabaseAdmin.rpc('verify_marketplace_payment', {
+    p_payment_id: input.paymentId,
+    p_actor_user_id: input.actorUserId,
+  });
+
+  if (error) {
+    throw mapAdminRpcError(error);
+  }
+
+  const row = data as VerifyPaymentResult | null;
+  if (!row?.payment_id) {
+    throw paymentError(
+      'No se pudo verificar el pago. Intenta de nuevo',
+      500,
+      'PAYMENT_ADMIN_ERROR',
+    );
+  }
+
+  return row;
+}
+
+/**
+ * Rechaza un comprobante marketplace (RPC 085 `reject_marketplace_payment`).
+ * Mismo patrón que verifyPayment: ownership ya validado por middleware,
+ * el RPC es la autoridad de negocio.
+ */
+export async function rejectPayment(
+  input: RejectPaymentInput,
+): Promise<RejectPaymentResult> {
+  const { data, error } = await supabaseAdmin.rpc('reject_marketplace_payment', {
+    p_payment_id: input.paymentId,
+    p_actor_user_id: input.actorUserId,
+    p_reason: input.reason,
+  });
+
+  if (error) {
+    throw mapAdminRpcError(error);
+  }
+
+  const row = data as RejectPaymentResult | null;
+  if (!row?.payment_id) {
+    throw paymentError(
+      'No se pudo rechazar el pago. Intenta de nuevo',
+      500,
+      'PAYMENT_ADMIN_ERROR',
+    );
+  }
+
+  return row;
+}
+
+// ── Consulta de pagos por agencia (MKT-006 Fase 6.3B) ───────────────────────
+
+export const PROOF_SIGNED_URL_TTL_SECONDS = 300;
+
+export type AgencyPaymentStatusFilter = 'pending' | 'verified' | 'rejected';
+
+export interface ListAgencyPaymentsInput {
+  agencyId: string;
+  status?: AgencyPaymentStatusFilter;
+  page: number;
+  limit: number;
+}
+
+export interface AgencyPaymentListItem {
+  id: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string;
+  verified_at: string | null;
+  rejection_reason: string | null;
+  has_proof: boolean;
+  reservation: {
+    id: string;
+    booker_name: string;
+    contact_email: string | null;
+    status: string;
+    payment_status: string | null;
+    trip: {
+      id: string;
+      departure_time: string;
+      origin: string;
+      destination: string;
+    } | null;
+  };
+}
+
+export interface ListAgencyPaymentsResult {
+  payments: AgencyPaymentListItem[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export interface AgencyPaymentPassenger {
+  id: string;
+  seat_code: string | null;
+  name: string;
+  unit_price: number | null;
+  status: string;
+}
+
+export interface AgencyPaymentAllocation {
+  id: string;
+  reservation_passenger_id: string;
+  seat_code: string | null;
+  amount_cents: number;
+  created_at: string;
+}
+
+export interface AgencyPaymentDetail {
+  payment: {
+    id: string;
+    status: string;
+    amount_cents: number;
+    currency: string;
+    submitted_at: string;
+    verified_at: string | null;
+    verified_by: string | null;
+    rejection_reason: string | null;
+    has_proof: boolean;
+  };
+  reservation: {
+    id: string;
+    booker_name: string;
+    booker_phone: string | null;
+    contact_email: string | null;
+    status: string;
+    payment_status: string | null;
+    created_at: string;
+  };
+  trip: {
+    id: string;
+    departure_time: string;
+    vehicle_type: string;
+    seat_price: number | null;
+    origin: string;
+    destination: string;
+  } | null;
+  passengers: AgencyPaymentPassenger[];
+  allocations: AgencyPaymentAllocation[];
+  totals: {
+    active_passenger_count: number;
+    expected_cents: number;
+    allocated_cents: number;
+    remaining_cents: number;
+  };
+}
+
+export interface PaymentProofSignedUrlResult {
+  url: string;
+  expires_in_seconds: number;
+}
+
+// PostgREST representa los joins many-to-one como arrays; se normalizan
+// a objeto único tras el cast through `unknown`.
+interface PaymentListRow {
+  id: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string;
+  verified_at: string | null;
+  rejection_reason: string | null;
+  proof_url: string | null;
+  reservation_id: string;
+  reservations: unknown;
+}
+
+interface PaymentDetailRow {
+  id: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string;
+  verified_at: string | null;
+  verified_by: string | null;
+  rejection_reason: string | null;
+  proof_url: string | null;
+  reservation_id: string;
+  reservations: unknown;
+}
+
+type NormalizedTrip = {
+  id: string;
+  departure_time: string;
+  vehicle_type?: string;
+  seat_price?: number | null;
+  routes: unknown;
+};
+
+type NormalizedReservation = {
+  id: string;
+  booker_name: string;
+  booker_phone?: string | null;
+  contact_email: string | null;
+  status: string;
+  payment_status: string | null;
+  created_at?: string;
+  trips: unknown;
+};
+
+function normalizeTrip(trips: unknown): NormalizedTrip | null {
+  return firstOrNull<NormalizedTrip>(
+    trips as NormalizedTrip | NormalizedTrip[] | null,
+  );
+}
+
+function normalizeReservation(reservations: unknown): NormalizedReservation | null {
+  return firstOrNull<NormalizedReservation>(
+    reservations as NormalizedReservation | NormalizedReservation[] | null,
+  );
+}
+
+function normalizeRoute(
+  routes: unknown,
+): { origin: string; destination: string } | null {
+  return firstOrNull<{ origin: string; destination: string }>(
+    routes as
+      | { origin: string; destination: string }
+      | { origin: string; destination: string }[]
+      | null,
+  );
+}
+
+const LIST_SELECT = `
+  id, status, amount_cents, currency, submitted_at, verified_at,
+  rejection_reason, proof_url, reservation_id,
+  reservations (
+    id, booker_name, contact_email, status, payment_status,
+    trips (
+      id, departure_time,
+      routes ( origin, destination )
+    )
+  )
+`;
+
+const DETAIL_SELECT = `
+  id, status, amount_cents, currency, submitted_at, verified_at,
+  verified_by, rejection_reason, proof_url, reservation_id,
+  reservations (
+    id, booker_name, booker_phone, contact_email, status, payment_status,
+    created_at,
+    trips (
+      id, departure_time, vehicle_type, seat_price,
+      routes ( origin, destination )
+    )
+  )
+`;
+
+function firstOrNull<T>(value: T | T[] | null | undefined): T | null {
+  if (value == null) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function mapListItem(row: PaymentListRow): AgencyPaymentListItem {
+  const reservation = normalizeReservation(row.reservations);
+  const trip = normalizeTrip(reservation?.trips);
+  const route = normalizeRoute(trip?.routes);
+  return {
+    id: row.id,
+    status: row.status,
+    amount_cents: row.amount_cents,
+    currency: row.currency,
+    submitted_at: row.submitted_at,
+    verified_at: row.verified_at,
+    rejection_reason: row.rejection_reason,
+    has_proof: Boolean(row.proof_url),
+    reservation: {
+      id: reservation?.id ?? row.reservation_id,
+      booker_name: reservation?.booker_name ?? '',
+      contact_email: reservation?.contact_email ?? null,
+      status: reservation?.status ?? '',
+      payment_status: reservation?.payment_status ?? null,
+      trip: trip
+        ? {
+            id: trip.id,
+            departure_time: trip.departure_time,
+            origin: route?.origin ?? '',
+            destination: route?.destination ?? '',
+          }
+        : null,
+    },
+  };
+}
+
+/**
+ * Lista los pagos de una agencia con filtro de estado opcional y
+ * paginación validada. El `agency_id` SIEMPRE sale de la sesión
+ * autenticada; nunca se acepta del cliente.
+ *
+ * Orden estable: pagos pendientes primero (alfabéticamente 'pending'
+ * < 'rejected' < 'verified'), luego por `submitted_at` descendente y
+ * `id` como desempate. No expone `proof_url`, documentos personales
+ * completos, tokens ni URLs privadas.
+ */
+export async function listAgencyPayments(
+  input: ListAgencyPaymentsInput,
+): Promise<ListAgencyPaymentsResult> {
+  const from = (input.page - 1) * input.limit;
+  const to = from + input.limit - 1;
+
+  let query = supabaseAdmin
+    .from('payments')
+    .select(LIST_SELECT, { count: 'exact' })
+    .eq('agency_id', input.agencyId)
+    .order('status', { ascending: true })
+    .order('submitted_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to);
+
+  if (input.status) {
+    query = query.eq('status', input.status);
+  }
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    throw paymentError(
+      'No se pudo listar los pagos. Intenta de nuevo',
+      500,
+      'PAYMENT_LIST_ERROR',
+    );
+  }
+
+  return {
+    payments: ((data ?? []) as unknown as PaymentListRow[]).map(mapListItem),
+    page: input.page,
+    limit: input.limit,
+    total: count ?? 0,
+  };
+}
+
+/**
+ * Detalle completo de un pago para revisión de agencia. El filtro de
+ * `agency_id` se aplica en la consulta del servidor; un pago ajeno o
+ * inexistente produce el mismo 404. No expone documentos personales
+ * completos ni la ruta del comprobante.
+ */
+export async function getAgencyPaymentDetail(input: {
+  paymentId: string;
+  agencyId: string;
+}): Promise<AgencyPaymentDetail> {
+  const { data, error } = await supabaseAdmin
+    .from('payments')
+    .select(DETAIL_SELECT)
+    .eq('id', input.paymentId)
+    .eq('agency_id', input.agencyId)
+    .maybeSingle();
+
+  if (error) {
+    throw paymentError(
+      'No se pudo cargar el pago. Intenta de nuevo',
+      500,
+      'PAYMENT_DETAIL_ERROR',
+    );
+  }
+
+  // Mismo 404 para "no existe" y "es de otra agencia".
+  if (!data) {
+    throw paymentError('Pago no encontrado', 404, 'PAYMENT_NOT_FOUND');
+  }
+
+  const row = data as unknown as PaymentDetailRow;
+  const reservation = normalizeReservation(row.reservations);
+  const trip = normalizeTrip(reservation?.trips);
+  const route = normalizeRoute(trip?.routes);
+  const reservationId = reservation?.id ?? row.reservation_id;
+
+  const [passengersResult, allocationsResult] = await Promise.all([
+    supabaseAdmin
+      .from('reservation_passengers')
+      .select('id, seat_id, name, unit_price, status, seats ( seat_code )')
+      .eq('reservation_id', reservationId)
+      .order('seat_id'),
+    supabaseAdmin
+      .from('payment_allocations')
+      .select(
+        'id, reservation_passenger_id, amount_cents, created_at, reservation_passengers ( seat_id, seats ( seat_code ) )',
+      )
+      .eq('payment_id', row.id)
+      .order('created_at'),
+  ]);
+
+  if (passengersResult.error || allocationsResult.error) {
+    throw paymentError(
+      'No se pudo cargar el pago. Intenta de nuevo',
+      500,
+      'PAYMENT_DETAIL_ERROR',
+    );
+  }
+
+  type PassengerRow = {
+    id: string;
+    seat_id: string;
+    name: string;
+    unit_price: number | null;
+    status: string;
+    seats: unknown;
+  };
+
+  type AllocationRow = {
+    id: string;
+    reservation_passenger_id: string;
+    amount_cents: number;
+    created_at: string;
+    reservation_passengers: unknown;
+  };
+
+  const passengers = ((passengersResult.data ?? []) as unknown as PassengerRow[]).map(
+    (p) => ({
+      id: p.id,
+      seat_code: firstOrNull<{ seat_code: string }>(
+        p.seats as { seat_code: string } | { seat_code: string }[] | null,
+      )?.seat_code ?? null,
+      name: p.name,
+      unit_price: p.unit_price,
+      status: p.status,
+    }),
+  );
+
+  const allocations = ((allocationsResult.data ?? []) as unknown as AllocationRow[]).map(
+    (a) => {
+      const rp = firstOrNull<{ seats: unknown }>(
+        a.reservation_passengers as { seats: unknown } | { seats: unknown }[] | null,
+      );
+      const seat = firstOrNull<{ seat_code: string }>(
+        rp?.seats as { seat_code: string } | { seat_code: string }[] | null,
+      );
+      return {
+        id: a.id,
+        reservation_passenger_id: a.reservation_passenger_id,
+        seat_code: seat?.seat_code ?? null,
+        amount_cents: a.amount_cents,
+        created_at: a.created_at,
+      };
+    },
+  );
+
+  const activePassengers = passengers.filter((p) => p.status === 'active');
+  const expectedCents = activePassengers.reduce(
+    (sum, p) => sum + (p.unit_price ?? 0),
+    0,
+  );
+  const allocatedCents = allocations.reduce(
+    (sum, a) => sum + a.amount_cents,
+    0,
+  );
+
+  return {
+    payment: {
+      id: row.id,
+      status: row.status,
+      amount_cents: row.amount_cents,
+      currency: row.currency,
+      submitted_at: row.submitted_at,
+      verified_at: row.verified_at,
+      verified_by: row.verified_by,
+      rejection_reason: row.rejection_reason,
+      has_proof: Boolean(row.proof_url),
+    },
+    reservation: {
+      id: reservation?.id ?? row.reservation_id,
+      booker_name: reservation?.booker_name ?? '',
+      booker_phone: reservation?.booker_phone ?? null,
+      contact_email: reservation?.contact_email ?? null,
+      status: reservation?.status ?? '',
+      payment_status: reservation?.payment_status ?? null,
+      created_at: reservation?.created_at ?? row.submitted_at,
+    },
+    trip: trip
+      ? {
+          id: trip.id,
+          departure_time: trip.departure_time,
+          vehicle_type: trip.vehicle_type ?? '',
+          seat_price: trip.seat_price ?? null,
+          origin: route?.origin ?? '',
+          destination: route?.destination ?? '',
+        }
+      : null,
+    passengers,
+    allocations,
+    totals: {
+      active_passenger_count: activePassengers.length,
+      expected_cents: expectedCents,
+      allocated_cents: allocatedCents,
+      remaining_cents: expectedCents - allocatedCents,
+    },
+  };
+}
+
+/**
+ * Genera una URL firmada de corta duración para el comprobante de un
+ * pago. La ruta NUNCA llega del cliente: se lee de `payments.proof_url`
+ * y se valida que pertenezca al directorio de la reserva del propio pago.
+ *
+ * El bucket `payment-proofs` es privado (083); la URL firmada es la
+ * única vía de acceso y caduca en `PROOF_SIGNED_URL_TTL_SECONDS`.
+ * La URL firmada no se registra en logs.
+ */
+export async function getPaymentProofSignedUrl(input: {
+  paymentId: string;
+  agencyId: string;
+}): Promise<PaymentProofSignedUrlResult> {
+  const { data, error } = await supabaseAdmin
+    .from('payments')
+    .select('id, reservation_id, proof_url')
+    .eq('id', input.paymentId)
+    .eq('agency_id', input.agencyId)
+    .maybeSingle();
+
+  if (error) {
+    throw paymentError(
+      'No se pudo cargar el comprobante. Intenta de nuevo',
+      500,
+      'PAYMENT_PROOF_ERROR',
+    );
+  }
+
+  if (!data) {
+    throw paymentError('Pago no encontrado', 404, 'PAYMENT_NOT_FOUND');
+  }
+
+  const proofPath = (data as { proof_url: string | null }).proof_url;
+  const reservationId = (data as { reservation_id: string }).reservation_id;
+
+  if (!proofPath) {
+    throw paymentError(
+      'Este pago no tiene comprobante adjunto',
+      404,
+      'PAYMENT_PROOF_NOT_FOUND',
+    );
+  }
+
+  // Defensa en profundidad: la ruta almacenada debe vivir dentro del
+  // directorio de la reserva (mismo prefijo que valida 083 al guardar).
+  const expectedPrefix = `${reservationId}/`;
+  const rest = proofPath.startsWith(expectedPrefix)
+    ? proofPath.slice(expectedPrefix.length)
+    : null;
+  if (
+    rest === null ||
+    rest.includes('/') ||
+    rest.includes('..') ||
+    !/\.[a-z0-9]+$/i.test(rest)
+  ) {
+    throw paymentError(
+      'Este pago no tiene comprobante adjunto',
+      404,
+      'PAYMENT_PROOF_NOT_FOUND',
+    );
+  }
+
+  const { data: signed, error: signError } = await supabaseAdmin.storage
+    .from(PROOF_BUCKET)
+    .createSignedUrl(proofPath, PROOF_SIGNED_URL_TTL_SECONDS);
+
+  if (signError || !signed?.signedUrl) {
+    throw paymentError(
+      'No se pudo generar el enlace del comprobante. Intenta de nuevo',
+      500,
+      'PAYMENT_STORAGE_ERROR',
+    );
+  }
+
+  return {
+    url: signed.signedUrl,
+    expires_in_seconds: PROOF_SIGNED_URL_TTL_SECONDS,
+  };
+}

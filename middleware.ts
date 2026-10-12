@@ -1,8 +1,8 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
-// Marketplace: rutas de cliente autenticado
-const protectedPaths = ['/cuenta', '/reservas'];
+// Marketplace: rutas de cliente autenticado + área agencia de revisión de pagos
+const protectedPaths = ['/cuenta', '/reservas', '/pagos'];
 const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password', '/viajes', '/agencias', '/'];
 
 export async function middleware(request: NextRequest) {
