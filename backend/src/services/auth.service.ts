@@ -22,7 +22,7 @@ export class AuthService {
       throw new UnauthorizedError('Usuario no encontrado');
     }
 
-    if (dbUser.role !== 'customer' && dbUser.role !== 'superadmin') {
+    if (dbUser.role !== 'customer' && dbUser.role !== 'superadmin' && dbUser.role !== 'agency') {
       throw new UnauthorizedError('Esta cuenta no pertenece al marketplace');
     }
 
@@ -92,7 +92,7 @@ export class AuthService {
       throw new UnauthorizedError('Usuario no encontrado');
     }
 
-    if (dbUser.role !== 'customer' && dbUser.role !== 'superadmin') {
+    if (dbUser.role !== 'customer' && dbUser.role !== 'superadmin' && dbUser.role !== 'agency') {
       throw new UnauthorizedError('Usuario no registrado');
     }
 

@@ -1,4 +1,4 @@
-export type Role = 'customer' | 'superadmin';
+export type Role = 'customer' | 'superadmin' | 'agency';
 
 export interface RequestContext {
   userId: string;

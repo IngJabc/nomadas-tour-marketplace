@@ -330,3 +330,166 @@ export const paymentApi = {
     );
   },
 };
+
+// ── Revisión de pagos de agencia (MKT-006 Fase 6.3C) ─────────────────────────
+// El cliente consume los endpoints /admin/payments ya implementados en 6.3B.
+// No recibe `proof_url` en el listado ni en el detalle; el comprobante se
+// obtiene vía URL firmada de corta duración (máx. 300 s) que no se persiste.
+export type AgencyPaymentStatusFilter = 'pending' | 'verified' | 'rejected';
+
+export interface AgencyPaymentListItem {
+  id: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string;
+  verified_at: string | null;
+  rejection_reason: string | null;
+  has_proof: boolean;
+  reservation: {
+    id: string;
+    booker_name: string;
+    contact_email: string | null;
+    status: string;
+    payment_status: string | null;
+    trip: {
+      id: string;
+      departure_time: string;
+      origin: string;
+      destination: string;
+    } | null;
+  };
+}
+
+export interface ListAgencyPaymentsResult {
+  payments: AgencyPaymentListItem[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+export interface AgencyPaymentPassenger {
+  id: string;
+  seat_code: string | null;
+  name: string;
+  unit_price: number | null;
+  status: string;
+}
+
+export interface AgencyPaymentAllocation {
+  id: string;
+  reservation_passenger_id: string;
+  seat_code: string | null;
+  amount_cents: number;
+  created_at: string;
+}
+
+export interface AgencyPaymentDetail {
+  payment: {
+    id: string;
+    status: string;
+    amount_cents: number;
+    currency: string;
+    submitted_at: string;
+    verified_at: string | null;
+    verified_by: string | null;
+    rejection_reason: string | null;
+    has_proof: boolean;
+  };
+  reservation: {
+    id: string;
+    booker_name: string;
+    booker_phone: string | null;
+    contact_email: string | null;
+    status: string;
+    payment_status: string | null;
+    created_at: string;
+  };
+  trip: {
+    id: string;
+    departure_time: string;
+    vehicle_type: string;
+    seat_price: number | null;
+    origin: string;
+    destination: string;
+  } | null;
+  passengers: AgencyPaymentPassenger[];
+  allocations: AgencyPaymentAllocation[];
+  totals: {
+    active_passenger_count: number;
+    expected_cents: number;
+    allocated_cents: number;
+    remaining_cents: number;
+  };
+}
+
+export interface PaymentProofSignedUrlResult {
+  url: string;
+  expires_in_seconds: number;
+}
+
+export interface VerifyPaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  already_verified: boolean;
+  amount_cents: number;
+  currency: string;
+  allocation_count: number;
+  total_expected_cents: number;
+  verified_at: string;
+  verified_by: string;
+  payment_status: string;
+  audit_id: string;
+}
+
+export interface RejectPaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  already_rejected: boolean;
+  rejection_reason: string;
+  outcome: string;
+  cancelled_reservation: boolean;
+  reservation_status: string;
+  payment_status: string;
+  freed_seat_count: number;
+  cancelled_passenger_count: number;
+  refund_required: boolean;
+  refund_amount_cents: number;
+  payment_audit_id: string;
+  reservation_audit_id: string | null;
+}
+
+export const agencyPaymentApi = {
+  list: (params: {
+    status?: AgencyPaymentStatusFilter;
+    page?: number;
+    limit?: number;
+  }) =>
+    request<ListAgencyPaymentsResult>('/admin/payments', {
+      params: {
+        status: params.status,
+        page: params.page != null ? String(params.page) : undefined,
+        limit: params.limit != null ? String(params.limit) : undefined,
+      },
+    }),
+  detail: (paymentId: string) =>
+    request<AgencyPaymentDetail>(
+      `/admin/payments/${encodeURIComponent(paymentId)}`,
+    ),
+  proofUrl: (paymentId: string) =>
+    request<PaymentProofSignedUrlResult>(
+      `/admin/payments/${encodeURIComponent(paymentId)}/proof`,
+    ),
+  verify: (paymentId: string) =>
+    request<VerifyPaymentResult>(
+      `/admin/payments/${encodeURIComponent(paymentId)}/verify`,
+      { method: 'POST' },
+    ),
+  reject: (paymentId: string, reason: string) =>
+    request<RejectPaymentResult>(
+      `/admin/payments/${encodeURIComponent(paymentId)}/reject`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+};
