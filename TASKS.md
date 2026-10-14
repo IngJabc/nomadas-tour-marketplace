@@ -342,6 +342,7 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 | — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
 | — | Migrar `middleware.ts` → `proxy` (deprecación Next 16; evaluar en ambos repos) | Deuda técnica |
+| — | MKT-014 — Suite E2E de realtime (asientos, pagos, rechazos, expiraciones) | Planificada |
 
 ### MKT-007.1 — Modal WhatsApp de notificación de rechazo (Pendiente)
 
