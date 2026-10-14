@@ -64,20 +64,29 @@ No existen roles `admin` ni `user`. Los roles de operación (`agency`) son de
 
 ---
 
-# 6. CICLO DE VIDA DE UNA RESERVAS MARKETPLACE
+# 6. CICLO DE VIDA DE UNA COMPRA MARKETPLACE (post-MKT-007)
 
-1. Cliente selecciona asientos → **lock** (TTL 900s, servidor decide).
-2. Cliente confirma pasajeros → reserva en estado `locked`.
-3. Cliente sube **comprobante** en ≤15 min (`payments.status='pending'`).
-4. Operador verifica → `payment.verified` + allocations por pasajero →
-   reserva `reserved`.
-5. Si no hay comprobante en T-1 → `cancel_reservation_passenger` por pasajero
-   (libera su seat).
-6. Viaje completado → generación de comisiones (idempotente, por pasajero).
+1. Cliente selecciona asientos → se crea un **`checkout_attempt`** (lock de
+   asientos con TTL 900s, servidor decide).
+2. Cliente sube **comprobante** en ≤15 min → el intento pasa a `pending_review`
+   (máx. 3 comprobantes; el 3er rechazo es definitivo).
+3. Operador (agencia, panel en `nomadas-tour`) verifica → la RPC atómica
+   `verify_checkout_attempt` crea la **reserva + pago + allocations** en una
+   sola transacción.
+4. Si a **T-1** (24h antes de la salida) un pasajero marketplace no está
+   `fully_paid` → `cancel_reservation_passenger` **por pasajero** (libera su
+   seat). *(Pendiente: MKT-008, worker.)*
+5. Viaje completado → generación de comisiones (idempotente, por pasajero).
 
-Estados: `locked → reserved → (cancelled | completed)`.
+Estados del intento: `created → pending_review → (verified | rejected |
+rejected_final | expired | cancelled)`.
+Estados de la reserva: `locked → reserved → (cancelled | completed)`.
 `payment_status` derivado: `pending | partial | fully_paid | refunded |
 cancelled`.
+
+> Los endpoints legacy `POST /api/public/reservations` y
+> `POST /api/public/reservations/:reservationId/payments` devuelven
+> `410 Gone` + `CHECKOUT_ATTEMPTS_REQUIRED`.
 
 ---
 
@@ -89,7 +98,7 @@ son interactivos.
 
 ---
 
-# 8. ENDPOINTS (bootstrap actual)
+# 8. ENDPOINTS (implementados)
 
 | Método | Ruta | Auth | Estado |
 | ------ | ---- | ---- | ------ |
@@ -98,9 +107,13 @@ son interactivos.
 | POST | `/api/auth/register` | no | Implementado |
 | GET | `/api/auth/me` | Bearer | Implementado |
 | GET | `/api/public/trips` | no | Implementado |
-| POST | `/api/public/reservations` | Bearer | **PENDING** |
-| POST | `/api/payments/:id/verify` | Bearer | **PENDING** |
-| GET | `/api/me/reservations` | Bearer | **PENDING** |
+| POST | `/api/public/checkout/attempts` | Bearer | Implementado (MKT-007) |
+| GET | `/api/public/checkout/attempts/:attemptId` | Bearer | Implementado (MKT-007) |
+| POST | `/api/public/checkout/attempts/:attemptId/proof` | Bearer | Implementado (MKT-007) |
+| POST | `/api/public/checkout/attempts/:attemptId/cancel` | Bearer | Implementado (MKT-007) |
+| POST | `/api/public/reservations` | Bearer | **410 Gone** (legacy, `CHECKOUT_ATTEMPTS_REQUIRED`) |
+| POST | `/api/public/reservations/:reservationId/payments` | Bearer | **410 Gone** (legacy) |
+| GET | `/api/me/reservations` | Bearer | **PENDING** (MKT-013) |
 
 ---
 
