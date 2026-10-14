@@ -155,6 +155,17 @@ lo contradiga está mal.
 - Histórico: `commissions.fee_cents` guarda el fee aplicado en su momento.
 - Idempotencia: `idempotency_key` único (`trip_id + passenger_id`).
 
+**Invariante para MKT-009 (comisiones):** se excluye de comisiones todo pasajero
+con `reservation_passengers.status = 'cancelled'` o con un
+`reservation_refunds` en estado `required` o `completed` para su
+`reservation_passenger_id`. Este invariante es válido desde MKT-008 en adelante.
+
+**Impacto del trigger recalc (MKT-008):** dispara en CUALQUIER cancelación de pasajero
+(T-1, manual agencia, MKT-013 futuro). La agencia verá `payment_status` actualizado
+automáticamente en `/agency/payments`. Los refunds T-1 aparecen como
+`reservation_refunds status='required'` — verificar que el panel los muestra
+(MKT-010 si no).
+
 ---
 
 ## 9. Primer viaje gratis
