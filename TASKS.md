@@ -339,8 +339,61 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 | — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
 | — | Fase 4 — Panel admin + /cuenta | Planificada |
+| — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
 | — | Migrar `middleware.ts` → `proxy` (deprecación Next 16; evaluar en ambos repos) | Deuda técnica |
+
+### MKT-007.1 — Modal WhatsApp de notificación de rechazo (Pendiente)
+
+**Contexto:** La agencia ya puede rechazar un intento de compra desde
+`/agency/payments/attempts/[id]` (MKT-007), escribiendo un motivo de rechazo.
+Pero hoy no hay forma de avisar al reservante. Mientras no existe la API de
+WhatsApp Business (futuro MKT-011 / emails outbox), la solución manual es
+ofrecer a la agencia un **link `wa.me`** precargado.
+
+**Flujo propuesto:**
+
+1. La agencia rechaza el intento y confirma el motivo en el modal existente
+   (`CheckoutAttemptRejectModal`).
+2. **Tras confirmar**, aparece un **segundo modal**: «¿Desea notificar al
+   reservante por WhatsApp?».
+   - **Sí** → redirige a
+     `https://wa.me/<booker_phone>?text=<mensaje_precargado>` en nueva pestaña.
+   - **No** → cierra y vuelve al listado (comportamiento actual).
+3. Si `attempt.booker.phone` es `null`, **no** ofrecer la opción; mostrar
+   toast «No hay teléfono del reservante».
+
+**Datos (ya disponibles en `checkout-attempt.service.ts`):**
+- `attempt.booker.phone`, `attempt.booker.name`
+- `attempt.rejection_reason`
+- Pasajeros / asientos y datos del viaje (para el mensaje).
+
+**Mensaje precargado (sugerido):**
+
+```
+Hola [nombre del reservante]:
+
+Tu pago para la reserva de los asientos [A1, A2, …] del viaje
+[Origen → Destino] del [fecha y hora de salida] con la agencia
+[Nombre de la agencia] fue rechazado.
+
+Motivo: [motivo ingresado por la agencia]
+
+Por favor, contacta a la agencia o sube un nuevo comprobante desde
+el enlace de tu reserva.
+
+— Equipo Nómadas Tour
+```
+
+**Variables a interpolar:** `booker.name`, `seat_codes` (lista legible),
+`trip_route`, `departure_time` (formato humano), `agency.name`,
+`rejection_reason`.
+
+**Notas de implementación:**
+- Reutilizar el patrón `components/ui/ConfirmModal.tsx`.
+- `wa.me` abre WhatsApp Web o la app nativa; no requiere API ni credenciales.
+- Ligado a MKT-011 (emails outbox) como camino automático futuro.
+- Repo donde vive la UI: **`nomadas-tour`** (panel de agencia).
 
 ---
 
