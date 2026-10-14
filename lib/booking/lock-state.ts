@@ -9,16 +9,24 @@ export interface PassengerDraft {
 }
 
 /**
- * Marcador local del envío del comprobante (MKT-005 Fase 3).
+ * Marcador local del estado del `checkout_attempt` (MKT-007).
  *
- * Solo representa que la interfaz registró el envío: NO es prueba de un pago
+ * Solo representa lo que la interfaz registró: NO es prueba de un pago
  * aceptado por el servidor, ni permite afirmar `paid`/`confirmed`. Nunca
  * guarda el binario del archivo ni tokens de sesión.
+ *
+ * `pending_review` es el único estado que bloquea la pantalla: la agencia
+ * todavía no decidió. `created` y `rejected` siguen permitiendo reenviar
+ * comprobante (máximo 3 en total, lo decide el backend).
  */
-export interface PaymentPendingMarker {
-  status: 'pending';
-  payment_id?: string;
+export interface CheckoutMarker {
+  status: 'created' | 'pending_review' | 'rejected';
+  attempt_id: string;
   submitted_at?: string;
+  proof_count?: number;
+  remaining_submissions?: number;
+  expires_at?: string;
+  rejection_reason?: string;
 }
 
 export interface LockState {
@@ -28,17 +36,24 @@ export interface LockState {
   lock_expires_at: string;
   passengers: PassengerDraft[];
   /**
-   * Seteado por `POST /api/public/reservations` cuando la reserva ya existe
-   * (Fase B). Desde ese punto el checkout no vuelve a crearla.
-   * `customer_id`, `unit_price`, `status` y `source` viven solo en el backend.
+   * Seteado por `POST /api/public/checkout/attempts` cuando el intento de
+   * compra ya existe. Desde ese punto el checkout no vuelve a crearlo.
+   * `customer_id`, `agency_id`, `unit_price`, `amount_cents` y `status`
+   * viven solo en el backend.
    */
-  reservation_id?: string;
+  attempt_id?: string;
   /**
-   * Seteado por `POST /api/public/reservations/:id/payments` cuando el
-   * comprobante ya fue enviado. Persiste con la LockState y sobrevive a la
-   * recarga; no extiende el TTL del lock original.
+   * `Idempotency-Key` del POST que crea el intento. Se persiste ANTES de
+   * enviar para que un reintento que perdió la respuesta reutilice la MISMA
+   * clave en lugar de crear un segundo intento de compra.
    */
-  payment?: PaymentPendingMarker;
+  attempt_key?: string;
+  /**
+   * Seteado al crear el intento y actualizado con cada comprobante.
+   * Persiste con la LockState y sobrevive a la recarga; no extiende por su
+   * cuenta la ventana que el servidor calcula.
+   */
+  checkout?: CheckoutMarker;
 }
 
 const LOCK_STATE_KEY = 'mkt004.lock.v1';
@@ -53,45 +68,82 @@ function storage(): Storage | null {
 }
 
 /**
- * Fuente única de verdad para "marcador de pago pendiente válido".
+ * Fuente única de verdad para "marcador de checkout válido".
  *
- * Una LockState que incumple esto se descarta entera al leerla, así que en la
- * UI solo llega un marcador que ya pasó por aquí. La exporta la pantalla de
- * reserva para decidir si debe ocultarse el indicador de expiración.
+ * Una LockState que incumple esto se descarta entera al leerla, así que en
+ * la UI solo llega un marcador que ya pasó por aquí.
  */
-export function isValidPaymentMarker(
-  payment: unknown,
-): payment is PaymentPendingMarker {
-  if (!payment || typeof payment !== 'object') return false;
-  const candidate = payment as Partial<PaymentPendingMarker>;
-  return (
-    candidate.status === 'pending' &&
-    (candidate.payment_id === undefined ||
-      typeof candidate.payment_id === 'string') &&
-    (candidate.submitted_at === undefined ||
-      typeof candidate.submitted_at === 'string')
-  );
+export function isValidCheckoutMarker(
+  marker: unknown,
+): marker is CheckoutMarker {
+  if (!marker || typeof marker !== 'object') return false;
+  const candidate = marker as Partial<CheckoutMarker>;
+  if (
+    candidate.status !== 'created' &&
+    candidate.status !== 'pending_review' &&
+    candidate.status !== 'rejected'
+  ) {
+    return false;
+  }
+  if (typeof candidate.attempt_id !== 'string') return false;
+  for (const value of [
+    candidate.submitted_at,
+    candidate.expires_at,
+    candidate.rejection_reason,
+  ]) {
+    if (value !== undefined && typeof value !== 'string') return false;
+  }
+  for (const value of [candidate.proof_count, candidate.remaining_submissions]) {
+    if (value !== undefined && typeof value !== 'number') return false;
+  }
+  return true;
 }
 
 function isValid(state: unknown): state is LockState {
   if (!state || typeof state !== 'object') return false;
-  const candidate = state as Partial<LockState>;
-  return (
-    typeof candidate.trip_id === 'string' &&
-    typeof candidate.lock_expires_at === 'string' &&
-    Array.isArray(candidate.seats) &&
-    candidate.seats.length > 0 &&
-    candidate.seats.every(
+  const candidate = state as Partial<LockState> & Record<string, unknown>;
+  if (
+    typeof candidate.trip_id !== 'string' ||
+    typeof candidate.lock_expires_at !== 'string' ||
+    !Array.isArray(candidate.seats) ||
+    candidate.seats.length === 0 ||
+    !candidate.seats.every(
       (seat) =>
         typeof seat?.id === 'string' && typeof seat?.seat_code === 'string',
-    ) &&
-    Array.isArray(candidate.passengers) &&
-    (candidate.reservation_id === undefined ||
-      typeof candidate.reservation_id === 'string') &&
-    // Un marcador malformado invalida toda la LockState: nunca se debe
-    // confiar en datos persistidos rotos para restaurar la revisión del pago.
-    (candidate.payment === undefined ||
-      isValidPaymentMarker(candidate.payment))
+    ) ||
+    !Array.isArray(candidate.passengers)
+  ) {
+    return false;
+  }
+
+  // Formato anterior a MKT-007 (`reservation_id` + `payment`): se descarta
+  // entero. Esas reservas nacieron antes de la revisión del comprobante y
+  // su flujo ya no existe; reintentar contra el endpoint nuevo daría 410.
+  if (
+    'reservation_id' in candidate ||
+    'payment' in candidate ||
+    candidate.payment !== undefined
+  ) {
+    return false;
+  }
+
+  if (
+    candidate.attempt_id !== undefined &&
+    typeof candidate.attempt_id !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    candidate.attempt_key !== undefined &&
+    typeof candidate.attempt_key !== 'string'
+  ) {
+    return false;
+  }
+
+  // Un marcador malformado invalida toda la LockState: nunca se debe
+  // confiar en datos persistidos rotos para restaurar la revisión.
+  return (
+    candidate.checkout === undefined || isValidCheckoutMarker(candidate.checkout)
   );
 }
 

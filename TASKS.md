@@ -236,6 +236,100 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 ---
 
+## Fase 2 — Pagos y checkout (2026-10)
+
+- [x] **MKT-006** — UI de revisión de pagos de agencia (2026-10-13)
+  - Panel de agencia en `nomadas-tour` con listado, detalle, verificación
+    y rechazo de pagos de marketplace.
+  - Backend `nomadas-tour`: rutas agency payments (list/detail/proof/verify/
+    reject) con `auth`, `authorize('agency')` y `tenant`.
+  - Frontend `nomadas-tour`: `app/agency/payments` (listado con filtros),
+    `[id]` (detalle con acciones), modales de verificación/rechazo/visor
+    de comprobante.
+  - Merge en `main` (PR #7).
+
+- [x] **MKT-007** — Checkout pendiente de revisión y aprobación del pago (2026-10-13)
+  - **Problema**: antes de MKT-007 el flujo B2C creaba la reserva y el pago
+    ANTES de que la agencia revisara el comprobante. Si el pago era rechazado,
+    la reserva y los asientos ya estaban comprometidos.
+  - **Solución**: la compra nace como `checkout_attempts` (tabla nueva en
+    migración 087). La reserva, el pago y las allocations solo se crean en la
+    aprobación atómica `verify_checkout_attempt`.
+  - **Migración** `../nomadas-tour/supabase/migrations/087_checkout_attempts.sql`:
+    - Tabla `checkout_attempts` con estados `created | pending_review |
+      rejected | verified | rejected_final | expired | cancelled`.
+    - Columnas de conciliación en `payments`: `payment_reference`,
+      `bank_origin`, `payment_datetime`.
+    - `seats.checkout_attempt_id` + trigger `seats_clear_checkout_attempt`
+      para tracking de asientos retenidos por un intento.
+    - RPCs: `create_checkout_attempt`, `submit_checkout_proof`,
+      `verify_checkout_attempt` (atómica: crea reserva + pago + allocations),
+      `reject_checkout_attempt`, `cancel_checkout_attempt`,
+      `cleanup_expired_checkout_attempts`.
+    - REVOKE sobre `create_marketplace_reservation` y
+      `submit_marketplace_payment` (endpoints desactivados).
+  - **Backend Marketplace** (`nomadas-tour-marketplace/backend`):
+    - Nuevas rutas `POST /api/public/checkout/attempts`,
+      `GET /api/public/checkout/attempts/:attemptId`,
+      `POST /api/public/checkout/attempts/:attemptId/proof`,
+      `POST /api/public/checkout/attempts/:attemptId/cancel`.
+    - `POST /api/public/reservations` y
+      `POST /api/public/reservations/:reservationId/payments` devuelven
+      `410 Gone` + `CHECKOUT_ATTEMPTS_REQUIRED`.
+    - Rate limiting: create 30/min, submit 10/min, cancel 20/min
+      (deshabilitado en `NODE_ENV=test`).
+    - Validación de archivos (magic bytes, MIME, 5 MiB) en
+      `checkout.service.ts`.
+  - **Frontend Marketplace**:
+    - `lib/api.ts`: `checkoutApi` (createAttempt, submitProof, getAttempt,
+      cancelAttempt).
+    - `lib/booking/lock-state.ts`: marcador `checkout_attempt` para
+      persistir la compra entre renders.
+    - `app/reservas/nueva/page.tsx`: flujo completo — creación de intento,
+      subida de comprobante con conciliación, indicador de ventana de
+      revisión, cancelación con modal de confirmación.
+    - `components/booking/ProofUploader.tsx`: campos de conciliación
+      (referencia, banco, fecha-hora), validación client-side.
+    - `components/booking/LockCountdown.tsx`: modo `review` para la ventana
+      de revisión.
+    - `components/ui/ConfirmModal.tsx`: modal de confirmación reutilizable.
+  - **Backend Tour** (`nomadas-tour/backend`):
+    - Nuevas rutas agency: `GET /api/agency/checkout-attempts`,
+      `GET /api/agency/checkout-attempts/:attemptId`,
+      `GET /api/agency/checkout-attempts/:attemptId/proof`,
+      `POST /api/agency/checkout-attempts/:attemptId/verify`,
+      `POST /api/agency/checkout-attempts/:attemptId/reject`.
+    - `checkout-attempt.service.ts`: listado con filtros (status, trip, q),
+      detalle con conciliación, verificación atómica, rechazo con motivo.
+  - **Frontend Tour**:
+    - `lib/payments.ts`: tipos `AgencyCheckoutAttemptListItem`,
+      `AgencyCheckoutAttemptDetail`, labels y badge variants.
+    - `lib/api.ts`: `agencyApi.listCheckoutAttempts`, `getCheckoutAttempt`,
+      `getCheckoutAttemptProof`, `verifyCheckoutAttempt`,
+      `rejectCheckoutAttempt`.
+    - `app/agency/payments/page.tsx`: toggle "Pagos" / "Compras" con filtros
+      de estado por vista.
+    - `app/agency/payments/attempts/[id]/page.tsx`: detalle de compra con
+      conciliación, pasajeros, acciones de verificar/rechazar/ver comprobante.
+    - `components/agency/payments/AgencyCheckoutAttemptCard.tsx`: tarjeta
+      de listado.
+    - `components/agency/payments/CheckoutAttempt{Verify,Reject,ProofViewer}
+      Modal.tsx`: modales de acción.
+  - **Endpoints legacy desactivados**:
+    - `POST /api/public/reservations` → `410 CHECKOUT_ATTEMPTS_REQUIRED`.
+    - `POST /api/public/reservations/:reservationId/payments` →
+      `410 CHECKOUT_ATTEMPTS_REQUIRED`.
+  - **Tests**:
+    - Marketplace backend: `checkout.test.ts` (34 tests), `reservations.test.ts`
+      (6), `payments.test.ts` (5), `guest-claim.test.ts` actualizado.
+    - Marketplace frontend: `page.test.tsx` (66 tests), `ProofUploader.test.tsx`,
+      `api-payment.test.ts`, `lock-state.test.ts`.
+    - Tour frontend: `PaymentsPages.test.tsx` (+8 tests de compras).
+  - **Pendiente de cierre**: validación E2E en staging con migración 087
+    aplicada (atomicidad de `verify_checkout_attempt`, RLS, concurrencia).
+
+---
+
 ## Después
 
 | Orden | Tema | Estado |

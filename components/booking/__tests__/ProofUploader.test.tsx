@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { paymentApi, type SubmitPaymentProofResult } from '@/lib/api';
+import { checkoutApi, type SubmitCheckoutProofResult } from '@/lib/api';
 import { ApiError } from '@/lib/errors/api-error';
 import {
   MAX_PROOF_BYTES,
@@ -9,25 +9,34 @@ import {
 } from '@/components/booking/ProofUploader';
 
 vi.mock('@/lib/api', () => ({
-  paymentApi: { submitProof: vi.fn() },
+  checkoutApi: { submitProof: vi.fn() },
 }));
 
-const mockedSubmitProof = vi.mocked(paymentApi.submitProof);
+const mockedSubmitProof = vi.mocked(checkoutApi.submitProof);
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function paymentResult(
-  overrides: Partial<SubmitPaymentProofResult> = {},
-): SubmitPaymentProofResult {
+const RECONCILIATION = {
+  payment_reference: '00123456789',
+  bank_origin: 'Banco de Venezuela',
+  payment_datetime: '2020-01-01T10:00',
+};
+
+function proofResult(
+  overrides: Partial<SubmitCheckoutProofResult> = {},
+): SubmitCheckoutProofResult {
   return {
-    payment_id: 'pay-1',
-    reservation_id: 'res-1',
-    payment_status: 'pending',
-    reservation_status: 'reserved',
+    attempt_id: 'att-1',
+    status: 'pending_review',
+    proof_count: 1,
+    remaining_submissions: 2,
+    proof_path: 'att-1/abc.png',
+    payment_reference: RECONCILIATION.payment_reference,
+    bank_origin: RECONCILIATION.bank_origin,
+    payment_datetime: '2020-01-01T15:00:00.000Z',
     amount_cents: 4040,
-    currency: 'USD',
-    submitted_at: '2026-10-04T12:00:00.000Z',
+    expires_at: '2020-01-02T10:00:00.000Z',
     idempotent: false,
     ...overrides,
   };
@@ -57,6 +66,19 @@ function selectFile(view: ReturnType<typeof render>, file: File) {
   });
   fireEvent.change(input);
   return input;
+}
+
+/** Los tres datos de conciliación son obligatorios antes de enviar. */
+function fillReconciliation() {
+  fireEvent.change(screen.getByLabelText('Referencia de la transferencia'), {
+    target: { value: RECONCILIATION.payment_reference },
+  });
+  fireEvent.change(screen.getByLabelText('Banco de origen'), {
+    target: { value: RECONCILIATION.bank_origin },
+  });
+  fireEvent.change(screen.getByLabelText('Fecha y hora del pago'), {
+    target: { value: RECONCILIATION.payment_datetime },
+  });
 }
 
 function submitButton() {
@@ -95,12 +117,16 @@ async function clickSubmitUntilCall(count: number) {
   });
 }
 
-async function renderUploader() {
+const onSubmitted = vi.fn();
+const onAlreadySubmitted = vi.fn();
+
+async function renderUploader(remainingSubmissions = 3) {
   let view!: ReturnType<typeof render>;
   await act(async () => {
     view = render(
       <ProofUploader
-        reservationId="res-1"
+        attemptId="att-1"
+        remainingSubmissions={remainingSubmissions}
         onSubmitted={onSubmitted}
         onAlreadySubmitted={onAlreadySubmitted}
       />,
@@ -109,8 +135,11 @@ async function renderUploader() {
   return view;
 }
 
-const onSubmitted = vi.fn();
-const onAlreadySubmitted = vi.fn();
+/** Selecciona archivo + conciliación, como lo haría el usuario real. */
+async function prepareSubmission(view: ReturnType<typeof render>) {
+  selectFile(view, buildFile());
+  fillReconciliation();
+}
 
 beforeEach(() => {
   mockedSubmitProof.mockReset();
@@ -122,7 +151,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('ProofUploader (MKT-005 Fase 3)', () => {
+describe('ProofUploader (MKT-007)', () => {
   it('bloquea el envío hasta que exista un archivo seleccionado', async () => {
     const view = await renderUploader();
 
@@ -135,10 +164,55 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     expect(screen.getByText(/\d+ KB/)).toBeInTheDocument();
   });
 
+  it('muestra el contador de reenvíos restantes', async () => {
+    await renderUploader(2);
+
+    expect(
+      screen.getByText(/Reenvío 2 de 3 disponibles/),
+    ).toBeInTheDocument();
+  });
+
+  it('no muestra el contador en el primer envío', async () => {
+    await renderUploader(3);
+
+    expect(screen.queryByText(/Reenvío/)).not.toBeInTheDocument();
+  });
+
+  it('exige los tres datos de conciliación y no llama a la API', async () => {
+    const view = await renderUploader();
+    selectFile(view, buildFile());
+
+    await clickSubmit();
+
+    expect(
+      screen.getByText('Escribe la referencia de la transferencia.'),
+    ).toBeInTheDocument();
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(view).toBeTruthy();
+  });
+
+  it('rechaza una fecha de pago futura', async () => {
+    const view = await renderUploader();
+    selectFile(view, buildFile());
+    fillReconciliation();
+    fireEvent.change(screen.getByLabelText('Fecha y hora del pago'), {
+      target: { value: '2999-01-01T10:00' },
+    });
+
+    await clickSubmit();
+
+    expect(
+      screen.getByText('La fecha del pago no puede estar en el futuro.'),
+    ).toBeInTheDocument();
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+  });
+
   it('rechaza formatos no permitidos en el cliente sin llamar a la API', async () => {
     const view = await renderUploader();
 
     selectFile(view, buildFile('notas.exe', 'application/octet-stream'));
+    fillReconciliation();
 
     expect(
       screen.getByText('Adjunta el comprobante en formato PNG, JPEG, WEBP o PDF.'),
@@ -182,48 +256,50 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('envía con Idempotency-Key en formato UUID y notifica al padre', async () => {
-    mockedSubmitProof.mockResolvedValue(paymentResult());
+  it('envía folio, archivo, conciliación e Idempotency-Key en formato UUID', async () => {
+    mockedSubmitProof.mockResolvedValue(proofResult());
     const view = await renderUploader();
-    const file = buildFile();
-    selectFile(view, file);
+    await prepareSubmission(view);
 
     await clickSubmit();
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(1);
-    const [reservationId, sentFile, key] = mockedSubmitProof.mock.calls[0];
-    expect(reservationId).toBe('res-1');
-    expect(sentFile).toBe(file);
+    const [attemptId, sentFile, reconciliation, key] =
+      mockedSubmitProof.mock.calls[0];
+    expect(attemptId).toBe('att-1');
+    expect(sentFile).toBeInstanceOf(File);
+    expect(reconciliation).toEqual({
+      payment_reference: RECONCILIATION.payment_reference,
+      bank_origin: RECONCILIATION.bank_origin,
+      payment_datetime: '2020-01-01T10:00:00.000Z',
+    });
     expect(key).toMatch(UUID_RE);
-    expect(onSubmitted).toHaveBeenCalledWith(paymentResult());
+    expect(onSubmitted).toHaveBeenCalledWith(proofResult());
   });
 
   it('trata la respuesta idempotente como un envío pendiente de revisión', async () => {
-    mockedSubmitProof.mockResolvedValue(paymentResult({ idempotent: true }));
+    mockedSubmitProof.mockResolvedValue(proofResult({ idempotent: true }));
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 
     expect(onSubmitted).toHaveBeenCalledWith(
-      paymentResult({ idempotent: true }),
+      proofResult({ idempotent: true }),
     );
     // El componente jamás afirma "aprobado"/"pagado": lo decide el padre.
     expect(screen.queryByText(/aprobado/i)).not.toBeInTheDocument();
   });
 
   it('conserva la misma clave al reintentar el mismo archivo tras un error', async () => {
-    mockedSubmitProof.mockRejectedValueOnce(
-      new TypeError('Failed to fetch'),
-    );
-    mockedSubmitProof.mockResolvedValueOnce(paymentResult());
+    mockedSubmitProof.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    mockedSubmitProof.mockResolvedValueOnce(proofResult());
     const view = await renderUploader();
-    const file = buildFile();
-    selectFile(view, file);
+    await prepareSubmission(view);
 
     await clickSubmit();
 
-    const firstKey = mockedSubmitProof.mock.calls[0][2];
+    const firstKey = mockedSubmitProof.mock.calls[0][3];
     expect(firstKey).toMatch(UUID_RE);
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toBeInTheDocument();
@@ -233,7 +309,7 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     await clickSubmit();
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(2);
-    expect(mockedSubmitProof.mock.calls[1][2]).toBe(firstKey);
+    expect(mockedSubmitProof.mock.calls[1][3]).toBe(firstKey);
     expect(onSubmitted).toHaveBeenCalledTimes(1);
   });
 
@@ -241,9 +317,10 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     mockedSubmitProof.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const view = await renderUploader();
     selectFile(view, buildFile('otro.png', 'image/png', undefined, 'otra-imagen'));
+    fillReconciliation();
 
     await clickSubmit();
-    const firstKey = mockedSubmitProof.mock.calls[0][2];
+    const firstKey = mockedSubmitProof.mock.calls[0][3];
 
     // La identidad es por CONTENIDO: un archivo distinto es otro contenido,
     // aunque repita formato o tamaño.
@@ -251,11 +328,11 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
       view,
       buildFile('distinto.pdf', 'application/pdf', undefined, 'documento-nuevo'),
     );
-    mockedSubmitProof.mockResolvedValueOnce(paymentResult());
+    mockedSubmitProof.mockResolvedValueOnce(proofResult());
     await clickSubmit();
 
-    expect(mockedSubmitProof.mock.calls[1][2]).not.toBe(firstKey);
-    expect(mockedSubmitProof.mock.calls[1][2]).toMatch(UUID_RE);
+    expect(mockedSubmitProof.mock.calls[1][3]).not.toBe(firstKey);
+    expect(mockedSubmitProof.mock.calls[1][3]).toMatch(UUID_RE);
   });
 
   it('nombre distinto con el mismo contenido comparte la clave: es la misma operación', async () => {
@@ -265,21 +342,22 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
       view,
       buildFile('comprobante.png', 'image/png', undefined, 'mismo-bytes'),
     );
+    fillReconciliation();
 
     await clickSubmit();
-    const firstKey = mockedSubmitProof.mock.calls[0][2];
+    const firstKey = mockedSubmitProof.mock.calls[0][3];
 
     // El backend identifica el comprobante por el hash del contenido
-    // (`{reservation_id}/{sha256}.{ext}`): renombrar los bytes no crea una
+    // (`{attempt_id}/{sha256}.{ext}`): renombrar los bytes no crea una
     // operación nueva.
     selectFile(
       view,
       buildFile('copia-rebautizada.webp', 'image/webp', undefined, 'mismo-bytes'),
     );
-    mockedSubmitProof.mockResolvedValueOnce(paymentResult());
+    mockedSubmitProof.mockResolvedValueOnce(proofResult());
     await clickSubmit();
 
-    expect(mockedSubmitProof.mock.calls[1][2]).toBe(firstKey);
+    expect(mockedSubmitProof.mock.calls[1][3]).toBe(firstKey);
   });
 
   it('archivos distintos con igual nombre y tamaño reciben claves distintas (H-01)', async () => {
@@ -290,19 +368,20 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
       view,
       buildFile('comprobante.png', 'image/png', 7777, 'contenido-uno'),
     );
+    fillReconciliation();
     await clickSubmit();
-    const firstKey = mockedSubmitProof.mock.calls[0][2];
+    const firstKey = mockedSubmitProof.mock.calls[0][3];
 
     selectFile(
       view,
       buildFile('comprobante.png', 'image/png', 7777, 'contenido-dos'),
     );
-    mockedSubmitProof.mockResolvedValueOnce(paymentResult());
+    mockedSubmitProof.mockResolvedValueOnce(proofResult());
     await clickSubmit();
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(2);
-    expect(mockedSubmitProof.mock.calls[1][2]).not.toBe(firstKey);
-    expect(mockedSubmitProof.mock.calls[1][2]).toMatch(UUID_RE);
+    expect(mockedSubmitProof.mock.calls[1][3]).not.toBe(firstKey);
+    expect(mockedSubmitProof.mock.calls[1][3]).toMatch(UUID_RE);
     expect(onSubmitted).toHaveBeenCalledTimes(1);
   });
 
@@ -310,16 +389,16 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     mockedSubmitProof
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(paymentResult());
+      .mockResolvedValueOnce(proofResult());
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
     await clickSubmit();
     await clickSubmit();
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(3);
-    const keys = mockedSubmitProof.mock.calls.map((call) => call[2]);
+    const keys = mockedSubmitProof.mock.calls.map((call) => call[3]);
     expect(keys[0]).toMatch(UUID_RE);
     expect(keys[1]).toBe(keys[0]);
     expect(keys[2]).toBe(keys[0]);
@@ -334,8 +413,9 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
       view,
       buildFile('comprobante.png', 'image/png', undefined, 'mismo-contenido'),
     );
+    fillReconciliation();
     await clickSubmit();
-    const firstKey = mockedSubmitProof.mock.calls[0][2];
+    const firstKey = mockedSubmitProof.mock.calls[0][3];
     expect(screen.getByRole('alert')).toBeInTheDocument();
 
     // Objeto File distinto pero contenido idéntico: sigue siendo la misma
@@ -344,24 +424,24 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
       view,
       buildFile('comprobante.png', 'image/png', undefined, 'mismo-contenido'),
     );
-    mockedSubmitProof.mockResolvedValueOnce(paymentResult());
+    mockedSubmitProof.mockResolvedValueOnce(proofResult());
     await clickSubmit();
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(2);
-    expect(mockedSubmitProof.mock.calls[1][2]).toBe(firstKey);
+    expect(mockedSubmitProof.mock.calls[1][3]).toBe(firstKey);
     expect(onSubmitted).toHaveBeenCalledTimes(1);
   });
 
   it('deshabilita el envío mientras la solicitud está en vuelo', async () => {
-    let resolveSubmit: (value: SubmitPaymentProofResult) => void = () => {};
+    let resolveSubmit: (value: SubmitCheckoutProofResult) => void = () => {};
     mockedSubmitProof.mockReturnValue(
-      new Promise<SubmitPaymentProofResult>((resolve) => {
+      new Promise<SubmitCheckoutProofResult>((resolve) => {
         resolveSubmit = resolve;
       }),
     );
 
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmitUntilCall(1);
 
@@ -373,22 +453,22 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     ).toBeDisabled();
 
     await act(async () => {
-      resolveSubmit(paymentResult());
+      resolveSubmit(proofResult());
     });
 
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
   });
 
-  it('PAYMENT_ALREADY_SUBMITTED pasa a revisión sin afirmar éxito de esta respuesta', async () => {
+  it('CHECKOUT_PROOF_PENDING pasa a revisión sin afirmar éxito de esta respuesta', async () => {
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
-        'El comprobante de esta reserva ya fue enviado',
-        'PAYMENT_ALREADY_SUBMITTED',
+        'Este comprobante ya está en revisión',
+        'CHECKOUT_PROOF_PENDING',
         409,
       ),
     );
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 
@@ -399,48 +479,50 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     expect(view).toBeTruthy();
   });
 
-  it('PAYMENT_IDEMPOTENCY_CONFLICT explica el problema y no regenera la clave', async () => {
+  it('CHECKOUT_IDEMPOTENCY_CONFLICT explica el problema y no regenera la clave', async () => {
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
         'La clave de idempotencia ya se usó con otro comprobante',
-        'PAYMENT_IDEMPOTENCY_CONFLICT',
+        'CHECKOUT_IDEMPOTENCY_CONFLICT',
         409,
       ),
     );
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 
     expect(
-      screen.getByText(/Otra clave de idempotencia|otra clave de idempotencia/),
+      screen.getByText(/otra clave de idempotencia/i),
     ).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(onAlreadySubmitted).not.toHaveBeenCalled();
 
-    const keyAfterConflict = mockedSubmitProof.mock.calls[0][2];
+    const keyAfterConflict = mockedSubmitProof.mock.calls[0][3];
     await clickSubmit();
 
     // Segundo intento manual: MISMA clave, nunca una clave nueva automática.
     expect(mockedSubmitProof).toHaveBeenCalledTimes(2);
-    expect(mockedSubmitProof.mock.calls[1][2]).toBe(keyAfterConflict);
+    expect(mockedSubmitProof.mock.calls[1][3]).toBe(keyAfterConflict);
   });
 
-  it('PAYMENT_LOCK_EXPIRED muestra el mensaje del backend sin promover la reserva', async () => {
+  it('CHECKOUT_WINDOW_EXPIRED muestra el mensaje del backend sin promover la compra', async () => {
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
-        'Tu selección de asientos expiró. Resérvalos de nuevo',
-        'PAYMENT_LOCK_EXPIRED',
-        409,
+        'La ventana de revisión terminó. Tu selección ya no está retenida',
+        'CHECKOUT_WINDOW_EXPIRED',
+        410,
       ),
     );
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 
     expect(
-      screen.getByText('Tu selección de asientos expiró. Resérvalos de nuevo'),
+      screen.getByText(
+        'La ventana de revisión terminó. Tu selección ya no está retenida',
+      ),
     ).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(view).toBeTruthy();
@@ -450,12 +532,12 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
         'El contenido del archivo no corresponde a un comprobante válido',
-        'PAYMENT_FILE_INVALID',
+        'CHECKOUT_PROOF_FILE_INVALID',
         400,
       ),
     );
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 
@@ -469,7 +551,7 @@ describe('ProofUploader (MKT-005 Fase 3)', () => {
   it('un error de red conserva la selección y permite reintentar', async () => {
     mockedSubmitProof.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const view = await renderUploader();
-    selectFile(view, buildFile());
+    await prepareSubmission(view);
 
     await clickSubmit();
 

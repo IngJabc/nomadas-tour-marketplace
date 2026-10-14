@@ -2,15 +2,15 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import toast from 'react-hot-toast';
 import {
-  paymentApi,
+  checkoutApi,
   publicApi,
-  reservationApi,
   seatApi,
-  type CreateReservationResult,
+  type CreateCheckoutAttemptResult,
+  type CheckoutAttemptView,
   type MySeatLocksResult,
   type PublicTripDetail,
   type PublicTripSeat,
-  type SubmitPaymentProofResult,
+  type SubmitCheckoutProofResult,
 } from '@/lib/api';
 import { ApiError } from '@/lib/errors/api-error';
 import NewReservationPage from '../page';
@@ -60,11 +60,11 @@ vi.mock('@/lib/api', () => ({
     unlockGuestSeats: vi.fn(),
     claimGuestLocks: vi.fn(),
   },
-  reservationApi: {
-    create: vi.fn(),
-  },
-  paymentApi: {
+  checkoutApi: {
+    createAttempt: vi.fn(),
     submitProof: vi.fn(),
+    getAttempt: vi.fn(),
+    cancelAttempt: vi.fn(),
   },
 }));
 
@@ -105,8 +105,10 @@ const mockedGetGuestLocks = vi.mocked(seatApi.getGuestLocks);
 const mockedClaimGuestLocks = vi.mocked(seatApi.claimGuestLocks);
 const mockedLockGuest = vi.mocked(seatApi.lockGuestSeats);
 const mockedUnlockGuest = vi.mocked(seatApi.unlockGuestSeats);
-const mockedCreate = vi.mocked(reservationApi.create);
-const mockedSubmitProof = vi.mocked(paymentApi.submitProof);
+const mockedCreate = vi.mocked(checkoutApi.createAttempt);
+const mockedSubmitProof = vi.mocked(checkoutApi.submitProof);
+const mockedGetAttempt = vi.mocked(checkoutApi.getAttempt);
+const mockedCancelAttempt = vi.mocked(checkoutApi.cancelAttempt);
 
 const LOCK_KEY = 'mkt004.lock.v1';
 
@@ -181,6 +183,22 @@ function seedLock(overrides: Record<string, unknown> = {}) {
   );
 }
 
+/**
+ * LockState con un `checkout_attempt` ya creado (MKT-007). La pantalla
+ * restaura este estado consultando `GET /public/checkout/attempts/:id`.
+ */
+function seedAttemptLock(
+  checkoutOverrides: Record<string, unknown> = {},
+  overrides: Record<string, unknown> = {},
+) {
+  seedLock({
+    attempt_id: 'att-1',
+    attempt_key: 'b2f1f6d0-0000-4000-8000-000000000001',
+    checkout: { status: 'created', attempt_id: 'att-1', ...checkoutOverrides },
+    ...overrides,
+  });
+}
+
 function serverLocks(
   overrides: Partial<MySeatLocksResult> = {},
 ): MySeatLocksResult {
@@ -221,20 +239,53 @@ async function fillValidPassengers(view: ReturnType<typeof render>) {
   set('passenger-1-phone', '04121234567');
 }
 
-function createdReservation(
-  overrides: Partial<CreateReservationResult> = {},
-): CreateReservationResult {
+function createdAttempt(
+  overrides: Partial<CreateCheckoutAttemptResult> = {},
+): CreateCheckoutAttemptResult {
   return {
-    reservation_id: 'res-1',
+    attempt_id: 'att-1',
     trip_id: 'trip-1',
     agency_id: 'ag-1',
     customer_id: 'user-me',
-    status: 'locked',
-    source: 'marketplace',
-    unit_price: 2020,
-    passenger_count: 2,
+    status: 'created',
     seat_ids: ['seat-1', 'seat-2'],
+    passenger_count: 2,
+    unit_price: 2020,
+    amount_cents: 4040,
+    proof_count: 0,
+    expires_at: futureExpiry(),
     idempotent: false,
+    ...overrides,
+  };
+}
+
+/** Respuesta de `GET /public/checkout/attempts/:id` para restaurar la pantalla. */
+function attemptView(
+  overrides: Partial<CheckoutAttemptView> = {},
+): CheckoutAttemptView {
+  return {
+    attempt_id: 'att-1',
+    status: 'created',
+    trip_id: 'trip-1',
+    agency_id: 'ag-1',
+    seat_ids: ['seat-1', 'seat-2'],
+    seat_codes: ['A1', 'A2'],
+    passenger_count: 2,
+    unit_price: 2020,
+    amount_cents: 4040,
+    proof_count: 0,
+    remaining_submissions: 3,
+    payment_reference: null,
+    bank_origin: null,
+    payment_datetime: null,
+    proof_submitted_at: null,
+    review_started_at: null,
+    rejection_reason: null,
+    rejection_count: 0,
+    expires_at: futureExpiry(),
+    created_at: '2026-10-04T11:00:00.000Z',
+    closed_at: null,
+    verified_at: null,
     ...overrides,
   };
 }
@@ -246,7 +297,10 @@ beforeEach(() => {
   authState.loading = false;
   search.value = '';
   mockedCreate.mockReset();
-  mockedCreate.mockResolvedValue(createdReservation());
+  mockedCreate.mockResolvedValue(createdAttempt());
+  mockedGetAttempt.mockReset();
+  mockedGetAttempt.mockResolvedValue(attemptView());
+  mockedCancelAttempt.mockReset();
 });
 
 describe('Wizard de reserva (MKT-004)', () => {
@@ -380,7 +434,7 @@ describe('Wizard de reserva (MKT-004)', () => {
 
     await act(async () => {
       fireEvent.click(
-        screen.getByRole('button', { name: 'Confirmar y pagar' }),
+        screen.getByRole('button', { name: 'Continuar al pago' }),
       );
     });
 
@@ -410,7 +464,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     );
     await act(async () => {
       fireEvent.click(
-        screen.getByRole('button', { name: 'Confirmar y pagar' }),
+        screen.getByRole('button', { name: 'Continuar al pago' }),
       );
     });
     expect(
@@ -424,7 +478,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     );
     await act(async () => {
       fireEvent.click(
-        screen.getByRole('button', { name: 'Confirmar y pagar' }),
+        screen.getByRole('button', { name: 'Continuar al pago' }),
       );
     });
 
@@ -441,17 +495,17 @@ describe('Wizard de reserva (MKT-004)', () => {
     expect(screen.getByText('José Pérez')).toBeInTheDocument();
     expect(screen.getByText('12345678 · Asiento A1')).toBeInTheDocument();
     expect(screen.getByText('$40,40')).toBeInTheDocument();
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Tus asientos están reservados y tus pasajeros quedaron guardados/,
+        /Tus asientos quedaron retenidos y tus pasajeros están guardados/,
       ),
     ).toBeInTheDocument();
     expect(mockedCreate).toHaveBeenCalledTimes(1);
 
     // Tras crear: sin botón de confirmación y pasajeros bloqueados.
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(
       view.container.querySelector('#passenger-0-first-name'),
@@ -784,12 +838,12 @@ function resetCheckoutTest() {
   mockedSubmitProof.mockReset();
 }
 
-// Checkout de una sola página: completar pasajeros y pulsar "Confirmar y pagar"
+// Checkout de una sola página: completar pasajeros y pulsar "Continuar al pago"
 // valida y dispara el POST de la reserva (antes era navegar al step de pago).
-async function createReservationViaUi(view: ReturnType<typeof render>) {
+async function createAttemptViaUi(view: ReturnType<typeof render>) {
   await fillValidPassengers(view);
   await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Confirmar y pagar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar al pago' }));
   });
 }
 
@@ -816,7 +870,7 @@ describe('Authentication gate (MKT-004 Fase B)', () => {
       screen.getByRole('link', { name: /Registrarse/ }),
     ).toHaveAttribute('href', '/register?redirect=%2Freservas%2Fnueva');
     expect(mockedCreate).not.toHaveBeenCalled();
-    expect(screen.queryByText('Reserva creada')).not.toBeInTheDocument();
+    expect(screen.queryByText('Compra iniciada')).not.toBeInTheDocument();
   });
 
   it('autenticado no muestra el gate y crea la reserva al confirmar', async () => {
@@ -830,10 +884,10 @@ describe('Authentication gate (MKT-004 Fase B)', () => {
       screen.queryByText('Para continuar con el pago, debes iniciar sesión.'),
     ).not.toBeInTheDocument();
 
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
   });
 
   it('guest sin sesión verifica sus locks con la cookie y llega al gate sin relockear', async () => {
@@ -923,10 +977,10 @@ describe('Claim guest tras login/registro (MKT-004 Fase B)', () => {
     expect(mockedLock).not.toHaveBeenCalled();
     expect(mockedLockGuest).not.toHaveBeenCalled();
 
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
     expect(stored.lock_expires_at).toBe(expires);
   });
@@ -970,10 +1024,10 @@ describe('Claim guest tras login/registro (MKT-004 Fase B)', () => {
     expect(mockedLock).not.toHaveBeenCalled();
     expect(mockedLockGuest).not.toHaveBeenCalled();
 
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
   });
 });
 
@@ -988,7 +1042,7 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
     expect(mockedCreate).toHaveBeenCalledWith({
@@ -1011,7 +1065,9 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
           phone: '04121234567',
         },
       ],
-    });
+    },
+      expect.any(String),
+    );
     const payload = mockedCreate.mock.calls[0][0] as unknown as Record<
       string,
       unknown
@@ -1020,18 +1076,27 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     expect(payload).not.toHaveProperty('unit_price');
     expect(payload).not.toHaveProperty('status');
     expect(payload).not.toHaveProperty('source');
+    // La `Idempotency-Key` viaja en el header, nunca en el cuerpo.
+    expect(String(mockedCreate.mock.calls[0][1])).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(JSON.stringify(payload)).not.toContain('attempt_key');
   });
 
-  it('guarda reservation_id en LockState con los pasajeros persistidos', async () => {
+  it('guarda attempt_id y el marcador de checkout en LockState', async () => {
     seedLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
-    expect(stored.reservation_id).toBe('res-1');
+    expect(stored.attempt_id).toBe('att-1');
+    expect(stored.checkout).toMatchObject({
+      status: 'created',
+      attempt_id: 'att-1',
+    });
     expect(stored.passengers).toHaveLength(2);
     expect(stored.passengers[0]).toMatchObject({
       seat_id: 'seat-1',
@@ -1039,30 +1104,35 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     });
     expect(stored).not.toHaveProperty('customer_id');
     expect(stored).not.toHaveProperty('unit_price');
-    expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Reserva creada');
+    // Ningún marcador del formato anterior.
+    expect(stored).not.toHaveProperty('reservation_id');
+    expect(stored).not.toHaveProperty('payment');
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      'Compra iniciada. Ahora envía tu comprobante de pago.',
+    );
   });
 
   it('200 idempotent se trata como éxito y muestra el placeholder de pago', async () => {
     mockedCreate.mockResolvedValue(
-      createdReservation({ idempotent: true, reservation_id: 'res-9' }),
+      createdAttempt({ idempotent: true, attempt_id: 'att-9' }),
     );
     seedLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Tus asientos están reservados y tus pasajeros quedaron guardados/,
+        /La reserva definitiva se crea cuando la agencia apruebe tu comprobante/,
       ),
     ).toBeInTheDocument();
     expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
-    expect(stored.reservation_id).toBe('res-9');
+    expect(stored.attempt_id).toBe('att-9');
   });
 
   it('no duplica el POST con la petición aún en vuelo', async () => {
@@ -1070,10 +1140,10 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
-    let resolveCreate!: (value: CreateReservationResult) => void;
+    let resolveCreate!: (value: CreateCheckoutAttemptResult) => void;
     mockedCreate.mockImplementation(
       () =>
-        new Promise<CreateReservationResult>((resolve) => {
+        new Promise<CreateCheckoutAttemptResult>((resolve) => {
           resolveCreate = resolve;
         }),
     );
@@ -1081,25 +1151,25 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     const view = await renderWizard();
     await fillValidPassengers(view);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Confirmar y pagar' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
     );
     expect(mockedCreate).toHaveBeenCalledTimes(1);
 
     // Estado loading (§12): el botón queda deshabilitado mientras hay POST en vuelo.
     const pendingButton = screen.getByRole('button', {
-      name: 'Confirmando tu reserva…',
+      name: 'Iniciando tu compra…',
     });
     expect(pendingButton).toBeDisabled();
     fireEvent.click(pendingButton);
     expect(mockedCreate).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveCreate(createdReservation());
+      resolveCreate(createdAttempt());
     });
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(mockedCreate).toHaveBeenCalledTimes(1);
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(
       view.container.querySelector('#passenger-0-first-name'),
@@ -1112,7 +1182,7 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
     expect(mockedCreate).toHaveBeenCalledTimes(1);
 
     expect(
@@ -1122,7 +1192,7 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
       screen.getByRole('heading', { name: 'Comprobante de pago' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(
@@ -1131,7 +1201,7 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     expect(screen.getByRole('button', { name: 'Cambiar asientos' })).toBeDisabled();
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
   });
 });
 
@@ -1149,7 +1219,7 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(screen.getByText('Tu selección expiró')).toBeInTheDocument();
     expect(
@@ -1172,14 +1242,14 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(screen.getByText('Tu selección expiró')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Elegir asientos de nuevo/ }),
     ).toBeInTheDocument();
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
-    expect(stored.reservation_id).toBeUndefined();
+    expect(stored.attempt_id).toBeUndefined();
   });
 
   it('TRIP_PRICE_MISSING muestra error específico sin reenviar precio', async () => {
@@ -1191,7 +1261,7 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Este viaje no tiene un precio configurado y no puede reservarse en este momento.',
@@ -1215,7 +1285,7 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(screen.getByRole('alert')).toHaveTextContent('boom interno');
     expect(mockedCreate).toHaveBeenCalledTimes(1);
@@ -1225,29 +1295,36 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     });
 
     expect(mockedCreate).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
-describe('Persistencia de la reserva (MKT-004 Fase B)', () => {
+describe('Persistencia del intento de compra (MKT-007)', () => {
   beforeEach(() => {
     resetCheckoutTest();
   });
 
-  it('refresh con reservation_id en LockState no vuelve a crear la reserva', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('refresh con attempt_id restaura desde el servidor sin re-POST', async () => {
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
 
+    expect(mockedGetAttempt).toHaveBeenCalledWith('att-1');
     expect(mockedCreate).not.toHaveBeenCalled();
+    // El intento ya dueña de los asientos: no se revalidan locks temporales
+    // ni se reclama la sesión guest.
+    expect(mockedLocks).not.toHaveBeenCalled();
+    expect(mockedClaimGuestLocks).not.toHaveBeenCalled();
+    expect(mockedGetGuestLocks).not.toHaveBeenCalled();
+
     expect(screen.getByRole('heading', { name: 'Pago' })).toBeInTheDocument();
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Tus asientos están reservados y tus pasajeros quedaron guardados/,
+        /La reserva definitiva se crea cuando la agencia apruebe tu comprobante/,
       ),
     ).toBeInTheDocument();
     // Una sola pantalla: el comprobante convive con el resto de secciones.
@@ -1255,7 +1332,7 @@ describe('Persistencia de la reserva (MKT-004 Fase B)', () => {
       screen.getByRole('heading', { name: 'Comprobante de pago' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(
       view.container.querySelector('#passenger-0-first-name'),
@@ -1301,15 +1378,15 @@ describe('Persistencia de la reserva (MKT-004 Fase B)', () => {
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 
-  it('reintentar tras un refresh con reserva creada no crea una segunda reserva', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('reintentar tras un refresh con intento creado no crea un segundo intento', async () => {
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
     const view = await renderWizard();
     expect(mockedCreate).not.toHaveBeenCalled();
 
-    // El guard de reservation_id bloquea el POST aunque se reintente la verificación.
+    // El guard de attempt_id bloquea el POST aunque se reintente la verificación.
     await act(async () => {
       fireEvent.click(
         screen.getByRole('button', { name: 'Cambiar asientos' }),
@@ -1317,13 +1394,79 @@ describe('Persistencia de la reserva (MKT-004 Fase B)', () => {
     });
 
     expect(mockedCreate).not.toHaveBeenCalled();
-    expect(screen.getByText('Reserva creada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
-    expect(stored.reservation_id).toBe('res-1');
+    expect(stored.attempt_id).toBe('att-1');
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(view.container.querySelector('#passenger-1-first-name')).toBeDisabled();
+  });
+
+  it('un intento terminal en el servidor reinicia la selección con su CTA', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({ status: 'expired', closed_at: '2026-10-04T12:00:00.000Z' }),
+    );
+
+    await renderWizard();
+
+    expect(mockedGetAttempt).toHaveBeenCalledWith('att-1');
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
+  });
+
+  it('un intento inexistente o ajeno reinicia la selección sin inventar nada', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockRejectedValue(
+      new ApiError('Intento no encontrado', 'NOT_FOUND', 404),
+    );
+
+    await renderWizard();
+
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it('el intento aprobado solo se pinta cuando lo dice el servidor', async () => {
+    seedAttemptLock(
+      { status: 'pending_review', remaining_submissions: 0 },
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'verified',
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        verified_at: '2026-10-04T11:10:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
+
+    await renderWizard();
+
+    expect(screen.getAllByText('Pago aprobado').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Tu pago fue aprobado/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    // El cliente nunca lo declara por su cuenta: el marcador local se queda en
+    // un estado no comprometido y la aprobación sale SOLO de `verified_at`.
+    expect(storedLock().checkout).toMatchObject({ status: 'created' });
+    expect(storedLock().checkout).not.toHaveProperty('paid_at');
+    expect(storedLock()).not.toHaveProperty('paid');
   });
 });
 
@@ -1370,7 +1513,7 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
     expect(mockedLocks).not.toHaveBeenCalled();
     expect(mockedClaimGuestLocks).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
   });
 
@@ -1547,7 +1690,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
 
     expect(screen.getByText('1 seleccionado')).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Confirmar y pagar' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
     ).toBeInTheDocument();
     // Precio por asiento real del viaje (2020 centavos) en el resumen.
     expect(screen.getByText('Precio por asiento')).toBeInTheDocument();
@@ -1578,7 +1721,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
     expect(screen.getAllByText('$0,00')).toHaveLength(2);
     expect(screen.queryByText('Precio por definir')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Confirmar y pagar' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
     ).toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
   });
@@ -1612,7 +1755,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
     expect(screen.queryByText('Placeholder')).not.toBeInTheDocument();
     // No hay CTA de reserva/pago y jamás se invoca el backend.
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(/Este viaje todavía no tiene un precio publicado/),
@@ -1635,7 +1778,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
     expect(screen.queryByText('$500,00')).not.toBeInTheDocument();
     expect(screen.getByText('Precio por definir')).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
     // La UI no destruye la selección del usuario: el TTL sigue su curso.
@@ -1653,7 +1796,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
     await fillValidPassengers(view);
 
     expect(
-      screen.getByRole('button', { name: 'Confirmar y pagar' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
     ).toBeInTheDocument();
 
     await act(async () => {
@@ -1662,7 +1805,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
 
     expect(screen.getByText('Tu selección expiró')).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
     // La LockState sigue intacta: quien decide limpiarla es el usuario.
@@ -1690,7 +1833,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
       'Tu selección expira en 00:01',
     );
     expect(
-      screen.getByRole('button', { name: 'Confirmar y pagar' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
     ).toBeInTheDocument();
 
     // En el instante exacto en que llega a 0 la selección queda vencida.
@@ -1700,7 +1843,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
     expect(screen.getByText('Tu selección expiró')).toBeInTheDocument();
     expect(screen.queryByRole('timer')).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(sessionStorage.getItem(LOCK_KEY)).not.toBeNull();
@@ -1812,7 +1955,7 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
 
     // Sin CTA de creación no hay POST posible desde la UI.
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
   });
@@ -1824,17 +1967,22 @@ describe('Hardening MKT-004 (precio, expiración y roles)', () => {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function paymentResult(
-  overrides: Partial<SubmitPaymentProofResult> = {},
-): SubmitPaymentProofResult {
+/** Respuesta de `POST /public/checkout/attempts/:id/proof`. */
+function proofResult(
+  overrides: Partial<SubmitCheckoutProofResult> = {},
+): SubmitCheckoutProofResult {
   return {
-    payment_id: 'pay-1',
-    reservation_id: 'res-1',
-    payment_status: 'pending',
-    reservation_status: 'reserved',
+    attempt_id: 'att-1',
+    status: 'pending_review',
+    proof_count: 1,
+    remaining_submissions: 2,
+    proof_path: 'payment-proofs/att-1/1/comprobante.png',
+    payment_reference: '00123456789',
+    bank_origin: 'Banco de Venezuela',
+    payment_datetime: '2020-01-01T10:00',
     amount_cents: 4040,
-    currency: 'USD',
-    submitted_at: '2026-10-04T12:00:00.000Z',
+    // Ventana de 24 h calculada por el backend; el cliente solo la lee.
+    expires_at: '2099-01-01T00:00:00.000Z',
     idempotent: false,
     ...overrides,
   };
@@ -1864,11 +2012,27 @@ function selectProofFile(view: ReturnType<typeof render>, file: File) {
   fireEvent.change(input);
 }
 
+/**
+ * Conciliación: los tres campos son obligatorios y viajan junto al archivo.
+ * Un valor de fecha en el pasado evita el rechazo `PAYMENT_IN_FUTURE`.
+ */
+function fillReconciliation(view: ReturnType<typeof render>) {
+  const fill = (selector: string, value: string) => {
+    const input = view.container.querySelector(selector) as HTMLInputElement;
+    fireEvent.change(input, { target: { value } });
+  };
+  fill('#proof-reference', '00123456789');
+  fill('#proof-bank', 'Banco de Venezuela');
+  fill('#proof-datetime', '2020-01-01T10:00');
+}
+
 async function submitProofViaUi(
   view: ReturnType<typeof render>,
   file: File = proofFile(),
+  { fill = true }: { fill?: boolean } = {},
 ) {
   selectProofFile(view, file);
+  if (fill) fillReconciliation(view);
   await act(async () => {
     fireEvent.click(
       screen.getByRole('button', { name: 'Enviar comprobante' }),
@@ -1894,7 +2058,7 @@ function storedLock() {
 
 const REVIEW_TEXT = 'Comprobante enviado. Tu pago está pendiente de revisión.';
 
-describe('Comprobante de pago (MKT-005 Fase 3)', () => {
+describe('Comprobante de pago (MKT-007)', () => {
   beforeEach(() => {
     resetCheckoutTest();
   });
@@ -1903,32 +2067,42 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     vi.useRealTimers();
   });
 
-  it('tras crear la reserva permite enviar el comprobante y pasa a revisión', async () => {
+  it('tras iniciar la compra permite enviar el comprobante y pasa a revisión', async () => {
     seedLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
-    mockedSubmitProof.mockResolvedValue(paymentResult());
+    mockedSubmitProof.mockResolvedValue(proofResult());
 
     const view = await renderWizard();
-    await createReservationViaUi(view);
+    await createAttemptViaUi(view);
 
     expect(
       screen.getByText(
-        'Tus asientos están reservados y tus pasajeros quedaron guardados.',
+        /La reserva definitiva se crea cuando la agencia apruebe tu comprobante/,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Pago pendiente')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
+    // La ventana de revisión sustituye al countdown del lock de asientos.
+    expect(screen.getByRole('timer')).toHaveTextContent(/Revisión en curso:/);
 
     const lockBefore = storedLock();
     await submitProofViaUi(view);
 
     expect(mockedSubmitProof).toHaveBeenCalledTimes(1);
-    const [reservationId, file, key] = mockedSubmitProof.mock.calls[0];
-    expect(reservationId).toBe('res-1');
+    const [attemptId, file, reconciliation, key] =
+      mockedSubmitProof.mock.calls[0];
+    expect(attemptId).toBe('att-1');
     expect(file.name).toBe('comprobante.png');
+    // La conciliación viaja como campos sueltos, nunca dentro del binario.
+    expect(reconciliation).toEqual({
+      payment_reference: '00123456789',
+      bank_origin: 'Banco de Venezuela',
+      // El `datetime-local` se normaliza a ISO-8601 antes de salir del cliente.
+      payment_datetime: '2020-01-01T10:00:00.000Z',
+    });
     expect(key).toMatch(UUID_RE);
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
@@ -1943,33 +2117,50 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     ).not.toBeInTheDocument();
 
     const lockAfter = storedLock();
-    expect(lockAfter.reservation_id).toBe('res-1');
-    expect(lockAfter.payment).toEqual({
-      status: 'pending',
-      payment_id: 'pay-1',
-      submitted_at: '2026-10-04T12:00:00.000Z',
+    expect(lockAfter.attempt_id).toBe('att-1');
+    expect(lockAfter.checkout).toMatchObject({
+      status: 'pending_review',
+      attempt_id: 'att-1',
+      proof_count: 1,
+      remaining_submissions: 2,
+      expires_at: '2099-01-01T00:00:00.000Z',
     });
-    // El TTL original del lock no se extiende ni se renueva.
-    expect(lockAfter.lock_expires_at).toBe(lockBefore.lock_expires_at);
+    // La ventana que gobierna la pantalla es la que calculó el backend.
+    expect(lockAfter.lock_expires_at).toBe('2099-01-01T00:00:00.000Z');
+    expect(lockAfter.lock_expires_at).not.toBe(lockBefore.lock_expires_at);
     // Nunca se persiste el binario del archivo.
     expect(lockAfter).not.toHaveProperty('proof');
     expect(JSON.stringify(lockAfter)).not.toContain('contenido-del-comprobante');
 
-    // La reserva ya creada no se vuelve a POSTear.
+    // El intento ya creado no se vuelve a POSTear.
     expect(mockedCreate).toHaveBeenCalledTimes(1);
   });
 
   it('al recargar con el comprobante enviado restaura la revisión sin claim ni validación de locks', async () => {
-    seedLock({
-      reservation_id: 'res-1',
-      payment: {
-        status: 'pending',
-        payment_id: 'pay-1',
+    seedAttemptLock(
+      {
+        status: 'pending_review',
         submitted_at: '2026-10-04T12:00:00.000Z',
+        proof_count: 1,
+        remaining_submissions: 2,
+        expires_at: '2099-01-01T00:00:00.000Z',
       },
-    });
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'pending_review',
+        proof_count: 1,
+        remaining_submissions: 2,
+        proof_submitted_at: '2026-10-04T12:00:00.000Z',
+        payment_reference: '00123456789',
+        bank_origin: 'Banco de Venezuela',
+        payment_datetime: '2026-10-04T10:00:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
 
     await renderWizard();
 
@@ -1980,6 +2171,7 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(mockedCreate).not.toHaveBeenCalled();
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
+    expect(screen.getByText('Pendiente de revisión')).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Enviar comprobante' }),
     ).not.toBeInTheDocument();
@@ -1991,13 +2183,12 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Pago' })).toBeInTheDocument();
     expect(screen.getByText(/Enviado el/)).toBeInTheDocument();
+    // El folio de compra es el intento, no una reserva inexistente.
+    expect(screen.getByText('att-1')).toBeInTheDocument();
   });
 
-  it('ignora un marcador de pago malformado y aplica la recuperación habitual', async () => {
-    seedLock({
-      reservation_id: 'res-1',
-      payment: { status: 'confirmed' },
-    });
+  it('ignora un marcador de checkout malformado y aplica la recuperación habitual', async () => {
+    seedLock({ attempt_id: 'att-1', checkout: { status: 'nope' } });
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
@@ -2010,42 +2201,61 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(mockedLocks).not.toHaveBeenCalled();
   });
 
-  it('la expiración del lock original no borra la revisión del comprobante', async () => {
+  it('la ventana vencida no borra la revisión ni habla de la selección', async () => {
+    // Nota: con timers falsos y una ventana aún futura el countdown instala un
+    // `setInterval` que React `act` no consigue drenar en jsdom; el escenario
+    // cubierto aquí es el que importa: la ventana se agota con la revisión
+    // en curso.
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T11:45:00.000Z'));
-    seedLock({ reservation_id: 'res-1' });
+    seedAttemptLock(
+      {
+        status: 'pending_review',
+        submitted_at: '2026-10-04T11:00:00.000Z',
+        proof_count: 1,
+        remaining_submissions: 2,
+        expires_at: '2026-10-04T11:44:00.000Z',
+      },
+      { lock_expires_at: '2026-10-04T11:44:00.000Z' },
+    );
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
-    mockedSubmitProof.mockResolvedValue(paymentResult());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'pending_review',
+        proof_count: 1,
+        remaining_submissions: 2,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        expires_at: '2026-10-04T11:44:00.000Z',
+      }),
+    );
 
-    const view = await renderWizard();
-    await submitProofViaUi(view);
-
-    expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
-    // Con el pago en revisión la píldora del countdown no se pinta.
-    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    await renderWizard();
 
     act(() => {
       vi.advanceTimersByTime(901_000);
     });
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
+    // El countdown habla de la revisión, nunca de la selección de asientos.
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      'La ventana de revisión terminó.',
+    );
     expect(
       screen.queryByRole('heading', { name: 'Tu selección expiró' }),
     ).not.toBeInTheDocument();
-    // El indicador de expiración sigue oculto cuando el lock vence después
-    // de haber enviado el comprobante.
-    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
     expect(screen.queryByText('Tu selección expiró.')).not.toBeInTheDocument();
-    expect(mockedSubmitProof).toHaveBeenCalledTimes(1);
-    expect(storedLock().payment).toMatchObject({ status: 'pending' });
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(
+      (storedLock().checkout as Record<string, unknown>).status,
+    ).toBe('pending_review');
   });
 
-  it('la pérdida realtime de asientos tras el pago no borra la revisión', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('la pérdida realtime de asientos tras el envío no borra la revisión', async () => {
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
-    mockedSubmitProof.mockResolvedValue(paymentResult());
+    mockedSubmitProof.mockResolvedValue(proofResult());
 
     const view = await renderWizard();
     await submitProofViaUi(view);
@@ -2074,14 +2284,19 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it('PAYMENT_ALREADY_SUBMITTED muestra la revisión conservadora sin un segundo envío', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('CHECKOUT_PROOF_PENDING muestra la revisión conservadora sin un segundo envío', async () => {
+    seedAttemptLock({
+      status: 'pending_review',
+      submitted_at: '2026-10-04T12:00:00.000Z',
+      proof_count: 1,
+      remaining_submissions: 2,
+    });
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
-        'El comprobante de esta reserva ya fue enviado',
-        'PAYMENT_ALREADY_SUBMITTED',
+        'El comprobante de esta compra ya fue enviado',
+        'CHECKOUT_PROOF_PENDING',
         409,
       ),
     );
@@ -2094,22 +2309,23 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(
       screen.queryByRole('button', { name: 'Enviar comprobante' }),
     ).not.toBeInTheDocument();
-    // Sin ids inventados: esta respuesta no trae payment_id ni submitted_at.
-    expect(storedLock().payment).toEqual({ status: 'pending' });
+    // Sin ids inventados: esta respuesta no trae datos nuevos.
+    expect(storedLock().checkout).toMatchObject({ status: 'pending_review' });
+    expect(storedLock().checkout).not.toHaveProperty('proof_path');
     // El toast vive fuera del DOM (mockeado): se afirma la llamada, no el nodo.
     expect(toast.success).toHaveBeenCalledWith(
       'Tu comprobante ya estaba enviado y sigue en revisión.',
     );
   });
 
-  it('PAYMENT_IDEMPOTENCY_CONFLICT no marca el pago y conserva la selección', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('CHECKOUT_IDEMPOTENCY_CONFLICT no marca la revisión y conserva la selección', async () => {
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
         'La clave de idempotencia ya se usó con otro comprobante',
-        'PAYMENT_IDEMPOTENCY_CONFLICT',
+        'CHECKOUT_IDEMPOTENCY_CONFLICT',
         409,
       ),
     );
@@ -2124,13 +2340,14 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
       screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(REVIEW_TEXT)).not.toBeInTheDocument();
-    expect(storedLock().payment).toBeUndefined();
+    expect(storedLock().checkout).toMatchObject({ status: 'created' });
+    expect(storedLock().checkout).not.toHaveProperty('submitted_at');
     expect(toast.success).not.toHaveBeenCalled();
     expect(view).toBeTruthy();
   });
 
   it('un archivo inválido o demasiado grande no llega al servidor', async () => {
-    seedLock({ reservation_id: 'res-1' });
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
@@ -2156,8 +2373,36 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(mockedSubmitProof).not.toHaveBeenCalled();
   });
 
-  it('un error de red permite reintentar sin perder la reserva creada', async () => {
-    seedLock({ reservation_id: 'res-1' });
+  it('los campos de conciliación son obligatorios y con label visible', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+
+    expect(
+      screen.getByText('Referencia de la transferencia'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Banco de origen')).toBeInTheDocument();
+    expect(screen.getByText('Fecha y hora del pago')).toBeInTheDocument();
+
+    await submitProofViaUi(view, proofFile(), { fill: false });
+
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+    expect(
+      screen.getByText('Escribe la referencia de la transferencia.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Escribe el banco desde el que hiciste la transferencia.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Indica la fecha y hora del pago.'),
+    ).toBeInTheDocument();
+    expect(view).toBeTruthy();
+  });
+
+  it('un error de red permite reintentar sin perder la compra iniciada', async () => {
+    seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
     mockedSubmitProof.mockRejectedValueOnce(new TypeError('Failed to fetch'));
@@ -2169,21 +2414,21 @@ describe('Comprobante de pago (MKT-005 Fase 3)', () => {
     expect(
       screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
-    expect(storedLock().payment).toBeUndefined();
+    expect(storedLock().checkout).toMatchObject({ status: 'created' });
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole('button', { name: 'Confirmar y pagar' }),
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
     expect(view.container.querySelector('#passenger-0-first-name')).toBeDisabled();
   });
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// MKT-005 — ajuste previo a Fase 4: con el comprobante en revisión no se
-// debe pintar la píldora «Tu selección expiró» junto a la revisión.
+// MKT-007 — la píldora de expiración debe hablar de la VENTANA DE REVISIÓN
+// cuando lo que vence es el intento de compra, nunca de la selección.
 // ══════════════════════════════════════════════════════════════════════
 
-describe('Indicador de expiración con pago pendiente (MKT-005 ajuste)', () => {
+describe('Indicador de expiración con revisión pendiente (MKT-007)', () => {
   beforeEach(() => {
     resetCheckoutTest();
   });
@@ -2192,7 +2437,7 @@ describe('Indicador de expiración con pago pendiente (MKT-005 ajuste)', () => {
     vi.useRealTimers();
   });
 
-  it('sin pago pendiente la selección expirada sigue mostrando el indicador', async () => {
+  it('sin intento la selección expirada sigue mostrando el indicador', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T11:45:00.000Z'));
     seedLock();
@@ -2201,7 +2446,7 @@ describe('Indicador de expiración con pago pendiente (MKT-005 ajuste)', () => {
 
     await renderWizard();
 
-    // Sin marcador de pago el countdown se pinta con normalidad.
+    // Sin marcador de checkout el countdown se pinta con normalidad.
     expect(screen.getByRole('timer')).toHaveTextContent(
       'Tu selección está reservada durante 15:00',
     );
@@ -2216,32 +2461,45 @@ describe('Indicador de expiración con pago pendiente (MKT-005 ajuste)', () => {
     ).toBeInTheDocument();
   });
 
-  it('con pago pendiente y selección expirada el indicador queda oculto', async () => {
+  it('con revisión pendiente y ventana vencida el indicador habla de la revisión', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T11:45:00.000Z'));
-    seedLock({
-      reservation_id: 'res-1',
-      payment: {
-        status: 'pending',
-        payment_id: 'pay-1',
-        submitted_at: '2026-10-04T12:00:00.000Z',
+    seedAttemptLock(
+      {
+        status: 'pending_review',
+        submitted_at: '2026-10-04T11:00:00.000Z',
+        proof_count: 1,
+        remaining_submissions: 2,
+        // Ventana ya vencida: la expiración ocurre con la revisión en curso.
+        expires_at: '2026-10-04T11:44:00.000Z',
       },
-      // TTL original ya vencido: la expiración ocurre con el pago en revisión.
-      lock_expires_at: '2026-10-04T11:44:00.000Z',
-    });
+      { lock_expires_at: '2026-10-04T11:44:00.000Z' },
+    );
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'pending_review',
+        proof_count: 1,
+        remaining_submissions: 2,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        expires_at: '2026-10-04T11:44:00.000Z',
+      }),
+    );
 
     await renderWizard();
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
     expect(mockedLocks).not.toHaveBeenCalled();
-    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
     expect(screen.queryByText('Tu selección expiró.')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('heading', { name: 'Tu selección expiró' }),
     ).not.toBeInTheDocument();
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      'La ventana de revisión terminó.',
+    );
 
-    // Solo se oculta ese indicador: el resto del checkout sigue en pantalla.
+    // Solo cambia ese indicador: el resto del checkout sigue en pantalla.
     expect(
       screen.getByRole('heading', { name: 'Elige tus asientos' }),
     ).toBeInTheDocument();
@@ -2249,23 +2507,147 @@ describe('Indicador de expiración con pago pendiente (MKT-005 ajuste)', () => {
   });
 
   it('marcador inválido: se descarta y se conserva el comportamiento normal', async () => {
-    seedLock({
-      reservation_id: 'res-1',
-      payment: { status: 'confirmed' },
-    });
+    seedLock({ attempt_id: 'att-1', checkout: { status: 'confirmed' } });
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
 
     await renderWizard();
 
-    // Un marcador que no pasa `isValidPaymentMarker` invalida la LockState
-    // entera: sin atajo de pago, sin revisión y sin indicador oculto.
+    // Un marcador que no pasa `isValidCheckoutMarker` invalida la LockState
+    // entera: sin atajo de revisión y sin indicador oculto.
     expect(
       screen.getByText('No tienes una selección activa'),
     ).toBeInTheDocument();
     expect(screen.queryByText(REVIEW_TEXT)).not.toBeInTheDocument();
-    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
     expect(mockedTripDetail).not.toHaveBeenCalled();
     expect(mockedLocks).not.toHaveBeenCalled();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// MKT-007 §8 — cancelación del intento: acción destructiva → SIEMPRE modal
+// (AGENTS.md §3 y §15: nunca `window.confirm`).
+// ══════════════════════════════════════════════════════════════════════
+
+describe('Cancelación de la compra (MKT-007)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+    mockedCancelAttempt.mockResolvedValue({
+      attempt_id: 'att-1',
+      status: 'cancelled',
+      already_cancelled: false,
+      freed_seats: 2,
+    });
+  });
+
+  it('la cancelación siempre pasa por el modal de confirmación', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+    expect(
+      screen.getByRole('button', { name: 'Cancelar compra' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar compra' }));
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      '¿Cancelar esta compra?',
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sí, cancelar compra' }),
+      );
+    });
+
+    expect(mockedCancelAttempt).toHaveBeenCalledWith('att-1');
+    expect(toast.success).toHaveBeenCalledWith(
+      'Compra cancelada. Liberamos 2 asientos.',
+    );
+    // Confirmación explícita del servidor: recién ahí se limpia la selección.
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
+    expect(view.container.querySelector('#passenger-0-first-name')).toBeNull();
+  });
+
+  it('el modal se puede descartar sin tocar el backend', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar compra' }));
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Seguir con la compra' }),
+      );
+    });
+
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(LOCK_KEY)).not.toBeNull();
+    expect(storedLock().attempt_id).toBe('att-1');
+  });
+
+  it('un intento ya cancelado por el servidor no inventa asientos liberados', async () => {
+    mockedCancelAttempt.mockResolvedValue({
+      attempt_id: 'att-1',
+      status: 'cancelled',
+      already_cancelled: true,
+      freed_seats: 0,
+    });
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar compra' }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sí, cancelar compra' }),
+      );
+    });
+
+    expect(mockedCancelAttempt).toHaveBeenCalledWith('att-1');
+    expect(toast.success).toHaveBeenCalledWith(
+      'Esta compra ya estaba cancelada. Tus asientos quedaron libres.',
+    );
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+  });
+
+  it('un fallo al cancelar conserva la compra y el modal sigue abierto', async () => {
+    mockedCancelAttempt.mockRejectedValue(
+      new ApiError('No pudimos cancelar', 'CANCEL_FAILED', 409),
+    );
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar compra' }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sí, cancelar compra' }),
+      );
+    });
+
+    expect(toast.error).toHaveBeenCalledWith('No pudimos cancelar');
+    expect(sessionStorage.getItem(LOCK_KEY)).not.toBeNull();
+    expect(storedLock().attempt_id).toBe('att-1');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Comprobante de pago' }),
+    ).toBeInTheDocument();
   });
 });

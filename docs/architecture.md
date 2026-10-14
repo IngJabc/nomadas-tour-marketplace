@@ -44,10 +44,20 @@ Misma topología y mismas versiones que `nomadas-tour` (ver
   `locked → reserved`.
 - Pasajeros, boleto con QR, estado de pago.
 
-### Payment domain
+### Payment domain (MKT-007)
 
-- `payments` (comprobante) + `payment_allocations` (reparto por pasajero).
-- Verificación/rechazo por `payment_id`.
+- **Flujo de checkout con revisión**: la compra nace como `checkout_attempts`
+  (intento de compra que retiene asientos). La reserva, el pago y las
+  allocations **solo se crean** en la aprobación atómica
+  `verify_checkout_attempt`.
+- `checkout_attempts` (tabla): estados `created | pending_review | rejected |
+  verified | rejected_final | expired | cancelled`.
+- `payments` + `payment_allocations`: solo se crean en la verificación.
+- Conciliación en `payments`: `payment_reference`, `bank_origin`,
+  `payment_datetime` (transfieren al pago definitivo).
+- **Verificación/rechazo vive exclusivamente en Tour** (`/agency/payments`).
+  Marketplace no expone acciones administrativas de revisión; los endpoints
+  `/api/admin/payments` responden `410 Gone`.
 - Saldos derivados; `payment_status` derivado.
 
 ### Commission domain

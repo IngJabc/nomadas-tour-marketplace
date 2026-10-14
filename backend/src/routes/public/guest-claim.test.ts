@@ -689,13 +689,13 @@ describe('POST /api/public/seats/claim-guest', () => {
       harness.chains().filter((chain) => chain.table === 'seats'),
     ).toHaveLength(seatsAfterLock);
 
-    // 3) El POST de reserva también queda prohibido, antes del payload y
-    //    antes del RPC.
+    // 3) El POST de reserva YA NO EXISTE (MKT-007): la compra nace como
+    //    `checkout_attempts`. Un superadmin recibe 410, nunca una reserva.
     harness.push('users', {
       data: { id: SUPERADMIN_ID, role: 'superadmin', agency_id: null },
       error: null,
     });
-    const created = await fetch(
+    const legacy = await fetch(
       `http://127.0.0.1:${port}/api/public/reservations`,
       {
         method: 'POST',
@@ -720,10 +720,10 @@ describe('POST /api/public/seats/claim-guest', () => {
       },
     );
 
-    expect(created.status).toBe(403);
+    expect(legacy.status).toBe(410);
     expect(
-      ((await created.json()) as Record<string, any>).error.code,
-    ).toBe('CUSTOMER_REQUIRED');
+      ((await legacy.json()) as Record<string, any>).error.code,
+    ).toBe('CHECKOUT_ATTEMPTS_REQUIRED');
     expect(
       harness.chains().filter((chain) => chain.table === 'reservations'),
     ).toHaveLength(0);
@@ -731,6 +731,45 @@ describe('POST /api/public/seats/claim-guest', () => {
       harness
         .chains()
         .filter((chain) => chain.table === 'reservation_passengers'),
+    ).toHaveLength(0);
+
+    // 4) El guard de rol vive ahora en el endpoint nuevo del checkout.
+    harness.push('users', {
+      data: { id: SUPERADMIN_ID, role: 'superadmin', agency_id: null },
+      error: null,
+    });
+    const attempt = await fetch(
+      `http://127.0.0.1:${port}/api/public/checkout/attempts`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token',
+          'Idempotency-Key': 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
+        },
+        body: JSON.stringify({
+          trip_id: TRIP_ID,
+          agency_id: AGENCY_ID,
+          seat_ids: [SEAT_A1],
+          passengers: [
+            {
+              seat_id: SEAT_A1,
+              first_name: 'Ana',
+              last_name: 'Perez',
+              document: '12345678',
+              phone: '04241234567',
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(attempt.status).toBe(403);
+    expect(
+      ((await attempt.json()) as Record<string, any>).error.code,
+    ).toBe('CUSTOMER_REQUIRED');
+    expect(
+      harness.chains().filter((chain) => chain.table === 'checkout_attempts'),
     ).toHaveLength(0);
     expect(
       harness.chains().filter((chain) => chain.table === 'seats'),

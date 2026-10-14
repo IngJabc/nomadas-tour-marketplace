@@ -2,7 +2,11 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { FileText, LoaderCircle, Upload } from 'lucide-react';
-import { paymentApi, type SubmitPaymentProofResult } from '@/lib/api';
+import {
+  checkoutApi,
+  type SubmitCheckoutProofPayload,
+  type SubmitCheckoutProofResult,
+} from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
 
 /** 5 MiB: el mismo límite del bucket y del parser multipart del backend. */
@@ -17,7 +21,11 @@ const ALLOWED_MIME_TYPES = new Set([
 
 const ALLOWED_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.pdf']);
 
-export const PROOF_ACCEPT = '.png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf';
+export const PROOF_ACCEPT =
+  '.png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf';
+
+/** Máximo de comprobantes por intento (1 envío + 2 reenvíos, RPC 087). */
+export const MAX_PROOF_SUBMISSIONS = 3;
 
 /**
  * UUID v4 para `Idempotency-Key`. Usa `crypto.randomUUID()` cuando existe y
@@ -89,15 +97,12 @@ function bytesToHex(buffer: ArrayBuffer): string {
  * Huella del CONTENIDO del archivo (SHA-256).
  *
  * El backend identifica el comprobante por el hash del contenido
- * (`{reservation_id}/{sha256}.{ext}`), así que la huella del cliente sigue
- * el contenido y no el nombre ni el tamaño: dos archivos con nombre y
- * tamaño iguales pero contenido distinto son operaciones distintas y no
- * pueden compartir `Idempotency-Key`.
+ * (`{attempt_id}/{sha256}.{ext}`), así que la huella del cliente sigue el
+ * contenido y no el nombre ni el tamaño.
  *
  * Sin SubtleCrypto (contexto no seguro, p. ej. http en red local) se usa
  * FNV-1a de dos semillas sobre los bytes: basta para distinguir archivos y
- * jamás bloquea el envío. Solo se conserva la huella en memoria; el
- * ArrayBuffer se descarta al terminar.
+ * jamás bloquea el envío.
  */
 export async function proofFingerprint(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -118,11 +123,71 @@ export async function proofFingerprint(file: File): Promise<string> {
     .padStart(8, '0')}`;
 }
 
+// ── Datos de conciliación ────────────────────────────────────────────────────
+
+const MAX_REFERENCE_LENGTH = 100;
+const MAX_BANK_LENGTH = 120;
+/** Tolerancia de reloj admisible (espejo del CHECK del RPC 087). */
+const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Convierte `datetime-local` a ISO 8601. El backend además valida que la
+ * fecha no esté en el futuro.
+ */
+export function toIsoDatetime(localValue: string): string | null {
+  const parsed = new Date(localValue);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+export function validateReconciliation(input: {
+  payment_reference: string;
+  bank_origin: string;
+  payment_datetime: string;
+}): Partial<Record<keyof SubmitCheckoutProofPayload, string>> {
+  const errors: Partial<Record<keyof SubmitCheckoutProofPayload, string>> = {};
+
+  const reference = normalizeWhitespace(input.payment_reference);
+  if (!reference) {
+    errors.payment_reference = 'Escribe la referencia de la transferencia.';
+  } else if (reference.length > MAX_REFERENCE_LENGTH) {
+    errors.payment_reference = `Máximo ${MAX_REFERENCE_LENGTH} caracteres.`;
+  }
+
+  const bank = normalizeWhitespace(input.bank_origin);
+  if (!bank) {
+    errors.bank_origin = 'Escribe el banco desde el que hiciste la transferencia.';
+  } else if (bank.length > MAX_BANK_LENGTH) {
+    errors.bank_origin = `Máximo ${MAX_BANK_LENGTH} caracteres.`;
+  }
+
+  if (!input.payment_datetime) {
+    errors.payment_datetime = 'Indica la fecha y hora del pago.';
+  } else {
+    const parsed = new Date(input.payment_datetime);
+    if (Number.isNaN(parsed.getTime())) {
+      errors.payment_datetime = 'Indica una fecha y hora válidas.';
+    } else if (parsed.getTime() > Date.now() + FUTURE_TOLERANCE_MS) {
+      errors.payment_datetime = 'La fecha del pago no puede estar en el futuro.';
+    }
+  }
+
+  return errors;
+}
+
+// ── Componente ───────────────────────────────────────────────────────────────
+
 export interface ProofUploaderProps {
-  reservationId: string;
-  /** El envío fue aceptado: persiste el marcador de pago pendiente. */
-  onSubmitted: (result: SubmitPaymentProofResult) => void;
-  /** El servidor ya tenía un comprobante para esta reserva (409). */
+  attemptId: string;
+  /** Comprobantes que aún puede enviar el cliente (1..3). */
+  remainingSubmissions: number;
+  /** El envío fue aceptado: persiste el marcador de checkout pendiente. */
+  onSubmitted: (result: SubmitCheckoutProofResult) => void;
+  /** El servidor ya tenía un comprobante en revisión (409). */
   onAlreadySubmitted?: () => void;
 }
 
@@ -131,22 +196,38 @@ interface IdempotencySlot {
   key: string;
 }
 
+const FIELD_CLASSES =
+  'w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 ' +
+  'font-[Poppins] text-[14px] font-normal text-brand-navy outline-none ' +
+  'transition-[border-color,box-shadow] duration-200 ' +
+  'focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)] ' +
+  'disabled:cursor-not-allowed disabled:opacity-60';
+
+const LABEL_CLASSES =
+  'mb-1.5 block font-[Poppins] text-[12px] font-medium uppercase text-brand-muted';
+
 /**
- * Sube un único comprobante por reserva con `Idempotency-Key` estable:
- * la clave se deduce de la huella del CONTENIDO, de modo que cualquier
- * reintento del mismo archivo (tras timeout o error de red, aunque el
- * usuario lo vuelva a elegir) reutiliza la clave y recupera la operación
- * original; un archivo con contenido distinto es una operación nueva y
- * recibe una clave nueva aunque repita nombre y tamaño. Un conflicto de
- * idempotencia nunca regenera la clave automáticamente. Una vez aceptado,
- * el padre retira este componente y no vuelve a habilitar un segundo envío.
+ * Envía un comprobante contra un `checkout_attempt` con sus tres datos de
+ * conciliación y `Idempotency-Key` estable por huella del CONTENIDO: un
+ * reintento del mismo archivo reutiliza la clave; contenido distinto es una
+ * operación nueva. Un conflicto de idempotencia jamás regenera la clave.
+ *
+ * El cliente solo aporta archivo + conciliación: monto, moneda, ventana,
+ * contador y estado los decide el RPC 087.
  */
 export function ProofUploader({
-  reservationId,
+  attemptId,
+  remainingSubmissions,
   onSubmitted,
   onAlreadySubmitted,
 }: ProofUploaderProps) {
   const [file, setFile] = useState<File | null>(null);
+  const [reference, setReference] = useState('');
+  const [bank, setBank] = useState('');
+  const [paidAt, setPaidAt] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<Record<keyof SubmitCheckoutProofPayload, string>>
+  >({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const fingerprintRef = useRef<{ file: File; value: Promise<string> } | null>(
@@ -183,16 +264,31 @@ export function ProofUploader({
     if (!next) return;
     setFile(next);
     setError(validateProofFile(next));
-    // Precalcula la huella en segundo plano: el envío solo tendría que
-    // esperarla si el usuario hace clic antes de que termine.
     void fingerprintFor(next);
   };
 
   const handleSubmit = async () => {
     if (!file || pending) return;
-    const validationError = validateProofFile(file);
-    if (validationError) {
-      setError(validationError);
+    const fileError = validateProofFile(file);
+    if (fileError) {
+      setError(fileError);
+      return;
+    }
+
+    const reconciliation = {
+      payment_reference: normalizeWhitespace(reference),
+      bank_origin: normalizeWhitespace(bank),
+      payment_datetime: paidAt,
+    };
+    const errors = validateReconciliation(reconciliation);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setError(null);
+      return;
+    }
+    const isoDatetime = toIsoDatetime(reconciliation.payment_datetime);
+    if (!isoDatetime) {
+      setFieldErrors({ payment_datetime: 'Indica una fecha y hora válidas.' });
       return;
     }
 
@@ -200,16 +296,25 @@ export function ProofUploader({
     setError(null);
     try {
       const key = await keyFor(file);
-      const result = await paymentApi.submitProof(reservationId, file, key);
+      const result = await checkoutApi.submitProof(
+        attemptId,
+        file,
+        { ...reconciliation, payment_datetime: isoDatetime },
+        key,
+      );
       onSubmitted(result);
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'PAYMENT_ALREADY_SUBMITTED') {
-        // El servidor ya tenía el comprobante: pasar a la vista de revisión
-        // sin afirmar un éxito que no confirmó esta respuesta.
+      if (
+        err instanceof ApiError &&
+        (err.code === 'CHECKOUT_PROOF_PENDING' ||
+          err.code === 'CHECKOUT_ATTEMPT_CLOSED')
+      ) {
+        // El servidor ya tenía un comprobante en revisión: pasar a la vista
+        // de seguimiento sin afirmar un éxito que esta respuesta no trajo.
         onAlreadySubmitted?.();
         return;
       }
-      if (err instanceof ApiError && err.code === 'PAYMENT_IDEMPOTENCY_CONFLICT') {
+      if (err instanceof ApiError && err.code === 'CHECKOUT_IDEMPOTENCY_CONFLICT') {
         // Conflicto real del servidor con esta MISMA clave: jamás se genera
         // otra clave automáticamente para repetir la operación.
         setError(
@@ -235,6 +340,80 @@ export function ProofUploader({
         Adjunta el comprobante de pago de la transferencia. Aceptamos PNG,
         JPEG, WEBP o PDF de hasta 5 MB.
       </p>
+
+      {remainingSubmissions < MAX_PROOF_SUBMISSIONS ? (
+        <p className="mt-2 text-xs font-semibold text-[#92400e]">
+          Reenvío {remainingSubmissions} de {MAX_PROOF_SUBMISSIONS} disponibles.
+        </p>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <label className={LABEL_CLASSES} htmlFor="proof-reference">
+            Referencia de la transferencia
+          </label>
+          <input
+            id="proof-reference"
+            type="text"
+            value={reference}
+            maxLength={MAX_REFERENCE_LENGTH}
+            disabled={pending}
+            autoComplete="off"
+            placeholder="Ej. 00123456789"
+            onChange={(event) => setReference(event.target.value)}
+            className={FIELD_CLASSES}
+            aria-invalid={!!fieldErrors.payment_reference}
+          />
+          {fieldErrors.payment_reference ? (
+            <p role="alert" className="mt-1.5 text-xs text-[#ef4444]">
+              {fieldErrors.payment_reference}
+            </p>
+          ) : null}
+        </div>
+
+        <div>
+          <label className={LABEL_CLASSES} htmlFor="proof-bank">
+            Banco de origen
+          </label>
+          <input
+            id="proof-bank"
+            type="text"
+            value={bank}
+            maxLength={MAX_BANK_LENGTH}
+            disabled={pending}
+            autoComplete="organization"
+            placeholder="Ej. Banco de Venezuela"
+            onChange={(event) => setBank(event.target.value)}
+            className={FIELD_CLASSES}
+            aria-invalid={!!fieldErrors.bank_origin}
+          />
+          {fieldErrors.bank_origin ? (
+            <p role="alert" className="mt-1.5 text-xs text-[#ef4444]">
+              {fieldErrors.bank_origin}
+            </p>
+          ) : null}
+        </div>
+
+        <div>
+          <label className={LABEL_CLASSES} htmlFor="proof-datetime">
+            Fecha y hora del pago
+          </label>
+          <input
+            id="proof-datetime"
+            type="datetime-local"
+            value={paidAt}
+            disabled={pending}
+            onChange={(event) => setPaidAt(event.target.value)}
+            className={FIELD_CLASSES}
+            aria-invalid={!!fieldErrors.payment_datetime}
+          />
+          {fieldErrors.payment_datetime ? (
+            <p role="alert" className="mt-1.5 text-xs text-[#ef4444]">
+              {fieldErrors.payment_datetime}
+            </p>
+          ) : null}
+        </div>
+      </div>
 
       <label className="mt-4 flex cursor-pointer flex-col items-center rounded-2xl border border-dashed border-black/[0.12] bg-[#f8fafc] px-6 py-8 text-center transition-colors hover:border-brand-cyan hover:bg-[#f0fdff]">
         <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f1f5f9]">
