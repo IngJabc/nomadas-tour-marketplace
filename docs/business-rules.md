@@ -31,41 +31,83 @@ lo contradiga está mal.
 
 ---
 
-## 3. Pagos
+## 3. Pagos — Flujo de checkout con revisión (MKT-007)
 
-- El cliente inicia la reserva y sube **comprobante** en ≤15 min.
-- El comprobante es un registro en `payments` (estado `pending` →
-  `verified` / `rejected`).
-- **Modelo: `payments` + `payment_allocations`** — un comprobante puede
-  cubrir N pasajeros. `payment_allocations` liga `payment_id` con
-  `reservation_passenger_id` y el monto asignado.
+### Flujo actual (post-MKT-007)
+
+1. **Creación del intento**: el cliente selecciona asientos, llena pasajeros
+   y confirma. Se crea un `checkout_attempts` (estado `created`) que retiene
+   los asientos. **NO se crea la reserva ni el pago todavía.**
+2. **Subida de comprobante**: el cliente sube el comprobante con
+   conciliación (referencia, banco, fecha-hora). El intento pasa a
+   `pending_review`. Máximo 3 comprobantes por intento (1 + 2 reintentos).
+3. **Ventana de revisión**: 24 horas por envío. Si el cliente no sube el
+   comprobante a tiempo, el intento expira y los asientos se liberan.
+4. **Verificación (aprobación)**: la agencia aprueba. La RPC
+   `verify_checkout_attempt` crea **atómicamente** la reserva
+   (`status='confirmed'`), el pago (`status='verified'`) y las allocations.
+   Los asientos pasan a `reserved`.
+5. **Rechazo**: la agencia rechaza con motivo. El primer y segundo rechazo
+   permiten reenvío (el intento queda `rejected`); el tercer comprobante
+   rechazado es definitivo (`rejected_final`) y libera los asientos que
+   todavía pertenezcan al intento. Máximo 3 comprobantes por intento.
+6. **Cancelación por el cliente**: el cliente puede cancelar el intento
+   antes de la verificación. Los asientos se liberan.
+
+### Reglas de negocio
+
+- **El cliente NUNCA envía precio, estado, expiración ni `customer_id`**:
+  todos los valores server-side se derivan de la sesión y la base de datos.
+- **Idempotencia**: cada creación y envío exige un `Idempotency-Key` UUID.
+  Un retry con la misma clave devuelve el mismo resultado (200 + `idempotent`).
+- **Conciliación obligatoria**: el comprobante debe incluir
+  `payment_reference`, `bank_origin` y `payment_datetime` (no futura).
+- **Validación de archivo**: magic bytes, MIME consistente, máximo 5 MiB.
+  La ruta en storage es `{attempt_id}/{sha256(contenido)}.{ext}` — nunca
+  usa el filename del cliente.
+- **Endpoints legacy desactivados**: `POST /api/public/reservations` y
+  `POST /api/public/reservations/:reservationId/payments` devuelven
+  `410 Gone` + `CHECKOUT_ATTEMPTS_REQUIRED`.
+
+### Modelo de datos (post-MKT-007)
+
+- **`checkout_attempts`**: tabla de intentos de compra. Estados:
+  `created | pending_review | rejected | verified | rejected_final |
+  expired | cancelled`.
+- **`payments` + `payment_allocations`**: solo se crean en la verificación.
+  Un comprobante cubre N pasajeros. `payment_allocations` liga
+  `payment_id` con `reservation_passenger_id` y el monto asignado.
+- **`seats.checkout_attempt_id`**: columna que trackea qué intento retiene
+  cada asiento. Se limpia al verificar, rechazar o cancelar.
 - **NO existe tabla `installments`.** El saldo se deriva:
   `saldo(pax) = seat_price − SUM(allocations verified)`.
-- Configuración de abono: `trips.installment_allowed`,
-  `trips.installment_amount_cents` (columnas creadas en 078).
-- **Fuente del precio (decidido 2026-09-30 al escribir la migración 076):**
-  el schema de tour **no tenía ninguna columna de precio**, sin ellas la
-  fórmula de saldo no era calculable. Se agregaron:
-  - `trips.seat_price` — precio vigente del viaje, en centavos.
-  - `reservation_passengers.unit_price` — snapshot congelado al reservar.
-  El saldo se calcula con el **snapshot**, no con `trips.seat_price`, para que
-  un cambio de precio posterior no altere saldos ya pactados.
-  Helper de solo lectura: `public.reservation_passenger_balance(pax_uuid)`.
-- **Rechazo de pago inicial** → `cancel_agency_reservation` (atómico): libera
-  TODOS los seats y cancela la reserva.
-- **Rechazo de abono posterior** → solo `payment.status='rejected'`; la reserva
-  queda intacta.
-- `reservations.payment_status` es **derivado** (`pending|partial|fully_paid|
-  refunded|cancelled`), no fuente de verdad. Fuente de verdad: allocations.
+- **Fuente del precio**: `trips.seat_price` (precio vigente) y
+  `reservation_passengers.unit_price` (snapshot congelado al reservar).
+  El saldo se calcula con el **snapshot**.
+- Helper de solo lectura: `public.reservation_passenger_balance(pax_uuid)`.
+
+### Estados derivados
+
+- `reservations.payment_status` es **derivado**
+  (`pending|partial|fully_paid|refunded|cancelled`), no fuente de verdad.
+  Fuente de verdad: allocations.
 
 ---
 
-## 4. Verificación / rechazo de pagos
+## 4. Verificación / rechazo de pagos (MKT-007)
 
-- La verificación/rechazo es **por `payment_id` individual**, **NUNCA** por
-  `reservation_id` (evita rechazar un comprobante que ya cubrió a otros).
-- Tras verificar: recalcular saldos por pasajero y recalcular
-  `payment_status` de la reserva (estado derivado).
+- La verificación/rechazo es **por `attempt_id` individual** en el flujo
+  de checkout (MKT-007). El intento de compra se verifica o rechaza antes
+  de que exista una reserva.
+- Tras verificar: la RPC `verify_checkout_attempt` crea la reserva, el pago
+  y las allocations en una sola transacción atómica.
+- Tras rechazar: el primer y segundo rechazo permiten reenvío; el tercer
+  comprobante rechazado es definitivo y libera los asientos que todavía
+  pertenezcan al intento. Máximo 3 comprobantes por intento.
+- **Flujo legacy (pagos ya creados)**: la verificación/rechazo es **por
+  `payment_id` individual**, **NUNCA** por `reservation_id` (evita rechazar
+  un comprobante que ya cubrió a otros). Tras verificar: recalcular saldos
+  por pasajero y recalcular `payment_status` de la reserva (derivado).
 
 ---
 

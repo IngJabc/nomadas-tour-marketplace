@@ -12,12 +12,20 @@ interface LockCountdownProps {
    * la expiración no debe pintarse en pantalla).
    */
   hidden?: boolean;
+  /**
+   * `lock` (por defecto): habla de la selección de asientos.
+   * `review`: habla de la ventana de revisión del comprobante (MKT-007); el
+   * texto de expiración jamás dice "selección expiró" cuando lo que terminó
+   * fue la revisión.
+   */
+  mode?: 'lock' | 'review';
 }
 
 export function LockCountdown({
   expiresAt,
   onExpired,
   hidden,
+  mode = 'lock',
 }: LockCountdownProps) {
   const { remainingSeconds, formattedTime, expired } = useLockCountdown(
     expiresAt,
@@ -28,6 +36,7 @@ export function LockCountdown({
   if (remainingSeconds === null || formattedTime === null) return null;
 
   const urgent = !expired && remainingSeconds <= 60;
+  const review = mode === 'review';
 
   return (
     <p
@@ -38,10 +47,16 @@ export function LockCountdown({
     >
       <Timer size={16} strokeWidth={1.75} aria-hidden="true" />
       {expired
-        ? 'Tu selección expiró.'
-        : urgent
-          ? `Tu selección expira en ${formattedTime}`
-          : `Tu selección está reservada durante ${formattedTime}`}
+        ? review
+          ? 'La ventana de revisión terminó.'
+          : 'Tu selección expiró.'
+        : review
+          ? urgent
+            ? `La revisión vence en ${formattedTime}`
+            : `Revisión en curso: ${formattedTime}`
+          : urgent
+            ? `Tu selección expira en ${formattedTime}`
+            : `Tu selección está reservada durante ${formattedTime}`}
     </p>
   );
 }

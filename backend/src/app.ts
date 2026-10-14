@@ -7,6 +7,7 @@ import { errorHandler } from './middlewares/error-handler.js';
 import authRoutes from './routes/auth/index.js';
 import publicTripsRoutes from './routes/public/trips.js';
 import publicSeatsRoutes from './routes/public/seats.js';
+import publicCheckoutRoutes from './routes/public/checkout.js';
 import publicReservationsRoutes from './routes/public/reservations.js';
 import publicPaymentsRoutes from './routes/public/payments.js';
 import adminPaymentsRoutes from './routes/admin/payments.js';
@@ -71,6 +72,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/public/trips', publicTripsRoutes);
 app.use('/api/public/seats', publicSeatsRoutes);
+app.use('/api/public/checkout', publicCheckoutRoutes);
 app.use('/api/public/reservations', publicReservationsRoutes);
 app.use('/api/public/reservations', publicPaymentsRoutes);
 app.use('/api/admin/payments', adminPaymentsRoutes);

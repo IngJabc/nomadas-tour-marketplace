@@ -1222,10 +1222,56 @@ export async function getAgencyPaymentDetail(input: {
   };
 }
 
+const UUID_DIR_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Comprueba que `proof_url` viva bajo un directorio UUID válido:
+ *
+ *  - `<reservation_id>/<sha256>.<ext>` — flujo 083 (MKT-005), donde la
+ *    reserva ya existía antes del comprobante.
+ *  - `<attempt_id>/<sha256>.<ext>`   — flujo MKT-007, donde la reserva
+ *    recién nace al aprobar el intento y el archivo se subió contra el
+ *    `checkout_attempt`.
+ *
+ * En ambos casos: sin subcarpetas, sin ".." y con extensión. La ruta
+ * jamás llega del cliente (se lee de la fila de pago), pero igual se
+ * valida aquí como defensa en profundidad frente a una fila corrupta.
+ */
+async function proofPathBelongsToPayment(
+  proofPath: string,
+  reservationId: string,
+): Promise<boolean> {
+  const separator = proofPath.indexOf('/');
+  if (separator <= 0 || separator === proofPath.length - 1) return false;
+
+  const dir = proofPath.slice(0, separator);
+  const filename = proofPath.slice(separator + 1);
+
+  if (filename.includes('/') || filename.includes('..')) return false;
+  if (!/\.[a-z0-9]+$/i.test(filename)) return false;
+  if (!UUID_DIR_RE.test(dir)) return false;
+  if (dir === reservationId) return true;
+
+  // MKT-007: el comprobante se subió contra un checkout_attempt. Solo
+  // un intento VERIFICADO genera pagos, y su id es exactamente el
+  // directorio, así que basta confirmar que esa fila existe y que su
+  // proof_path sigue apuntando al mismo objeto.
+  const { data, error } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select('id, proof_path, status')
+    .eq('id', dir)
+    .maybeSingle();
+
+  if (error || !data) return false;
+  const attempt = data as { proof_path: string | null; status: string };
+  return attempt.status === 'verified' && attempt.proof_path === proofPath;
+}
+
 /**
  * Genera una URL firmada de corta duración para el comprobante de un
  * pago. La ruta NUNCA llega del cliente: se lee de `payments.proof_url`
- * y se valida que pertenezca al directorio de la reserva del propio pago.
+ * y se valida que pertenezca al directorio de la reserva del propio pago
+ * o al del checkout_attempt que la generó (MKT-007).
  *
  * El bucket `payment-proofs` es privado (083); la URL firmada es la
  * única vía de acceso y caduca en `PROOF_SIGNED_URL_TTL_SECONDS`.
@@ -1265,18 +1311,10 @@ export async function getPaymentProofSignedUrl(input: {
     );
   }
 
-  // Defensa en profundidad: la ruta almacenada debe vivir dentro del
-  // directorio de la reserva (mismo prefijo que valida 083 al guardar).
-  const expectedPrefix = `${reservationId}/`;
-  const rest = proofPath.startsWith(expectedPrefix)
-    ? proofPath.slice(expectedPrefix.length)
-    : null;
-  if (
-    rest === null ||
-    rest.includes('/') ||
-    rest.includes('..') ||
-    !/\.[a-z0-9]+$/i.test(rest)
-  ) {
+  // Defensa en profundidad: la ruta almacenada vive bajo un directorio
+  // UUID (la reserva en el flujo 083, o el checkout_attempt en MKT-007)
+  // y jamás contiene subcarpetas, ".." ni un nombre sin extensión.
+  if (!(await proofPathBelongsToPayment(proofPath, reservationId))) {
     throw paymentError(
       'Este pago no tiene comprobante adjunto',
       404,

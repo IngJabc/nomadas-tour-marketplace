@@ -17,12 +17,13 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  checkoutApi,
   publicApi,
-  reservationApi,
   seatApi,
+  type CreateCheckoutAttemptResult,
   type PublicTripDetail,
   type PublicTripSeat,
-  type SubmitPaymentProofResult,
+  type SubmitCheckoutProofResult,
 } from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
 import { formatDateTimeShort } from '@/lib/timezone';
@@ -30,16 +31,17 @@ import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from '@/lib/price';
 import { BusLayout } from '@/components/bus/BusLayout';
 import { LockCountdown } from '@/components/booking/LockCountdown';
 import { PassengerCard } from '@/components/booking/PassengerCard';
-import { ProofUploader } from '@/components/booking/ProofUploader';
+import { ProofUploader, newIdempotencyKey } from '@/components/booking/ProofUploader';
+import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
 import {
   clearLockState,
-  isValidPaymentMarker,
+  isValidCheckoutMarker,
   readLockState,
   writeLockState,
+  type CheckoutMarker,
   type LockState,
   type PassengerDraft,
-  type PaymentPendingMarker,
 } from '@/lib/booking/lock-state';
 import {
   emptyPassenger,
@@ -136,13 +138,25 @@ function NewReservationContent() {
   // Dedupe en vuelo: evita doble POST por Strict Mode, re-renders o dos
   // clics concurrentes. El backend además es idempotente (201 → 200).
   const creatingRef = useRef(false);
-  // El comprobante enviado sobrevive a los callbacks de expiración del lock
-  // original: los callbacks sin deps leen el valor desde el ref.
-  // El marcador solo cuenta si pasa `isValidPaymentMarker` (status pending y
-  // tipos correctos): un marcador inválido nunca llega aquí descartado al leer.
-  const paymentPending = isValidPaymentMarker(lock?.payment);
-  const paymentPendingRef = useRef(false);
-  paymentPendingRef.current = paymentPending;
+  // MKT-007: el intento de compra gobierna la pantalla. Un marcador que no
+  // pasa `isValidCheckoutMarker` nunca llega aquí (se descarta al leer).
+  const checkoutMarker = isValidCheckoutMarker(lock?.checkout)
+    ? lock?.checkout
+    : null;
+  const attemptCreated = !!lock?.attempt_id;
+  // Un intento existente congela asientos, locks y re-creación: la reserva
+  // definitiva solo nace cuando la agencia verifica el comprobante.
+  const checkoutActive = attemptCreated;
+  const awaitingReview = checkoutMarker?.status === 'pending_review';
+  const checkoutRejected = checkoutMarker?.status === 'rejected';
+  const checkoutActiveRef = useRef(false);
+  checkoutActiveRef.current = checkoutActive;
+
+  const [cancelling, setCancelling] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  // Aprobación observada en el SERVIDOR. No se persiste en la LockState: la
+  // única fuente de verdad de "pago aprobado" es `getAttempt` (MKT-007).
+  const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
 
   useEffect(() => {
     // Sin la identidad resuelta no se puede decidir guest vs customer.
@@ -168,6 +182,7 @@ function NewReservationContent() {
         setPassengers([]);
         setFieldErrors([]);
         setCreateError(null);
+        setVerifiedAt(null);
         setPhase('ready');
       } catch (e) {
         if (cancelled) return;
@@ -208,29 +223,73 @@ function NewReservationContent() {
       setPhase('loading');
       setError(null);
 
-      // MKT-005 Fase 3: con el comprobante ya enviado, la reserva se
-      // restaura TAL CUAL. No se reclama la sesión guest ni se revalidan los
-      // locks temporales: eso podría borrar la reserva del estado local
-      // (el TTL original ya venció o vencerá) y el pago ya está en revisión.
-      // Tampoco se renueva `lock_expires_at` ni se consulta ninguna URL
-      // pública del comprobante: la API no devuelve una.
-      if (stored.payment && stored.reservation_id) {
+      // MKT-007: con un intento de compra existente la pantalla se restaura
+      // desde el SERVIDOR, no desde el marcador local. El intento es quien
+      // dueña de los asientos, así que no se reclama la sesión guest ni se
+      // revalidan los locks temporales (eso borraría la compra en revisión).
+      // Tampoco se consulta ninguna URL pública del comprobante: la API no
+      // devuelve una.
+      if (stored.attempt_id) {
         try {
-          const response = await publicApi.tripDetail(stored.trip_id);
+          const [tripResponse, attempt] = await Promise.all([
+            publicApi.tripDetail(stored.trip_id),
+            checkoutApi.getAttempt(stored.attempt_id),
+          ]);
           if (cancelled) return;
-          setTrip(response.trip);
-          setLock(stored);
-          setPassengers(reconcilePassengers(stored, stored.passengers));
+
+          // Ventanas terminales: el intento ya no puede avanzar y no queda
+          // nada que seguir en esta pantalla. Las liberaciones siguen la regla
+          // "el estado del usuario no se limpia hasta confirmación": aquí hay
+          // confirmación explícita del servidor de que la compra cerró.
+          if (attempt.status === 'expired' || attempt.status === 'cancelled') {
+            clearLockState();
+            await startFresh(stored.trip_id);
+            return;
+          }
+
+          const marker: CheckoutMarker = {
+            status:
+              attempt.status === 'pending_review'
+                ? 'pending_review'
+                : attempt.status === 'rejected' ||
+                    attempt.status === 'rejected_final'
+                  ? 'rejected'
+                  : 'created',
+            attempt_id: attempt.attempt_id,
+            submitted_at: attempt.proof_submitted_at ?? undefined,
+            proof_count: attempt.proof_count,
+            remaining_submissions: attempt.remaining_submissions,
+            expires_at: attempt.expires_at,
+            rejection_reason: attempt.rejection_reason ?? undefined,
+          };
+          const restored: LockState = {
+            ...stored,
+            // El intento sustituye al lock original: la ventana que gobierna
+            // la pantalla es la que calculó el backend.
+            lock_expires_at: attempt.expires_at,
+            checkout: marker,
+          };
+          setTrip(tripResponse.trip);
+          setLock(restored);
+          setPassengers(reconcilePassengers(restored, stored.passengers));
           setFieldErrors([]);
           setCreateError(null);
+          setVerifiedAt(attempt.status === 'verified' ? (attempt.verified_at ?? '') : null);
           setPhase('ready');
+          writeLockState({ ...restored, passengers: restored.passengers });
         } catch (e) {
           if (cancelled) return;
+          if (e instanceof ApiError && e.status === 404) {
+            // El intento ya no existe o no es tuyo: no hay nada que reclamar.
+            clearLockState();
+            await startFresh(stored.trip_id);
+            return;
+          }
           setPhase('error');
           setError(
             getApiErrorMessage(
               e,
-              'No pudimos cargar tu reserva. Intenta de nuevo.',
+              'No pudimos cargar tu compra. Intenta de nuevo.',
             ),
           );
         }
@@ -311,13 +370,22 @@ function NewReservationContent() {
     writeLockState({ ...lock, passengers });
   }, [phase, lock, passengers]);
 
+  // Ventana del INTENTO, no del lock original: mientras el intento exista la
+  // expiración no puede borrar la revisión ni devolver al mapa. Se reconcilia
+  // con el servidor una sola vez por ventana para refrescar el estado real.
+  const expiryHandledFor = useRef<string | null>(null);
+
   const handleExpired = useCallback(() => {
-    // Tras enviar el comprobante el lock original ya no gobierna la pantalla:
-    // la expiración no puede borrar la revisión del pago ni devolver al mapa.
-    setPhase((current) =>
-      current === 'ready' && !paymentPendingRef.current ? 'expired' : current,
-    );
-  }, []);
+    if (checkoutActiveRef.current) {
+      const key =
+        lock?.checkout?.expires_at ?? lock?.lock_expires_at ?? 'unknown';
+      if (expiryHandledFor.current === key) return;
+      expiryHandledFor.current = key;
+      setVerifyAttempt((current) => current + 1);
+      return;
+    }
+    setPhase((current) => (current === 'ready' ? 'expired' : current));
+  }, [lock]);
 
   const handleCreateError = useCallback((err: unknown) => {
     if (err instanceof ApiError) {
@@ -347,21 +415,22 @@ function NewReservationContent() {
         return;
       }
       setCreateError(
-        err.message || 'No pudimos crear tu reserva. Intenta de nuevo.',
+        err.message || 'No pudimos iniciar tu compra. Intenta de nuevo.',
       );
       return;
     }
     setCreateError(
-      getApiErrorMessage(err, 'No pudimos crear tu reserva. Intenta de nuevo.'),
+      getApiErrorMessage(err, 'No pudimos iniciar tu compra. Intenta de nuevo.'),
     );
   }, []);
 
-  // ─── Creación de la reserva (MKT-004 Fase B) ─────────────────────────
-  // Disparada por "Confirmar y pagar" en el checkout de una sola página.
-  // Guards: reservation_id (refresh/back-forward), ref en vuelo (Strict Mode,
+  // ─── Creación del intento de compra (MKT-007) ────────────────────────
+  // Disparada por "Continuar al pago". NO crea reserva: crea un
+  // `checkout_attempt` que retiene los asientos mientras la agencia revisa.
+  // Guards: attempt_id (refresh/back-forward), ref en vuelo (Strict Mode,
   // re-renders, doble clic) y validación de pasajeros ANTES del POST (§14).
   const handleCreate = useCallback(async () => {
-    if (!lock || creatingRef.current || lock.reservation_id) return;
+    if (!lock || creatingRef.current || lock.attempt_id) return;
     const sessionUser = authRef.current?.user;
     if (!sessionUser) return; // gate: sin sesión no hay POST
     if (sessionUser.role !== 'customer') return; // backend: CUSTOMER_REQUIRED
@@ -386,30 +455,65 @@ function NewReservationContent() {
     setCreateError(null);
 
     const snapshot = { ...lock, passengers };
+    // Clave estable ANTES del POST: si la respuesta se pierde, el reintento
+    // reutiliza la MISMA `Idempotency-Key` y el RPC devuelve el intento
+    // existente en lugar de crear un segundo.
+    const attemptKey = snapshot.attempt_key ?? newIdempotencyKey();
+    writeLockState({ ...snapshot, attempt_key: attemptKey });
 
     try {
-      const result = await reservationApi.create({
-        trip_id: lock.trip_id,
-        agency_id: lock.agency_id,
-        seat_ids: lock.seats.map((seat) => seat.id),
-        passengers: passengers.map(
-          ({ seat_id, first_name, last_name, document, phone }) => ({
-            seat_id,
-            first_name,
-            last_name,
-            document,
-            phone,
-          }),
-        ),
-      });
+      const result: CreateCheckoutAttemptResult = await checkoutApi.createAttempt(
+        {
+          trip_id: lock.trip_id,
+          agency_id: lock.agency_id,
+          seat_ids: lock.seats.map((seat) => seat.id),
+          passengers: passengers.map(
+            ({ seat_id, first_name, last_name, document, phone }) => ({
+              seat_id,
+              first_name,
+              last_name,
+              document,
+              phone,
+            }),
+          ),
+        },
+        attemptKey,
+      );
+      const marker: CheckoutMarker = {
+        status:
+          result.status === 'pending_review'
+            ? 'pending_review'
+            : result.status === 'rejected'
+              ? 'rejected'
+              : 'created',
+        attempt_id: result.attempt_id,
+        proof_count: result.proof_count,
+        remaining_submissions: Math.max(1, 3 - result.proof_count),
+        expires_at: result.expires_at,
+      };
       // Persistir ANTES del setState: si el usuario refresca justo aquí,
-      // LockState ya tiene la reserva y no se vuelve a POSTear (§14).
-      writeLockState({ ...snapshot, reservation_id: result.reservation_id });
+      // LockState ya tiene el intento y no se vuelve a POSTear (§14).
+      writeLockState({
+        ...snapshot,
+        attempt_key: attemptKey,
+        attempt_id: result.attempt_id,
+        lock_expires_at: result.expires_at,
+        checkout: marker,
+      });
       setLock((prev) =>
-        prev ? { ...prev, reservation_id: result.reservation_id } : prev,
+        prev
+          ? {
+              ...prev,
+              attempt_key: attemptKey,
+              attempt_id: result.attempt_id,
+              lock_expires_at: result.expires_at,
+              checkout: marker,
+            }
+          : prev,
       );
       setFieldErrors([]);
-      toast.success('Reserva creada');
+      setCreateError(null);
+      toast.success('Compra iniciada. Ahora envía tu comprobante de pago.');
     } catch (err: unknown) {
       handleCreateError(err);
     } finally {
@@ -418,36 +522,100 @@ function NewReservationContent() {
     }
   }, [handleCreateError, lock, passengers, trip]);
 
-  // ─── Comprobante de pago (MKT-005 Fase 3) ────────────────────────────
+  // ─── Comprobante de pago (MKT-007) ───────────────────────────────────
   // El marcador se persiste con la LockState y solo indica que la interfaz
-  // registró el envío: la reserva nunca se pinta como pagada ni confirmada.
-  const persistPaymentPending = useCallback(
-    (payment: PaymentPendingMarker) => {
+  // registró el envío: la compra nunca se pinta como pagada ni confirmada.
+  const persistCheckout = useCallback(
+    (checkout: CheckoutMarker) => {
       if (!lock) return;
-      writeLockState({ ...lock, passengers, payment });
-      setLock((prev) => (prev ? { ...prev, payment } : prev));
+      const next: LockState = {
+        ...lock,
+        passengers,
+        checkout,
+        lock_expires_at: checkout.expires_at ?? lock.lock_expires_at,
+      };
+      writeLockState(next);
+      setLock((prev) => (prev ? { ...next } : prev));
     },
     [lock, passengers],
   );
 
   const handleProofSubmitted = useCallback(
-    (result: SubmitPaymentProofResult) => {
-      persistPaymentPending({
-        status: 'pending',
-        payment_id: result.payment_id,
-        submitted_at: result.submitted_at,
+    (result: SubmitCheckoutProofResult) => {
+      persistCheckout({
+        status: 'pending_review',
+        attempt_id: result.attempt_id,
+        submitted_at: new Date().toISOString(),
+        proof_count: result.proof_count,
+        remaining_submissions: result.remaining_submissions,
+        expires_at: result.expires_at,
       });
       toast.success('Comprobante enviado. Tu pago está pendiente de revisión.');
     },
-    [persistPaymentPending],
+    [persistCheckout],
   );
 
   const handleAlreadySubmitted = useCallback(() => {
     // El servidor ya tenía el comprobante: conservar la revisión sin pedir
     // un segundo envío y sin inventar ids que esta respuesta no trajo.
-    persistPaymentPending({ status: 'pending' });
+    if (!lock?.attempt_id) return;
+    persistCheckout({
+      status: 'pending_review',
+      attempt_id: lock.attempt_id,
+      submitted_at: lock.checkout?.submitted_at,
+      proof_count: lock.checkout?.proof_count,
+      remaining_submissions: lock.checkout?.remaining_submissions,
+      expires_at: lock.checkout?.expires_at,
+    });
     toast.success('Tu comprobante ya estaba enviado y sigue en revisión.');
-  }, [persistPaymentPending]);
+  }, [lock, persistCheckout]);
+
+  // ─── Cancelación del intento (acción destructiva → modal) ────────────
+  const handleCancelAttempt = useCallback(async () => {
+    if (!lock?.attempt_id || cancelling) return;
+    setCancelling(true);
+    try {
+      const result = await checkoutApi.cancelAttempt(lock.attempt_id);
+      setConfirmCancel(false);
+      // Confirmación visual explícita del servidor: recién ahí se limpia la
+      // selección. La pantalla vuelve al mapa con 0 asientos (empty state con
+      // CTA: elegir de nuevo) en lugar de a un estado "missing".
+      clearLockState();
+      setLock((prev) =>
+        prev
+          ? {
+              trip_id: prev.trip_id,
+              agency_id: prev.agency_id,
+              seats: [],
+              lock_expires_at: '',
+              passengers: [],
+            }
+          : null,
+      );
+      setPassengers([]);
+      setFieldErrors([]);
+      setCreateError(null);
+      setVerifiedAt(null);
+      setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
+      toast.success(
+        result.already_cancelled
+          ? 'Esta compra ya estaba cancelada. Tus asientos quedaron libres.'
+          : `Compra cancelada. Liberamos ${result.freed_seats} asiento${
+              result.freed_seats === 1 ? '' : 's'
+            }.`,
+      );
+      // La realtime (`useSeatLocking`) propaga locked → available a los mapas.
+    } catch (e) {
+      toast.error(
+        getApiErrorMessage(
+          e,
+          'No pudimos cancelar la compra. Intenta de nuevo.',
+        ),
+      );
+    } finally {
+      setCancelling(false);
+    }
+  }, [cancelling, lock]);
 
   // ─── Realtime (estilo nomadas-tour) ─────────────────────────────────
 
@@ -467,7 +635,7 @@ function NewReservationContent() {
     // Con el comprobante en revisión la selección ya no se toca: un lock que
     // expira (o lo toman) no puede ni vaciar los asientos ni mostrar el
     // estado expirado.
-    if (paymentPendingRef.current) return;
+    if (checkoutActiveRef.current) return;
     toast.error(`El asiento ${seat.seat_code} ya no está disponible`);
     setLock((prev) =>
       prev
@@ -517,13 +685,13 @@ function NewReservationContent() {
     onRefresh: refreshTrip,
   });
 
-  // Si la realtime vació la selección, la reserva queda expirada.
+  // Si la realtime vació la selección, la compra queda expirada.
   // `lock_expires_at` distingue el estado inicial (0 asientos, sin lock real,
   // entrada fresca desde el catálogo) de una selección realmente perdida.
-  // Con el comprobante enviado la selección ya no se vacía (ver handleSeatLost),
-  // así que este efecto no puede borrar la revisión del pago.
+  // Con un intento de compra creado la selección ya no se vacía (ver
+  // handleSeatLost), así que este efecto no puede borrar la revisión.
   useEffect(() => {
-    if (paymentPending) return;
+    if (checkoutActive) return;
     if (
       phase === 'ready' &&
       lock &&
@@ -532,11 +700,11 @@ function NewReservationContent() {
     ) {
       setPhase('expired');
     }
-  }, [phase, lock, paymentPending]);
+  }, [phase, lock, checkoutActive]);
 
   const handleToggleSeat = useCallback(
     async (seatCode: string) => {
-      if (!trip || !lock || busy || lock.reservation_id) return;
+      if (!trip || !lock || busy || lock.attempt_id) return;
       const seat = trip.seats.find((item) => item.seat_code === seatCode);
       if (!seat) return;
 
@@ -672,7 +840,7 @@ function NewReservationContent() {
    * parte del flujo). Si no hay asientos no hay nada que liberar.
    */
   const changeSeats = useCallback(async () => {
-    if (!lock || lock.reservation_id) return;
+    if (!lock || lock.attempt_id) return;
 
     if (lock.seats.length > 0) {
       const user = authRef.current?.user;
@@ -845,9 +1013,8 @@ function NewReservationContent() {
   const seatCodeFor = (seatId: string) =>
     lock.seats.find((seat) => seat.id === seatId)?.seat_code ?? '—';
 
-  const lockedAfterCreation = !!lock.reservation_id;
-  const formLocked = busy || lockedAfterCreation;
-  const reservationId = lock.reservation_id;
+  const formLocked = busy || attemptCreated;
+  const attemptId = lock.attempt_id;
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
@@ -883,12 +1050,28 @@ function NewReservationContent() {
         </div>
       </header>
 
-      {lock.lock_expires_at ? (
+      {attemptCreated ? (
+        checkoutActive && !verifiedAt && lock.lock_expires_at ? (
+          <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
+            <LockCountdown
+              expiresAt={lock.lock_expires_at}
+              onExpired={handleExpired}
+              mode="review"
+            />
+            <span>
+              {awaitingReview
+                ? 'La agencia revisa tu comprobante dentro de esta ventana.'
+                : checkoutRejected
+                  ? 'Tu comprobante fue rechazado: puedes reenviarlo dentro de esta ventana.'
+                  : 'Tus asientos quedan retenidos mientras envías el comprobante.'}
+            </span>
+          </div>
+        ) : null
+      ) : lock.lock_expires_at ? (
         <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
           <LockCountdown
             expiresAt={lock.lock_expires_at}
             onExpired={handleExpired}
-            hidden={paymentPending}
           />
           <span>Los asientos están retenidos mientras completas tu reserva.</span>
         </div>
@@ -917,7 +1100,7 @@ function NewReservationContent() {
                 seats={trip.seats}
                 selectedSeats={seatCodes}
                 onToggleSeat={
-                  lockedAfterCreation
+                  attemptCreated
                     ? undefined
                     : (seatCode) => {
                         if (!busy) void handleToggleSeat(seatCode);
@@ -927,10 +1110,10 @@ function NewReservationContent() {
             </div>
 
             <p className="mt-4 text-center text-xs text-brand-muted">
-              {lockedAfterCreation
-                ? 'Tu reserva ya está creada: los asientos no pueden modificarse.'
+              {attemptCreated
+                ? 'Tu compra ya está iniciada: los asientos no pueden modificarse.'
                 : lock.seats.length === 0
-                  ? 'Elige tus asientos en el mapa: los bloqueamos por 15 minutos mientras completas tu reserva.'
+                  ? 'Elige tus asientos en el mapa: los bloqueamos mientras completas tu reserva.'
                   : 'Tus asientos quedan bloqueados mientras completas el formulario.'}
             </p>
           </section>
@@ -1031,14 +1214,28 @@ function NewReservationContent() {
               <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
                 Pago
               </h2>
-              {lock.reservation_id ? (
-                <span className="rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]">
-                  Reserva creada
-                </span>
+              {lock.attempt_id ? (
+                verifiedAt ? (
+                  <span className="rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]">
+                    Pago aprobado
+                  </span>
+                ) : awaitingReview ? (
+                  <span className="rounded-full bg-[#fffbeb] px-3 py-1 text-[11px] font-semibold text-[#92400e]">
+                    En revisión
+                  </span>
+                ) : checkoutRejected ? (
+                  <span className="rounded-full bg-[#fef2f2] px-3 py-1 text-[11px] font-semibold text-[#ef4444]">
+                    Comprobante rechazado
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]">
+                    Compra iniciada
+                  </span>
+                )
               ) : null}
             </div>
 
-            {lock.reservation_id ? (
+            {lock.attempt_id ? (
               <div className="mt-5">
                 {agencyName ? (
                   <div className="rounded-[10px] bg-[#ecfdf5] px-4 py-3">
@@ -1046,14 +1243,15 @@ function NewReservationContent() {
                       Pagas directamente a {agencyName}
                     </p>
                     <p className="mt-1 text-xs text-brand-muted">
-                      Nómadas organiza la reserva; la transferencia se realiza a
+                      Nómadas organiza la compra; la transferencia se realiza a
                       la cuenta verificada de la agencia.
                     </p>
                   </div>
                 ) : null}
                 <p className="mt-3 text-sm text-brand-muted">
-                  Tus asientos están reservados y tus pasajeros quedaron
-                  guardados.
+                  Tus asientos quedaron retenidos y tus pasajeros están
+                  guardados. La reserva definitiva se crea cuando la agencia
+                  apruebe tu comprobante.
                 </p>
               </div>
             ) : priceMissing ? (
@@ -1158,7 +1356,7 @@ function NewReservationContent() {
                   ) : (
                     <RefreshCw size={16} strokeWidth={1.75} aria-hidden="true" />
                   )}
-                  {creating ? 'Confirmando tu reserva…' : 'Reintentar'}
+                  {creating ? 'Iniciando tu compra…' : 'Reintentar'}
                 </button>
               </div>
             ) : lock.seats.length === 0 ? (
@@ -1168,8 +1366,8 @@ function NewReservationContent() {
             ) : (
               <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-brand-muted">
-                  Revisa los datos de los pasajeros y confirma para crear tu
-                  reserva con la agencia.
+                  Revisa los datos de los pasajeros y continúa para enviar tu
+                  comprobante de pago.
                 </p>
                 <button
                   type="button"
@@ -1185,13 +1383,13 @@ function NewReservationContent() {
                       aria-hidden="true"
                     />
                   ) : null}
-                  {creating ? 'Confirmando tu reserva…' : 'Confirmar y pagar'}
+                  {creating ? 'Iniciando tu compra…' : 'Continuar al pago'}
                 </button>
               </div>
             )}
           </section>
 
-          {reservationId ? (
+          {attemptId ? (
             <section
               aria-label="Comprobante"
               className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
@@ -1202,12 +1400,22 @@ function NewReservationContent() {
                 </h2>
                 <span
                   className={
-                    paymentPending
-                      ? 'rounded-full bg-[#fffbeb] px-3 py-1 text-[11px] font-semibold text-[#92400e]'
-                      : 'rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted'
+                    verifiedAt
+                      ? 'rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]'
+                      : awaitingReview
+                        ? 'rounded-full bg-[#fffbeb] px-3 py-1 text-[11px] font-semibold text-[#92400e]'
+                        : checkoutRejected
+                          ? 'rounded-full bg-[#fef2f2] px-3 py-1 text-[11px] font-semibold text-[#ef4444]'
+                          : 'rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted'
                   }
                 >
-                  {paymentPending ? 'Pendiente de revisión' : 'Pago pendiente'}
+                  {verifiedAt
+                    ? 'Pago aprobado'
+                    : awaitingReview
+                      ? 'Pendiente de revisión'
+                      : checkoutRejected
+                        ? 'Rechazado'
+                        : 'Pago pendiente'}
                 </span>
               </div>
 
@@ -1237,9 +1445,9 @@ function NewReservationContent() {
                   </dd>
                 </div>
                 <div className="flex items-start justify-between gap-4">
-                  <dt className="text-brand-muted">Referencia</dt>
-                  <dd className="text-right font-semibold text-brand-navy">
-                    {reservationId}
+                  <dt className="text-brand-muted">Folio de compra</dt>
+                  <dd className="break-all text-right font-semibold text-brand-navy">
+                    {attemptId}
                   </dd>
                 </div>
               </dl>
@@ -1272,30 +1480,109 @@ function NewReservationContent() {
                 </span>
               </div>
 
-              {paymentPending ? (
-                // Vista de solo lectura: no hay forma de enviar otro comprobante
-                // para esta reserva y jamás se pinta como pagada/confirmada.
+              {verifiedAt ? (
+                // Confirmación visual explícita del servidor: es el único caso
+                // en el que se habla de pago aprobado (MKT-007 §7).
+                <div className="mt-5 rounded-[10px] bg-[#ecfdf5] px-4 py-4">
+                  <p className="text-sm font-semibold text-[#059669]">
+                    Tu pago fue aprobado.
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    La agencia confirmó la transferencia y tu reserva ya está
+                    confirmada con tus {passengers.length} pasajero
+                    {passengers.length === 1 ? '' : 's'} en{' '}
+                    {seatCodes.join(', ')}.
+                  </p>
+                  <p className="mt-2 text-xs text-brand-muted">
+                    Aprobado el {formatDateTimeShort(verifiedAt)}
+                  </p>
+                </div>
+              ) : awaitingReview ? (
+                // Vista de solo lectura: mientras la agencia no decida no se
+                // admite otro comprobante y jamás se pinta como pagada.
                 <div className="mt-5 rounded-[10px] bg-[#fffbeb] px-4 py-4">
                   <p className="text-sm font-semibold text-[#92400e]">
                     Comprobante enviado. Tu pago está pendiente de revisión.
                   </p>
                   <p className="mt-1 text-xs text-brand-muted">
                     Recibimos el comprobante y la agencia lo está revisando.
-                    No vuelvas a enviarlo; te avisaremos cuando sea confirmado.
+                    Te avisaremos cuando sea confirmado.
                   </p>
-                  {lock.payment?.submitted_at ? (
+                  {checkoutMarker?.submitted_at ? (
                     <p className="mt-2 text-xs text-brand-muted">
-                      Enviado el {formatDateTimeShort(lock.payment.submitted_at)}
+                      Enviado el{' '}
+                      {formatDateTimeShort(checkoutMarker.submitted_at)}
                     </p>
                   ) : null}
                 </div>
+              ) : checkoutRejected ? (
+                <div className="mt-5">
+                  <div className="rounded-[10px] bg-[#fef2f2] px-4 py-4">
+                    <p className="text-sm font-semibold text-[#ef4444]">
+                      Comprobante rechazado
+                    </p>
+                    <p className="mt-1 text-xs text-brand-muted">
+                      {checkoutMarker?.rejection_reason ??
+                        'La agencia no pudo validar la transferencia.'}
+                    </p>
+                    <p className="mt-2 text-xs text-brand-muted">
+                      Te quedan{' '}
+                      {checkoutMarker?.remaining_submissions ?? 0} reenvío
+                      {(checkoutMarker?.remaining_submissions ?? 0) === 1
+                        ? ''
+                        : 's'}{' '}
+                      disponible
+                      {(checkoutMarker?.remaining_submissions ?? 0) === 1
+                        ? ''
+                        : 's'}
+                      .
+                    </p>
+                  </div>
+                  {(checkoutMarker?.remaining_submissions ?? 0) > 0 ? (
+                    <ProofUploader
+                      attemptId={attemptId}
+                      remainingSubmissions={
+                        checkoutMarker?.remaining_submissions ?? 1
+                      }
+                      onSubmitted={handleProofSubmitted}
+                      onAlreadySubmitted={handleAlreadySubmitted}
+                    />
+                  ) : (
+                    <p className="mt-4 text-sm text-brand-muted">
+                      Se agotaron los reenvíos de comprobante para esta compra.
+                      Cancela la compra para elegir otros asientos.
+                    </p>
+                  )}
+                </div>
               ) : (
                 <ProofUploader
-                  reservationId={reservationId}
+                  attemptId={attemptId}
+                  remainingSubmissions={
+                    checkoutMarker?.remaining_submissions ?? 3
+                  }
                   onSubmitted={handleProofSubmitted}
                   onAlreadySubmitted={handleAlreadySubmitted}
                 />
               )}
+
+              {!verifiedAt && !awaitingReview ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancel(true)}
+                  disabled={cancelling}
+                  className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#fef2f2] px-4 py-2.5 text-sm font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {cancelling ? (
+                    <LoaderCircle
+                      size={16}
+                      strokeWidth={1.75}
+                      className="animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  {cancelling ? 'Cancelando compra…' : 'Cancelar compra'}
+                </button>
+              ) : null}
             </section>
           ) : null}
         </div>
@@ -1396,6 +1683,18 @@ function NewReservationContent() {
           </section>
         </aside>
       </div>
+
+      <ConfirmModal
+        open={confirmCancel}
+        title="¿Cancelar esta compra?"
+        description="Se liberarán tus asientos y se borrará la selección y los datos de los pasajeros de esta pantalla. No podrás recuperar esta compra; tendrás que empezar de cero."
+        confirmLabel="Sí, cancelar compra"
+        cancelLabel="Seguir con la compra"
+        loading={cancelling}
+        destructive
+        onConfirm={() => void handleCancelAttempt()}
+        onCancel={() => setConfirmCancel(false)}
+      />
     </main>
   );
 }

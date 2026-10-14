@@ -11,7 +11,6 @@ export function Navbar() {
   const pathname = usePathname();
   const auth = useOptionalAuthUser();
   const signedIn = !!auth?.user;
-  const isAgency = auth?.user?.role === "agency";
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -53,14 +52,6 @@ export function Navbar() {
           >
             Viajes
           </Link>
-          {isAgency && (
-            <Link
-              href="/pagos"
-              className="text-sm text-white/75 transition-opacity hover:opacity-100"
-            >
-              Pagos
-            </Link>
-          )}
           {signedIn ? (
             <button
               type="button"

@@ -90,24 +90,82 @@ Los SQL viven en `../nomadas-tour/supabase/migrations/` (historia única).
 | P4 | `platform_config`, `commissions`, `reservation_refunds` | `077_platform_config_commissions_refunds.sql` | Fee default 30 centavos, `idempotency_key` único, `agencies.first_marketplace_trip_completed_at` |
 | P5 | `trips.installment_allowed`, `trips.installment_amount_cents` | `078_trips_installments.sql` | Sin tabla `installments` (el saldo se deriva) |
 | P6 | RPC `cancel_reservation_passenger` | `079_cancel_reservation_passenger.sql` | Cancela 1 pasajero, libera su seat, crea refund `required`, idempotente. Amplía `audit_log` para `customer` |
-
-### Sigue pendiente
-
-| # | Item | Notas |
-| - | ---- | ----- |
-| P7 | RPC lock marketplace (TTL 900 decidido por servidor) | Reutiliza patrón de RPCs de lock de tour |
-| P8 | Wizard de reserva + mapa de asientos + comprobante | Frontend completo |
-| P9 | Verificación/rechazo admin por `payment_id` | Panel admin marketplace |
-| P10 | Workers marketplace: T-1, comisiones, emails | Runner en `backend/src/workers/runner.ts` |
-| P11 | Validación `fully_paid` antes de `boarding_toggle` | **Toque en `nomadas-tour`** (RPC/backend tour) — coordinar |
-| P12 | Gate de email (EMAIL_DELIVERY_MODE) | Mismo patrón OPS-EMAIL-001 de tour |
-
-> **P11 es el único punto que requiere cambio en el repo tour.** Todo lo demás
-> es propio de este repo + migraciones sobre la BD compartida.
+| P7 | **MKT-007**: `checkout_attempts` + RPCs de checkout | `087_checkout_attempts.sql` | Tabla de intentos de compra, conciliación en `payments`, RPCs atómicas de verificación/rechazo. **Requiere migración en staging/producción** |
 
 ---
 
-## 6. REGLAS DE CONVIVENCIA
+## 6. MKT-007 — Integración checkout_attempts (2026-10-13)
+
+### Problema que resuelve
+
+Antes de MKT-007 el flujo B2C creaba la reserva y el pago **antes** de que
+la agencia revisara el comprobante. Si el pago era rechazado, la reserva y
+los asientos ya estaban comprometidos.
+
+### Solución
+
+La compra nace como `checkout_attempts` (intento de compra). La reserva, el
+pago y las allocations **solo se crean** en la aprobación atómica
+`verify_checkout_attempt`.
+
+### API pública (Marketplace backend)
+
+| Método | Ruta | Descripción |
+| ------ | ---- | ----------- |
+| POST | `/api/public/checkout/attempts` | Crear intento de compra (retiene asientos) |
+| GET | `/api/public/checkout/attempts/:attemptId` | Ver estado del intento |
+| POST | `/api/public/checkout/attempts/:attemptId/proof` | Subir comprobante con conciliación |
+| POST | `/api/public/checkout/attempts/:attemptId/cancel` | Cancelar intento y liberar asientos |
+
+### API de agencia (Tour backend)
+
+| Método | Ruta | Descripción |
+| ------ | ---- | ----------- |
+| GET | `/api/agency/checkout-attempts` | Listar intentos (filtros: status, trip_id, q) |
+| GET | `/api/agency/checkout-attempts/:attemptId` | Detalle con conciliación |
+| GET | `/api/agency/checkout-attempts/:attemptId/proof` | URL firmada del comprobante |
+| POST | `/api/agency/checkout-attempts/:attemptId/verify` | Aprobar (crea reserva + pago atómicamente) |
+| POST | `/api/agency/checkout-attempts/:attemptId/reject` | Rechazar con motivo |
+
+### Frontend Tour
+
+- `app/agency/payments/page.tsx`: toggle "Pagos" / "Compras" con filtros.
+- `app/agency/payments/attempts/[id]/page.tsx`: detalle de compra con
+  conciliación, pasajeros, acciones de verificar/rechazar/ver comprobante.
+
+### Migración requerida
+
+**087_checkout_attempts.sql** debe aplicarse en staging y producción antes
+de desplegar este flujo. La migración:
+- Crea la tabla `checkout_attempts`.
+- Agrega columnas de conciliación a `payments`.
+- Agrega `seats.checkout_attempt_id` + trigger de limpieza.
+- Crea las RPCs de checkout.
+- REVOKE sobre `create_marketplace_reservation` y `submit_marketplace_payment`.
+
+### Endpoints legacy desactivados
+
+- `POST /api/public/reservations` → `410 Gone` + `CHECKOUT_ATTEMPTS_REQUIRED`.
+- `POST /api/public/reservations/:reservationId/payments` → `410 Gone` +
+  `CHECKOUT_ATTEMPTS_REQUIRED`.
+- `GET/POST /api/admin/payments/*` → `410 Gone` + `CHECKOUT_ATTEMPTS_REQUIRED`.
+  La revisión de comprobantes de agencia vive exclusivamente en Tour
+  (`/agency/payments`). Marketplace ya no expone acciones administrativas
+  de verificación/rechazo.
+
+### Política de rechazo
+
+- Comprobante 1: envío inicial.
+- Comprobante 2: primer reenvío después de un rechazo.
+- Comprobante 3: segundo y último reenvío.
+- Si se rechaza el comprobante 3, el intento pasa a `rejected_final` y
+  libera únicamente los asientos que todavía pertenezcan a ese intento.
+- No se permite un cuarto comprobante.
+- Cada comprobante enviado abre una ventana de revisión de 24 horas.
+
+---
+
+## 7. REGLAS DE CONVIVENCIA
 
 1. **No romper el contrato de tour**: si una migración marketplace cambia una
    tabla que tour lee, primero leer tour (`../nomadas-tour/supabase/migrations`)
@@ -122,7 +180,7 @@ Los SQL viven en `../nomadas-tour/supabase/migrations/` (historia única).
 
 ---
 
-## 7. Env vars compartidas (advertencia BD compartida)
+## 8. Env vars compartidas (advertencia BD compartida)
 
 Ambos backends apuntan al mismo Supabase. En Render:
 

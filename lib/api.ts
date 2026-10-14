@@ -262,9 +262,17 @@ export const seatApi = {
 
 // ── Reserva marketplace (MKT-004 Fase B) ───────────────────────────────────
 // El cliente aporta SOLO trip, oferta de agencia seleccionada, asientos y
-// pasajeros. `customer_id`, `status`, `source` y `unit_price` los decide el
-// backend; `unit_price` es snapshot de `trips.seat_price` en el RPC.
-export interface CreateReservationPassenger {
+// ── Checkout con revisión de comprobante (MKT-007) ──────────────────────────
+// Antes de MKT-007 la reserva y el pago nacían ANTES de que una agencia
+// revisara el comprobante. Ahora la compra nace como `checkout_attempts`
+// y la reserva definitiva, sus pasajeros y el pago verificado solo nacen
+// cuando la agencia aprueba (verify_checkout_attempt, RPC 087).
+//
+// El cliente aporta asientos y pasajeros; `customer_id`, `agency_id`,
+// `unit_price`, `amount_cents`, `status` y `expires_at` los decide el
+// backend. En el envío del comprobante el cliente aporta SOLO el archivo
+// y los tres datos de conciliación.
+export interface CheckoutPassenger {
   seat_id: string;
   first_name: string;
   last_name: string;
@@ -272,56 +280,87 @@ export interface CreateReservationPassenger {
   phone: string;
 }
 
-export interface CreateReservationPayload {
+export interface CreateCheckoutAttemptPayload {
   trip_id: string;
   agency_id: string;
   seat_ids: string[];
-  passengers: CreateReservationPassenger[];
+  passengers: CheckoutPassenger[];
 }
 
-export interface CreateReservationResult {
-  reservation_id: string;
+export type CheckoutAttemptStatus =
+  | 'created'
+  | 'pending_review'
+  | 'rejected'
+  | 'verified'
+  | 'rejected_final'
+  | 'expired'
+  | 'cancelled';
+
+export interface CreateCheckoutAttemptResult {
+  attempt_id: string;
   trip_id: string;
   agency_id: string;
   customer_id: string;
-  status: string;
-  source: string;
-  unit_price: number;
-  passenger_count: number;
+  status: CheckoutAttemptStatus;
   seat_ids: string[];
+  passenger_count: number;
+  unit_price: number;
+  amount_cents: number;
+  proof_count: number;
+  /** Ventana de revisión. El servidor la calcula; el cliente solo la lee. */
+  expires_at: string;
   idempotent: boolean;
 }
 
-export const reservationApi = {
-  create: (payload: CreateReservationPayload) =>
-    request<CreateReservationResult>('/public/reservations', {
+export interface SubmitCheckoutProofPayload {
+  payment_reference: string;
+  bank_origin: string;
+  payment_datetime: string;
+}
+
+export interface SubmitCheckoutProofResult {
+  attempt_id: string;
+  status: 'pending_review';
+  proof_count: number;
+  remaining_submissions: number;
+  proof_path: string;
+  payment_reference: string;
+  bank_origin: string;
+  payment_datetime: string;
+  amount_cents: number;
+  /** Nueva ventana (now + 24 h): también prolonga los locks de los asientos. */
+  expires_at: string;
+  idempotent: boolean;
+}
+
+export interface CancelCheckoutAttemptResult {
+  attempt_id: string;
+  status: 'cancelled';
+  already_cancelled: boolean;
+  freed_seats: number;
+}
+
+export const checkoutApi = {
+  createAttempt: (payload: CreateCheckoutAttemptPayload, idempotencyKey: string) =>
+    request<CreateCheckoutAttemptResult>('/public/checkout/attempts', {
       method: 'POST',
       body: JSON.stringify(payload),
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
-};
 
-// ── Comprobante de pago (MKT-005) ─────────────────────────────────────────
-// El cliente aporta SOLO el archivo (`proof`) y la clave de idempotencia en
-// el header. El monto, la moneda, el estado y la identidad del pagador los
-// decide el backend; la respuesta nunca incluye `proof_url`.
-export interface SubmitPaymentProofResult {
-  payment_id: string;
-  reservation_id: string;
-  /** El backend solo crea pagos `pending`: la verificación es fase posterior. */
-  payment_status: 'pending';
-  reservation_status: string;
-  amount_cents: number;
-  currency: string;
-  submitted_at: string;
-  idempotent: boolean;
-}
-
-export const paymentApi = {
-  submitProof: (reservationId: string, file: File, idempotencyKey: string) => {
+  submitProof: (
+    attemptId: string,
+    file: File,
+    reconciliation: SubmitCheckoutProofPayload,
+    idempotencyKey: string,
+  ) => {
     const form = new FormData();
     form.append('proof', file);
-    return request<SubmitPaymentProofResult>(
-      `/public/reservations/${encodeURIComponent(reservationId)}/payments`,
+    form.append('payment_reference', reconciliation.payment_reference);
+    form.append('bank_origin', reconciliation.bank_origin);
+    form.append('payment_datetime', reconciliation.payment_datetime);
+    return request<SubmitCheckoutProofResult>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/proof`,
       {
         method: 'POST',
         body: form,
@@ -329,12 +368,50 @@ export const paymentApi = {
       },
     );
   },
+
+  getAttempt: (attemptId: string) =>
+    request<CheckoutAttemptView>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}`,
+    ),
+
+  cancelAttempt: (attemptId: string) =>
+    request<CancelCheckoutAttemptResult>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/cancel`,
+      { method: 'POST' },
+    ),
 };
 
-// ── Revisión de pagos de agencia (MKT-006 Fase 6.3C) ─────────────────────────
-// El cliente consume los endpoints /admin/payments ya implementados en 6.3B.
-// No recibe `proof_url` en el listado ni en el detalle; el comprobante se
-// obtiene vía URL firmada de corta duración (máx. 300 s) que no se persiste.
+/** Estado del intento para su dueño. Nunca incluye la ruta del archivo. */
+export interface CheckoutAttemptView {
+  attempt_id: string;
+  status: CheckoutAttemptStatus;
+  trip_id: string;
+  agency_id: string;
+  seat_ids: string[];
+  seat_codes: string[];
+  passenger_count: number;
+  unit_price: number;
+  amount_cents: number;
+  proof_count: number;
+  remaining_submissions: number;
+  payment_reference: string | null;
+  bank_origin: string | null;
+  payment_datetime: string | null;
+  proof_submitted_at: string | null;
+  review_started_at: string | null;
+  rejection_reason: string | null;
+  rejection_count: number;
+  expires_at: string;
+  created_at: string;
+  closed_at: string | null;
+  verified_at: string | null;
+}
+
+// ── Revisión de pagos de agencia — OBSOLETO desde MKT-007 ───────────────────
+// MKT-007 centraliza la revisión de comprobantes en Tour (/agency/payments).
+// Marketplace ya no expone acciones administrativas de revisión (verify/reject):
+// los endpoints /admin/payments responden 410 Gone. Se conservan los tipos
+// solo para compatibilidad con tests legacy.
 export type AgencyPaymentStatusFilter = 'pending' | 'verified' | 'rejected';
 
 export interface AgencyPaymentListItem {
@@ -482,14 +559,5 @@ export const agencyPaymentApi = {
     request<PaymentProofSignedUrlResult>(
       `/admin/payments/${encodeURIComponent(paymentId)}/proof`,
     ),
-  verify: (paymentId: string) =>
-    request<VerifyPaymentResult>(
-      `/admin/payments/${encodeURIComponent(paymentId)}/verify`,
-      { method: 'POST' },
-    ),
-  reject: (paymentId: string, reason: string) =>
-    request<RejectPaymentResult>(
-      `/admin/payments/${encodeURIComponent(paymentId)}/reject`,
-      { method: 'POST', body: JSON.stringify({ reason }) },
-    ),
+  // MKT-007: verify/reject eliminados. La revisión vive en Tour.
 };

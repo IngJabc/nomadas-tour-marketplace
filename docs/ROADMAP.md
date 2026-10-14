@@ -57,10 +57,13 @@ FASE 1 — Catálogo + Reserva                 ⏳ Siguiente
   MKT-003  Detalle de viaje + mapa de asientos (layouts kia/bus)
   MKT-004  Wizard de reserva (locks TTL 900)
 
-FASE 2 — Pagos                              ⏳ Planificada
+FASE 2 — Pagos                              ✅ Completada
   MKT-005  Comprobante ≤15 min + payments/payments_allocations
   MKT-006  Panel admin: verificar/rechazar por payment_id
-  MKT-007  Estados derivados + saldo por pasajero
+  MKT-007  Checkout con revisión de comprobante (checkout_attempts)
+           — La compra nace como intento; la reserva y el pago solo se
+             crean en la aprobación atómica. Sustituye el flujo anterior
+             que creaba la reserva antes de la revisión.
 
 FASE 3 — Ciclo de vida                       ⏳ Planificada
   MKT-008  T-1 cancelación por pasajero (worker)
