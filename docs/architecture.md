@@ -78,8 +78,9 @@ Supabase Realtime para estados que requieren actualización inmediata
 ### Outbox y workers
 
 Transactional Outbox (`outbox_events`) para side-effects asíncronos (emails de
-confirmación, notificaciones). Runner de worker en
-`backend/src/workers/runner.ts` (PENDING: handlers marketplace).
+confirmación, notificaciones). El runner de worker vive en el repo tour
+(`../nomadas-tour/backend/src/workers/runner.ts`); los handlers marketplace
+(T-1, comisiones, emails) están pendientes (MKT-008…011).
 
 ### Observabilidad
 
@@ -107,4 +108,4 @@ ledger Nómadas↔Agencia separado de refunds.
 - Reglas de negocio: [`business-rules.md`](business-rules.md).
 - Permisos: [`permissions.md`](permissions.md).
 - Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
-- Schema: `../supabase/migrations/` (tour) + migraciones marketplace PENDING.
+- Schema: `../supabase/migrations/` (tour) + migraciones marketplace 074–087 (aplicadas).

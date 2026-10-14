@@ -195,10 +195,10 @@ revisar siempre los flags del worker de `nomadas-tour` en Render.
 | Validación (build, tests, audit, smoke) | ✅ 2026-09-30: build raíz+backend ✓, tests 9/9 + 8/8 ✓, `audit:deps` 0 vulns ✓, dev `/healthz` 200 ✓ |
 | Auth cliente (login/register/me) | ✅ API base + UI placeholder |
 | Catálogo `/viajes` | ⚠️ Empty state (API pública devuelve viajes) |
-| Wizard de reserva + mapa de asientos | ⏳ PENDING |
-| Pagos/comprobantes + allocations | ⏳ PENDING (diseño aprobado) |
-| Panel admin marketplace | ⏳ PENDING |
-| Workers (T-1, comisiones) | ⏳ PENDING |
+| Wizard de reserva + mapa de asientos | ✅ Completado |
+| Pagos/comprobantes + allocations (MKT-005/007) | ✅ Completado |
+| Panel de revisión de pagos (agencia, en repo tour) | ✅ Completado |
+| Workers (T-1, comisiones) | ⏳ PENDING (MKT-008/009) |
 | Migraciones marketplace (074–080) | 📝 ESCRITAS 2026-09-30/10-06 (en repo tour) · ✅ APLICADAS (verificado en vivo 2026-10-06) |
 | Docs de diseño (6 auditorías) | ✅ Consolidadas en business-rules.md |
 
@@ -214,7 +214,8 @@ Ver [`business-rules.md`](business-rules.md) (resumen):
 - Comisión por pasajero sin depender de boarding; fee global 30 en
   `platform_config`; idempotente por `idempotency_key`.
 - Primer viaje gratis atómico por `trip_id + agency_id`.
-- Verificación de pago por `payment_id` individual.
+- Verificación de pago por `attempt_id` individual (MKT-007; `payment_id` es
+  solo flujo legacy).
 - `agency_ledger` solo Nómadas↔Agencia; refunds en `reservation_refunds`.
 
 ---

@@ -1,7 +1,7 @@
 # Integración con Nómadas Tour
 
 Este documento define **qué comparte** `nomadas-marketplace` con
-`nomadas-tour`, qué es **EXTERNO (EXISTING)**, qué está **PROPOSED** y qué
+`nomadas-tour`, qué es **EXTERNO (EXISTING)**, qué está **IMPLEMENTADO** y qué
 está **PENDING IMPLEMENTATION**.
 
 Referencia técnica: `../nomadas-tour` (solo lectura). No editar, migrar ni
@@ -19,7 +19,7 @@ commitear ese repo desde aquí.
 Ambos apuntan al **mismo proyecto Supabase** (BD compartida). Las migraciones
 de tour están en `../nomadas-tour/supabase/migrations` (001–073). Las del
 marketplace arrancan en **074** y **viven también en el repo de tour**
-(`../nomadas-tour/supabase/migrations/074…079_*.sql`), para mantener una sola
+(`../nomadas-tour/supabase/migrations/074…087_*.sql`), para mantener una sola
 historia de migraciones. `supabase/migrations/` de este repo es solo un
 puntero. Se aplican al MISMO proyecto, en orden estricto.
 
@@ -45,7 +45,8 @@ el patrón → **no inventar alternativas**.
 
 ## 3. EXISTING — que se crea en este repo
 
-- `app/`: landing, `/login`, `/register`, `/viajes` (placeholders de base).
+- `app/`: landing, `/login`, `/register`, `/viajes` (catálogo + detalle con
+  mapa de asientos), `/reservas/nueva` (wizard + checkout con revisión).
 - `backend/src/`: Express 5 con `/api/auth` (login/register/me) y
   `/api/public/trips`.
 - `lib/`: API client con `authApi` + `publicApi`, supabase clients, AuthProvider.
@@ -53,9 +54,10 @@ el patrón → **no inventar alternativas**.
 
 ---
 
-## 4. PROPOSED — diseño aprobado (6 revisiones), aún sin código
+## 4. IMPLEMENTADO — reglas de negocio (MKT-005…007)
 
-Todo lo detallado en [`business-rules.md`](business-rules.md):
+Todo lo detallado en [`business-rules.md`](business-rules.md) está implementado
+en el código (checkout_attempts, payments/allocations, revisión por intento):
 
 1. TTL marketplace 900s / interno 600s, decidido por endpoint (cliente no
    envía `ttl_seconds`).

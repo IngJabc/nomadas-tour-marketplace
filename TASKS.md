@@ -1,7 +1,7 @@
 # TASKS
 
 > Documento **operativo del sprint**. Una tarea activa a la vez; marcar `[x]` al completar.
-> **Estado:** Fase 0 (Bootstrap) completada — pendiente commit manual del usuario.
+> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas. Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
 > **Visión de producto:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 > **Contexto del proyecto:** [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md)
 > **Contrato con nomadas-tour:** [`docs/NOMADAS_TOUR_INTEGRATION.md`](docs/NOMADAS_TOUR_INTEGRATION.md)
@@ -50,7 +50,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   `reservation_refunds`, `trips.installment_*`, RPC cancel por pasajero)
   - Escritas el 2026-09-30 en **`../nomadas-tour/supabase/migrations/`**
     (historia única de migraciones — no en este repo)
-  - **Aplicadas a STAGING el 2026-10-02** (074–079, en orden). Falta producción
+  - **Aplicadas** (074–080 verificadas en vivo 2026-10-06; 085–087 aplicadas
+    posteriormente). Historia única en el repo tour.
   - Decisiones tomadas al escribirlas:
     - `trips.seat_price` + `reservation_passengers.unit_price` (snapshot):
       el schema de tour **no tenía ninguna columna de precio**, sin ellas la
@@ -325,8 +326,9 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
     - Marketplace frontend: `page.test.tsx` (66 tests), `ProofUploader.test.tsx`,
       `api-payment.test.ts`, `lock-state.test.ts`.
     - Tour frontend: `PaymentsPages.test.tsx` (+8 tests de compras).
-  - **Pendiente de cierre**: validación E2E en staging con migración 087
-    aplicada (atomicidad de `verify_checkout_attempt`, RLS, concurrencia).
+  - **Pendiente de cierre**: validación E2E en staging (la migración 087 ya
+    está aplicada; falta probar en vivo atomicidad de
+    `verify_checkout_attempt`, RLS y concurrencia).
 
 ---
 
@@ -334,7 +336,7 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
-| — | Fase 2 — Pagos (payments + allocations, panel admin) | Planificada |
+| — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
 | — | Fase 4 — Panel admin + /cuenta | Planificada |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
