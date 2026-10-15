@@ -8,24 +8,18 @@ interface LockCountdownProps {
   onExpired?: () => void;
   /**
    * Oculta la píldora sin detener el countdown: el hook sigue corriendo y
-   * `onExpired` sigue disparándose (MKT-005: con el comprobante en revisión
-   * la expiración no debe pintarse en pantalla).
+   * `onExpired` sigue disparándose. Hoy sin usos en pantalla desde que
+   * MKT-007.1 eliminó el modo `review`; se conserva como API del componente.
    */
   hidden?: boolean;
-  /**
-   * `lock` (por defecto): habla de la selección de asientos.
-   * `review`: habla de la ventana de revisión del comprobante (MKT-007); el
-   * texto de expiración jamás dice "selección expiró" cuando lo que terminó
-   * fue la revisión.
-   */
-  mode?: 'lock' | 'review';
 }
 
+// MKT-007.1: el modo `review` se eliminó — la ventana de revisión ya no
+// muestra countdown, solo un mensaje por estado (ver `reviewMessage`).
 export function LockCountdown({
   expiresAt,
   onExpired,
   hidden,
-  mode = 'lock',
 }: LockCountdownProps) {
   const { remainingSeconds, formattedTime, expired } = useLockCountdown(
     expiresAt,
@@ -36,7 +30,6 @@ export function LockCountdown({
   if (remainingSeconds === null || formattedTime === null) return null;
 
   const urgent = !expired && remainingSeconds <= 60;
-  const review = mode === 'review';
 
   return (
     <p
@@ -47,16 +40,10 @@ export function LockCountdown({
     >
       <Timer size={16} strokeWidth={1.75} aria-hidden="true" />
       {expired
-        ? review
-          ? 'La ventana de revisión terminó.'
-          : 'Tu selección expiró.'
-        : review
-          ? urgent
-            ? `La revisión vence en ${formattedTime}`
-            : `Revisión en curso: ${formattedTime}`
-          : urgent
-            ? `Tu selección expira en ${formattedTime}`
-            : `Tu selección está reservada durante ${formattedTime}`}
+        ? 'Tu selección expiró.'
+        : urgent
+          ? `Tu selección expira en ${formattedTime}`
+          : `Tu selección está reservada durante ${formattedTime}`}
     </p>
   );
 }
