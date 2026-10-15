@@ -183,7 +183,11 @@ export function validateReconciliation(input: {
 
 export interface ProofUploaderProps {
   attemptId: string;
-  /** Comprobantes que aún puede enviar el cliente (1..3). */
+  /**
+   * Comprobantes que aún puede enviar el cliente (1..3). Se conserva en la
+   * API porque la pantalla decide con él si renderiza este uploader, pero
+   * ya NO se renderiza ningún contador (MKT-007.1).
+   */
   remainingSubmissions: number;
   /** El envío fue aceptado: persiste el marcador de checkout pendiente. */
   onSubmitted: (result: SubmitCheckoutProofResult) => void;
@@ -217,7 +221,6 @@ const LABEL_CLASSES =
  */
 export function ProofUploader({
   attemptId,
-  remainingSubmissions,
   onSubmitted,
   onAlreadySubmitted,
 }: ProofUploaderProps) {
@@ -341,11 +344,9 @@ export function ProofUploader({
         JPEG, WEBP o PDF de hasta 5 MB.
       </p>
 
-      {remainingSubmissions < MAX_PROOF_SUBMISSIONS ? (
-        <p className="mt-2 text-xs font-semibold text-[#92400e]">
-          Reenvío {remainingSubmissions} de {MAX_PROOF_SUBMISSIONS} disponibles.
-        </p>
-      ) : null}
+      {/* MKT-007.1: sin contador de intentos visible. El límite de
+          reenvíos lo aplica el backend; la pantalla solo renderiza este
+          uploader mientras queden envíos disponibles. */}
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">

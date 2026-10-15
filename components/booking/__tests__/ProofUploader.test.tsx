@@ -164,12 +164,11 @@ describe('ProofUploader (MKT-007)', () => {
     expect(screen.getByText(/\d+ KB/)).toBeInTheDocument();
   });
 
-  it('muestra el contador de reenvíos restantes', async () => {
+  it('nunca muestra un contador de reenvíos, ni con envíos disponibles', async () => {
     await renderUploader(2);
 
-    expect(
-      screen.getByText(/Reenvío 2 de 3 disponibles/),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Reenvío/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/de \d+ disponibles/)).not.toBeInTheDocument();
   });
 
   it('no muestra el contador en el primer envío', async () => {
@@ -506,12 +505,14 @@ describe('ProofUploader (MKT-007)', () => {
     expect(mockedSubmitProof.mock.calls[1][3]).toBe(keyAfterConflict);
   });
 
-  it('CHECKOUT_WINDOW_EXPIRED muestra el mensaje del backend sin promover la compra', async () => {
+  it('CHECKOUT_WINDOW_EXPIRED traduce el copy del backend a mensaje de cliente', async () => {
+    // Código real del backend público (checkout.service.ts): 409 con
+    // message "El plazo de revisión de tu compra venció" (jerga prohibida).
     mockedSubmitProof.mockRejectedValue(
       new ApiError(
-        'La ventana de revisión terminó. Tu selección ya no está retenida',
+        'El plazo de revisión de tu compra venció',
         'CHECKOUT_WINDOW_EXPIRED',
-        410,
+        409,
       ),
     );
     const view = await renderUploader();
@@ -520,10 +521,10 @@ describe('ProofUploader (MKT-007)', () => {
     await clickSubmit();
 
     expect(
-      screen.getByText(
-        'La ventana de revisión terminó. Tu selección ya no está retenida',
-      ),
+      screen.getByText('El tiempo de revisión expiró. Vuelve a intentar tu reserva.'),
     ).toBeInTheDocument();
+    // El texto crudo del backend (jerga de "plazo"/"ventana") jamás llega.
+    expect(screen.queryByText(/plazo|ventana/i)).not.toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(view).toBeTruthy();
   });

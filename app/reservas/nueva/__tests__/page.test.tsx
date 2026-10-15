@@ -2085,8 +2085,12 @@ describe('Comprobante de pago (MKT-007)', () => {
     expect(
       screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
-    // La ventana de revisión sustituye al countdown del lock de asientos.
-    expect(screen.getByRole('timer')).toHaveTextContent(/Revisión en curso:/);
+    // MKT-007.1: tras crear el intento no hay countdown de revisión, solo
+    // el mensaje por estado (aún no hay comprobante: copy de `created`).
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Tus asientos quedan retenidos mientras envías el comprobante.'),
+    ).toBeInTheDocument();
 
     const lockBefore = storedLock();
     await submitProofViaUi(view);
@@ -2202,10 +2206,9 @@ describe('Comprobante de pago (MKT-007)', () => {
   });
 
   it('la ventana vencida no borra la revisión ni habla de la selección', async () => {
-    // Nota: con timers falsos y una ventana aún futura el countdown instala un
-    // `setInterval` que React `act` no consigue drenar en jsdom; el escenario
-    // cubierto aquí es el que importa: la ventana se agota con la revisión
-    // en curso.
+    // Nota: MKT-007.1 eliminó el countdown de revisión, así que con timers
+    // falsos la ventana ya vencida debe seguir pintando el mensaje por
+    // estado y jamás tocar la selección de asientos.
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T11:45:00.000Z'));
     seedAttemptLock(
@@ -2237,10 +2240,14 @@ describe('Comprobante de pago (MKT-007)', () => {
     });
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
-    // El countdown habla de la revisión, nunca de la selección de asientos.
-    expect(screen.getByRole('timer')).toHaveTextContent(
-      'La ventana de revisión terminó.',
-    );
+    // MKT-007.1: sin countdown en revisión; el mensaje por estado manda.
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Tu comprobante está en revisión. Dentro de 24 horas recibirás respuesta.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Revisión en curso/)).not.toBeInTheDocument();
     expect(
       screen.queryByRole('heading', { name: 'Tu selección expiró' }),
     ).not.toBeInTheDocument();
@@ -2424,8 +2431,8 @@ describe('Comprobante de pago (MKT-007)', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// MKT-007 — la píldora de expiración debe hablar de la VENTANA DE REVISIÓN
-// cuando lo que vence es el intento de compra, nunca de la selección.
+// MKT-007 / MKT-007.1 — sin intento la píldora habla de la SELECCIÓN;
+// con intento activo ya no existe la píldora: solo el mensaje por estado.
 // ══════════════════════════════════════════════════════════════════════
 
 describe('Indicador de expiración con revisión pendiente (MKT-007)', () => {
@@ -2461,7 +2468,7 @@ describe('Indicador de expiración con revisión pendiente (MKT-007)', () => {
     ).toBeInTheDocument();
   });
 
-  it('con revisión pendiente y ventana vencida el indicador habla de la revisión', async () => {
+  it('con revisión pendiente no hay countdown: solo el mensaje por estado', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-04T11:45:00.000Z'));
     seedAttemptLock(
@@ -2495,9 +2502,14 @@ describe('Indicador de expiración con revisión pendiente (MKT-007)', () => {
     expect(
       screen.queryByRole('heading', { name: 'Tu selección expiró' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('timer')).toHaveTextContent(
-      'La ventana de revisión terminó.',
-    );
+    // MKT-007.1: la ventana vencida ya no dibuja ningún countdown.
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Tu comprobante está en revisión. Dentro de 24 horas recibirás respuesta.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Revisión en curso/)).not.toBeInTheDocument();
 
     // Solo cambia ese indicador: el resto del checkout sigue en pantalla.
     expect(
@@ -2521,6 +2533,108 @@ describe('Indicador de expiración con revisión pendiente (MKT-007)', () => {
     expect(screen.queryByText(REVIEW_TEXT)).not.toBeInTheDocument();
     expect(mockedTripDetail).not.toHaveBeenCalled();
     expect(mockedLocks).not.toHaveBeenCalled();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// MKT-007.1 — mensaje simple por estado, SIN countdown de revisión y sin
+// copy que mienta ("ventana de revisión") ni exponga intentos/motivos.
+// ══════════════════════════════════════════════════════════════════════
+
+describe('Mensaje de revisión sin countdown (MKT-007.1)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+  });
+
+  async function renderWithAttempt(overrides: Partial<CheckoutAttemptView>) {
+    seedAttemptLock({ status: overrides.status ?? 'created' });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(attemptView(overrides));
+    await renderWizard();
+  }
+
+  it('pending_review: mensaje de revisión y ningún countdown en pantalla', async () => {
+    await renderWithAttempt({
+      status: 'pending_review',
+      proof_count: 1,
+      remaining_submissions: 2,
+      proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      expires_at: '2099-01-01T00:00:00.000Z',
+    });
+
+    expect(
+      screen.getByText(
+        'Tu comprobante está en revisión. Dentro de 24 horas recibirás respuesta.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    // Ningún reloj tipo "1435:38" / "HH:MM:SS" debe sobrevivir.
+    expect(document.body.textContent).not.toMatch(/\b\d{3,}:\d{2}\b/);
+    expect(screen.queryByText(/Revisión en curso/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/La ventana de revisión terminó/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('rejected: mensaje de rechazo sin countdown ni "Revisión en curso"', async () => {
+    await renderWithAttempt({
+      status: 'rejected',
+      proof_count: 1,
+      remaining_submissions: 2,
+      proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      rejection_reason: 'Comprobante ilegible',
+    });
+
+    expect(
+      screen.getByText(
+        'Comprobante rechazado. Puedes enviar un comprobante válido.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Revisión en curso/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/La ventana de revisión terminó/),
+    ).not.toBeInTheDocument();
+    // Copy del ticket: ni el motivo ni el contador de reenvíos.
+    expect(screen.queryByText('Comprobante ilegible')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Te quedan \d+ reenvíos/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('rejected_final: mensaje de cierre sin contadores ni motivo', async () => {
+    seedAttemptLock({ status: 'rejected' });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'rejected_final',
+        proof_count: 3,
+        remaining_submissions: 0,
+        rejection_reason: 'Monto no coincide',
+      }),
+    );
+
+    await renderWizard();
+
+    // El marcador colapsa rejected_final → rejected, pero el estado CRUDO
+    // del banner decide el copy de cierre.
+    expect(
+      screen.getByText(
+        'Comprobante rechazado. No es posible enviar más comprobantes. Tus asientos quedaron liberados.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    expect(screen.queryByText('Monto no coincide')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Te quedan \d+ reenvíos/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Se agotaron los reenvíos de comprobante para esta compra. Cancela la compra para elegir otros asientos.',
+      ),
+    ).toBeInTheDocument();
   });
 });
 

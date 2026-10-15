@@ -20,6 +20,7 @@ import {
   checkoutApi,
   publicApi,
   seatApi,
+  type CheckoutAttemptStatus,
   type CreateCheckoutAttemptResult,
   type PublicTripDetail,
   type PublicTripSeat,
@@ -50,6 +51,7 @@ import {
   type PassengerError,
 } from '@/lib/booking/passengers';
 import { applySeatRow, removeSeatRow } from '@/lib/booking/seat-map';
+import { reviewMessage } from '@/lib/booking/review-message';
 import { claimPendingGuestLocks } from '@/lib/booking/guest-claim';
 import { useSeatLocking } from '@/lib/booking/useSeatLocking';
 import type { RealtimeSeatRow, SeatEventType } from '@/lib/realtime/subscriptions';
@@ -157,6 +159,14 @@ function NewReservationContent() {
   // Aprobación observada en el SERVIDOR. No se persiste en la LockState: la
   // única fuente de verdad de "pago aprobado" es `getAttempt` (MKT-007).
   const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
+  // MKT-007.1: estado CRUDO del intento, tal como lo devuelve
+  // `checkoutApi.getAttempt`. NO se deriva del marcador local
+  // (`checkoutMarker.status`) porque el marcador colapsa `rejected_final` →
+  // `rejected` y `verified` → `created`. Fuente: se rehidrata en cada
+  // refresh de la pantalla (verify() llama a `getAttempt`), se actualiza al
+  // crear/enviar comprobante y se limpia al cancelar o volver a cero.
+  const [checkoutStatus, setCheckoutStatus] =
+    useState<CheckoutAttemptStatus | null>(null);
 
   useEffect(() => {
     // Sin la identidad resuelta no se puede decidir guest vs customer.
@@ -183,6 +193,7 @@ function NewReservationContent() {
         setFieldErrors([]);
         setCreateError(null);
         setVerifiedAt(null);
+        setCheckoutStatus(null);
         setPhase('ready');
       } catch (e) {
         if (cancelled) return;
@@ -275,6 +286,7 @@ function NewReservationContent() {
           setFieldErrors([]);
           setCreateError(null);
           setVerifiedAt(attempt.status === 'verified' ? (attempt.verified_at ?? '') : null);
+          setCheckoutStatus(attempt.status);
           setPhase('ready');
           writeLockState({ ...restored, passengers: restored.passengers });
         } catch (e) {
@@ -513,6 +525,7 @@ function NewReservationContent() {
       );
       setFieldErrors([]);
       setCreateError(null);
+      setCheckoutStatus(result.status);
       toast.success('Compra iniciada. Ahora envía tu comprobante de pago.');
     } catch (err: unknown) {
       handleCreateError(err);
@@ -550,6 +563,7 @@ function NewReservationContent() {
         remaining_submissions: result.remaining_submissions,
         expires_at: result.expires_at,
       });
+      setCheckoutStatus('pending_review');
       toast.success('Comprobante enviado. Tu pago está pendiente de revisión.');
     },
     [persistCheckout],
@@ -567,6 +581,7 @@ function NewReservationContent() {
       remaining_submissions: lock.checkout?.remaining_submissions,
       expires_at: lock.checkout?.expires_at,
     });
+    setCheckoutStatus('pending_review');
     toast.success('Tu comprobante ya estaba enviado y sigue en revisión.');
   }, [lock, persistCheckout]);
 
@@ -596,6 +611,7 @@ function NewReservationContent() {
       setFieldErrors([]);
       setCreateError(null);
       setVerifiedAt(null);
+      setCheckoutStatus(null);
       setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
       toast.success(
         result.already_cancelled
@@ -1051,22 +1067,12 @@ function NewReservationContent() {
       </header>
 
       {attemptCreated ? (
-        checkoutActive && !verifiedAt && lock.lock_expires_at ? (
-          <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
-            <LockCountdown
-              expiresAt={lock.lock_expires_at}
-              onExpired={handleExpired}
-              mode="review"
-            />
-            <span>
-              {awaitingReview
-                ? 'La agencia revisa tu comprobante dentro de esta ventana.'
-                : checkoutRejected
-                  ? 'Tu comprobante fue rechazado: puedes reenviarlo dentro de esta ventana.'
-                  : 'Tus asientos quedan retenidos mientras envías el comprobante.'}
-            </span>
-          </div>
-        ) : null
+        // MKT-007.1: mensaje simple por estado, SIN countdown de revisión.
+        // `checkoutStatus` es el estado crudo de `getAttempt` (ver su
+        // declaración); el fallback lo decide `reviewMessage`.
+        <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
+          <span>{reviewMessage(checkoutStatus)}</span>
+        </div>
       ) : lock.lock_expires_at ? (
         <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
           <LockCountdown
@@ -1521,22 +1527,8 @@ function NewReservationContent() {
                     <p className="text-sm font-semibold text-[#ef4444]">
                       Comprobante rechazado
                     </p>
-                    <p className="mt-1 text-xs text-brand-muted">
-                      {checkoutMarker?.rejection_reason ??
-                        'La agencia no pudo validar la transferencia.'}
-                    </p>
-                    <p className="mt-2 text-xs text-brand-muted">
-                      Te quedan{' '}
-                      {checkoutMarker?.remaining_submissions ?? 0} reenvío
-                      {(checkoutMarker?.remaining_submissions ?? 0) === 1
-                        ? ''
-                        : 's'}{' '}
-                      disponible
-                      {(checkoutMarker?.remaining_submissions ?? 0) === 1
-                        ? ''
-                        : 's'}
-                      .
-                    </p>
+                    {/* MKT-007.1: sin motivo de rechazo ni contador de
+                        reenvíos (reglas de copy del ticket). */}
                   </div>
                   {(checkoutMarker?.remaining_submissions ?? 0) > 0 ? (
                     <ProofUploader

@@ -326,9 +326,23 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
     - Marketplace frontend: `page.test.tsx` (66 tests), `ProofUploader.test.tsx`,
       `api-payment.test.ts`, `lock-state.test.ts`.
     - Tour frontend: `PaymentsPages.test.tsx` (+8 tests de compras).
-  - **Pendiente de cierre**: validación E2E en staging (la migración 087 ya
-    está aplicada; falta probar en vivo atomicidad de
-    `verify_checkout_attempt`, RLS y concurrencia).
+  - **Pendiente de cierre**: aún falta probar en vivo atomicidad de
+    `verify_checkout_attempt`, RLS y concurrencia (la expiración TTL sí está
+    validada en staging — ver sección siguiente).
+
+### Validación MKT-007 + MKT-008 en staging (2026-10-15)
+
+- MKT-007 (expiración de intentos por TTL): validado end-to-end.
+  - Intento `91771726-...` → `expired` tras forzar `expires_at`.
+  - Asientos liberados (`status='available'`, `checkout_attempt_id` limpio).
+  - UI cliente y agencia reflejan la expiración.
+- MKT-008 (trigger outbox): validado.
+  - Outbox event `checkout.expired_near_departure` con payload completo
+    (`checkout_attempt_id`, `trip_id`, `customer_id`, `expired_at`).
+- MKT-008 (RPC T-1 sobre reservas con saldo): pendiente de validación
+  hasta que exista el flujo de abonos (MKT-010).
+- MKT-007.2 (realtime de estado de pago al cliente): pendiente.
+- MKT-011 (notificación de expiración): pendiente.
 
 ---
 
