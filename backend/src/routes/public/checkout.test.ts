@@ -68,6 +68,7 @@ const harness = vi.hoisted(() => {
       'eq',
       'neq',
       'in',
+      'is',
       'lt',
       'lte',
       'gt',
@@ -278,6 +279,8 @@ function readyAttemptRow(overrides: Record<string, any> = {}) {
     status: 'created',
     proof_count: 0,
     expires_at: '2099-01-01T00:00:00.000Z',
+    // MKT-007.4: el intento listo para comprobante ya tiene canal elegido.
+    payment_method_id: 'pm-1',
     ...overrides,
   };
 }
@@ -435,6 +438,13 @@ describe('API pública de checkout (MKT-007)', () => {
     harness.setDefault('users', {
       data: { id: CUSTOMER_ID, role: 'customer', agency_id: null },
       error: null,
+    });
+    // MKT-007.4: por defecto la agencia SÍ tiene canales activos; los
+    // tests que ejercitan el guard 409 encolan un count=0 explícito.
+    harness.setDefault('agency_payment_methods', {
+      data: null,
+      error: null,
+      count: 1,
     });
     harness.setRpcDefault(RPC_CREATE, createdAttempt());
   });
@@ -1233,6 +1243,262 @@ describe('API pública de checkout (MKT-007)', () => {
       );
       expect(superadmin.status).toBe(403);
       expect(rpcCallsFor(RPC_CANCEL)).toHaveLength(0);
+    });
+  });
+
+  // ── MKT-007.4: canales de pago ────────────────────────────────────────────
+
+  describe('MKT-007.4 — canales de pago del intento', () => {
+    const RPC_SELECT = 'select_checkout_payment_method';
+    const METHOD_ID = '99999999-9999-4999-8999-999999999999';
+
+    function methodRow(overrides: Record<string, any> = {}) {
+      return {
+        id: METHOD_ID,
+        method: 'pago_movil',
+        label: 'Pago Móvil Banesco',
+        data: {
+          bank_name: 'Banesco',
+          phone: '04121234567',
+          document_type: 'V',
+          document_number: '12345678',
+          account_holder: 'Agencia Central',
+        },
+        is_primary: true,
+        sort_order: 0,
+        ...overrides,
+      };
+    }
+
+    function methodsAttemptRow(overrides: Record<string, any> = {}) {
+      return {
+        id: ATTEMPT_ID,
+        customer_id: CUSTOMER_ID,
+        agency_id: AGENCY_ID,
+        status: 'created',
+        amount_cents: 4040,
+        payment_method_id: null,
+        ...overrides,
+      };
+    }
+
+    it('crear el intento responde 409 AGENCY_NO_ACTIVE_PAYMENT_METHODS sin canales', async () => {
+      harness.push('agency_payment_methods', {
+        data: null,
+        error: null,
+        count: 0,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts',
+        {
+          method: 'POST',
+          body: validPayload(),
+          idempotencyKey: IDEMPOTENCY_KEY,
+        },
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('AGENCY_NO_ACTIVE_PAYMENT_METHODS');
+      // Ni el RPC ni storage se tocan cuando no hay a donde pagar.
+      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(0);
+      expect(harness.uploads()).toHaveLength(0);
+      // El guard solo cuenta canales soportados por el frontend (pago_movil).
+      const guardChain = harness
+        .chains()
+        .find((c) => c.table === 'agency_payment_methods');
+      expect(guardChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['method', 'pago_movil'],
+      });
+    });
+
+    it('subir comprobante sin canal elegido responde 409 PAYMENT_METHOD_REQUIRED', async () => {
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({ payment_method_id: null }),
+        error: null,
+      });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('PAYMENT_METHOD_REQUIRED');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
+    });
+
+    it('GET payment-methods devuelve los canales activos y el teléfono de la agencia', async () => {
+      harness.push('checkout_attempts', {
+        data: methodsAttemptRow({ payment_method_id: METHOD_ID }),
+        error: null,
+      });
+      // Promise.all: primero los canales, luego el teléfono.
+      harness.push('agency_payment_methods', {
+        data: [methodRow()],
+        error: null,
+      });
+      harness.push('agencies', { data: { phone: '04121234567' }, error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-methods`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.attempt_id).toBe(ATTEMPT_ID);
+      expect(body.status).toBe('created');
+      expect(body.amount_cents).toBe(4040);
+      expect(body.selected_method_id).toBe(METHOD_ID);
+      expect(body.agency_phone).toBe('04121234567');
+      expect(body.methods).toHaveLength(1);
+      expect(body.methods[0]).toEqual({
+        id: METHOD_ID,
+        method: 'pago_movil',
+        label: 'Pago Móvil Banesco',
+        data: methodRow().data,
+        is_primary: true,
+        sort_order: 0,
+      });
+      // El listado solo devuelve metodos soportados por el frontend.
+      const methodsChain = harness
+        .chains()
+        .filter((c) => c.table === 'agency_payment_methods')
+        .at(-1);
+      expect(methodsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['method', 'pago_movil'],
+      });
+    });
+
+    it('GET payment-methods oculta los intentos ajenos con el mismo 404', async () => {
+      harness.push('checkout_attempts', {
+        data: methodsAttemptRow({ customer_id: OTHER_CUSTOMER_ID }),
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-methods`,
+      );
+
+      expect(status).toBe(404);
+      expect(body.error.code).toBe('CHECKOUT_ATTEMPT_NOT_FOUND');
+      // Nunca consulta canales de una agencia que no es del dueño.
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+    });
+
+    it('PATCH payment-method guarda la selección vía RPC (200)', async () => {
+      harness.pushRpc(RPC_SELECT, {
+        data: {
+          attempt_id: ATTEMPT_ID,
+          status: 'created',
+          amount_cents: 4040,
+          payment_method_id: METHOD_ID,
+          payment_method_snapshot: { snapshot_version: 1 },
+          idempotent: false,
+        },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-method`,
+        { method: 'PATCH', body: { payment_method_id: METHOD_ID } },
+      );
+
+      expect(status).toBe(200);
+      expect(body.payment_method_id).toBe(METHOD_ID);
+      expect(lastRpcCall().fn).toBe(RPC_SELECT);
+      expect(lastRpcCall().args).toEqual({
+        p_attempt_id: ATTEMPT_ID,
+        p_customer_id: CUSTOMER_ID,
+        p_payment_method_id: METHOD_ID,
+      });
+    });
+
+    it('PATCH payment-method traduce el congelado del RPC a 409', async () => {
+      harness.pushRpc(RPC_SELECT, {
+        data: null,
+        error: { message: 'ERR_CHECKOUT_PAYMENT_METHOD_FROZEN: frozen' },
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-method`,
+        { method: 'PATCH', body: { payment_method_id: METHOD_ID } },
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_PAYMENT_METHOD_FROZEN');
+    });
+
+    it('PATCH payment-method rechaza un body sin payment_method_id UUID', async () => {
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-method`,
+        { method: 'PATCH', body: { payment_method_id: 'no-uuid' } },
+      );
+
+      expect(status).toBe(400);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+      expect(rpcCallsFor(RPC_SELECT)).toHaveLength(0);
+    });
+
+    it('PATCH payment-method no exige header Idempotency-Key: la idempotencia vive en el RPC', async () => {
+      // Re-elegir el MISMO canal devuelve idempotent=true desde el RPC
+      // (select_checkout_payment_method detecta la re-selección). La ruta
+      // no lee Idempotency-Key: un reintento sin header es un 200 normal.
+      harness.pushRpc(RPC_SELECT, {
+        data: {
+          attempt_id: ATTEMPT_ID,
+          status: 'created',
+          amount_cents: 4040,
+          payment_method_id: METHOD_ID,
+          payment_method_snapshot: { snapshot_version: 1 },
+          idempotent: true,
+        },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-method`,
+        { method: 'PATCH', body: { payment_method_id: METHOD_ID } },
+      );
+
+      expect(status).toBe(200);
+      expect(body.idempotent).toBe(true);
+      expect(body.payment_method_id).toBe(METHOD_ID);
+      expect(lastRpcCall().fn).toBe(RPC_SELECT);
+    });
+
+    it('exige rol customer también en canales y selección', async () => {
+      harness.reset();
+      harness.setUser(() =>
+        Promise.resolve({ data: { user: { id: SUPERADMIN_ID } }, error: null }),
+      );
+      // Una entrada por request: el GET consume la primera.
+      givenUserRole('superadmin');
+      givenUserRole('superadmin');
+
+      const get = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-methods`,
+      );
+      expect(get.status).toBe(403);
+
+      const patch = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-method`,
+        { method: 'PATCH', body: { payment_method_id: METHOD_ID } },
+      );
+      expect(patch.status).toBe(403);
+      expect(rpcCallsFor(RPC_SELECT)).toHaveLength(0);
     });
   });
 });

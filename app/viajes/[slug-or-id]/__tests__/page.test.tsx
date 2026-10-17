@@ -140,6 +140,8 @@ function buildTrip(overrides: Partial<PublicTripDetail> = {}): PublicTripDetail 
         primary_color: '#000024',
         secondary_color: null,
         accent_color: '#00D4FF',
+        phone: null,
+        payment_methods_available: true,
       },
       {
         agency_id: 'ag-2',
@@ -148,6 +150,8 @@ function buildTrip(overrides: Partial<PublicTripDetail> = {}): PublicTripDetail 
         primary_color: '#0a0a2e',
         secondary_color: null,
         accent_color: '#0080FF',
+        phone: null,
+        payment_methods_available: true,
       },
     ],
     seats: buildSeats(31),

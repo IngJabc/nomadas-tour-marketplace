@@ -29,7 +29,16 @@ type QueryResult = { data?: unknown; error?: { message: string } | null };
 
 function queryChain(result: QueryResult) {
   const chain: Record<string, unknown> = {};
-  for (const method of ['select', 'eq', 'gte', 'order', 'limit', 'maybeSingle']) {
+  for (const method of [
+    'select',
+    'eq',
+    'gte',
+    'order',
+    'limit',
+    'maybeSingle',
+    'in',
+    'is',
+  ]) {
     chain[method] = vi.fn(() => chain);
   }
   chain.then = (
@@ -43,6 +52,8 @@ function queryChain(result: QueryResult) {
     order: ReturnType<typeof vi.fn>;
     limit: ReturnType<typeof vi.fn>;
     maybeSingle: ReturnType<typeof vi.fn>;
+    in: ReturnType<typeof vi.fn>;
+    is: ReturnType<typeof vi.fn>;
     then: typeof chain.then;
   };
 }
@@ -51,10 +62,13 @@ function givenQueries(
   trips: QueryResult,
   offers?: QueryResult,
   seats?: QueryResult,
+  paymentMethods?: QueryResult,
 ) {
   supabaseMock.from.mockReturnValueOnce(queryChain(trips));
   if (offers) supabaseMock.from.mockReturnValueOnce(queryChain(offers));
   if (seats) supabaseMock.from.mockReturnValueOnce(queryChain(seats));
+  if (paymentMethods)
+    supabaseMock.from.mockReturnValueOnce(queryChain(paymentMethods));
 }
 
 describe('GET /api/public/trips/:id (MKT-003)', () => {
@@ -101,6 +115,7 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
               id: 'ag-1',
               name: 'Agencia Central',
               status: 'active',
+              phone: '04121234567',
               agency_settings: {
                 logo_url: 'https://cdn.example.com/logo.png',
                 primary_color: '#000024',
@@ -115,6 +130,7 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
               id: 'ag-2',
               name: 'Rutas del Sol',
               status: 'active',
+              phone: null,
               agency_settings: null,
             },
           },
@@ -130,6 +146,11 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
           { id: 's-5', seat_code: 'A5', status: 'blocked' },
           { id: 's-6', seat_code: 'A6', status: 'guide' },
         ],
+        error: null,
+      },
+      // MKT-007.4: solo ag-1 tiene canales de pago activos.
+      {
+        data: [{ agency_id: 'ag-1' }],
         error: null,
       },
     );
@@ -158,6 +179,8 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
       primary_color: '#000024',
       secondary_color: '#0080FF',
       accent_color: '#00D4FF',
+      phone: '04121234567',
+      payment_methods_available: true,
     });
     expect(body.trip.offers[1]).toEqual({
       agency_id: 'ag-2',
@@ -166,6 +189,8 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
       primary_color: null,
       secondary_color: null,
       accent_color: null,
+      phone: null,
+      payment_methods_available: false,
     });
     expect(body.trip.seats).toHaveLength(6);
     expect(body.trip.seats[0]).toEqual({
@@ -181,6 +206,11 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
       blocked: 1,
       guide: 1,
     });
+    // MKT-007.4: la consulta de canales filtra por method soportado.
+    const methodsChain = supabaseMock.from.mock.results[3]?.value as {
+      eq: ReturnType<typeof vi.fn>;
+    };
+    expect(methodsChain.eq).toHaveBeenCalledWith('method', 'pago_movil');
   });
 
   it('solo incluye agencias activas entre las ofertas', async () => {

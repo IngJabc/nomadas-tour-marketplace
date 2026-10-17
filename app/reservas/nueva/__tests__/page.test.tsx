@@ -65,6 +65,8 @@ vi.mock('@/lib/api', () => ({
     submitProof: vi.fn(),
     getAttempt: vi.fn(),
     cancelAttempt: vi.fn(),
+    getPaymentMethods: vi.fn(),
+    selectPaymentMethod: vi.fn(),
   },
 }));
 
@@ -109,6 +111,8 @@ const mockedCreate = vi.mocked(checkoutApi.createAttempt);
 const mockedSubmitProof = vi.mocked(checkoutApi.submitProof);
 const mockedGetAttempt = vi.mocked(checkoutApi.getAttempt);
 const mockedCancelAttempt = vi.mocked(checkoutApi.cancelAttempt);
+const mockedGetPaymentMethods = vi.mocked(checkoutApi.getPaymentMethods);
+const mockedSelectPaymentMethod = vi.mocked(checkoutApi.selectPaymentMethod);
 
 const LOCK_KEY = 'mkt004.lock.v1';
 
@@ -150,6 +154,8 @@ function buildTrip(overrides: Partial<PublicTripDetail> = {}): PublicTripDetail 
         primary_color: '#000024',
         secondary_color: null,
         accent_color: '#00D4FF',
+        phone: null,
+        payment_methods_available: true,
       },
     ],
     seats: buildSeats(31),
@@ -290,6 +296,77 @@ function attemptView(
   };
 }
 
+// ── MKT-007.4 · Canales de pago del intento ──────────────────────────────
+
+function pagoMovilMethod(
+  overrides: Partial<{
+    id: string;
+    label: string;
+    is_primary: boolean;
+    phone: string;
+  }> = {},
+) {
+  const { id = 'pm-1', label = 'Pago móvil principal', is_primary = true, phone = '04121234567' } =
+    overrides;
+  return {
+    id,
+    method: 'pago_movil',
+    label,
+    data: {
+      bank_code: '0134',
+      bank_name: 'Banco Nacional',
+      phone,
+      document_type: 'V',
+      document_number: '12345678',
+      holder_name: 'Agencia Central',
+      account_type: 'savings',
+      account_number: '01340123456789012345',
+    },
+    is_primary,
+    sort_order: 0,
+  };
+}
+
+function paymentMethodsView(
+  overrides: Partial<{
+    status: string;
+    selected_method_id: string | null;
+    methods: ReturnType<typeof pagoMovilMethod>[];
+    agency_phone: string | null;
+    amount_cents: number;
+  }> = {},
+) {
+  const {
+    status = 'created',
+    selected_method_id = null,
+    methods = [pagoMovilMethod()],
+    agency_phone = '04121234567',
+    amount_cents = 4040,
+  } = overrides;
+  return {
+    attempt_id: 'att-1',
+    status,
+    amount_cents,
+    selected_method_id,
+    methods,
+    agency_phone,
+  };
+}
+
+/**
+ * Flujo real MKT-007.4: tras crear/restaurar el intento hay que elegir un
+ * canal ANTES de que aparezca el uploader. Los tests de comprobante usan
+ * este helper para completar el paso de canales sin reescribir su asunto.
+ */
+async function selectFirstPaymentMethodViaUi() {
+  const selectButtons = await screen.findAllByRole('button', {
+    name: 'Elegir',
+  });
+  await act(async () => {
+    fireEvent.click(selectButtons[0]);
+  });
+}
+
 // Aplica a todos los describes del archivo: customer autenticado por defecto
 // y creación de reserva resuelta (los tests la sobreescriben cuando hace falta).
 beforeEach(() => {
@@ -301,6 +378,22 @@ beforeEach(() => {
   mockedGetAttempt.mockReset();
   mockedGetAttempt.mockResolvedValue(attemptView());
   mockedCancelAttempt.mockReset();
+  // MKT-007.4: por defecto el canal ya está elegido para que los tests de
+  // comprobante (MKT-007) prueben su asunto sin repetir el paso de canales.
+  // Los tests de canales sobreescriben este mock.
+  mockedGetPaymentMethods.mockReset();
+  mockedGetPaymentMethods.mockResolvedValue(
+    paymentMethodsView({ selected_method_id: 'pm-1' }),
+  );
+  mockedSelectPaymentMethod.mockReset();
+  mockedSelectPaymentMethod.mockResolvedValue({
+    attempt_id: 'att-1',
+    status: 'created',
+    amount_cents: 4040,
+    payment_method_id: 'pm-1',
+    payment_method_snapshot: { snapshot_version: 1 },
+    idempotent: false,
+  });
 });
 
 describe('Wizard de reserva (MKT-004)', () => {
@@ -494,7 +587,8 @@ describe('Wizard de reserva (MKT-004)', () => {
     expect(screen.getByText('María González')).toBeInTheDocument();
     expect(screen.getByText('José Pérez')).toBeInTheDocument();
     expect(screen.getByText('12345678 · Asiento A1')).toBeInTheDocument();
-    expect(screen.getByText('$40,40')).toBeInTheDocument();
+    // MKT-007.4: el importe aparece en el resumen y en la sección de canales.
+    expect(screen.getAllByText('$40,40').length).toBeGreaterThan(0);
     expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -825,6 +919,9 @@ describe('Wizard de reserva — realtime (MKT-004)', () => {
 // ─── MKT-004 Fase B: checkout → auth gate → reservation ────────────────────
 
 function resetCheckoutTest() {
+  // Hardening MKT-004 instala timers falsos sin restaurarlos; los describes
+  // posteriores (waitFor / findByRole) necesitan timers reales.
+  vi.useRealTimers();
   vi.clearAllMocks();
   sessionStorage.clear();
   realtime.seatHandlers.length = 0;
@@ -936,6 +1033,9 @@ describe('Claim guest tras login/registro (MKT-004 Fase B)', () => {
   it('al volver del login reclama los locks guest y continúa al pago sin relockear', async () => {
     seedLock();
     const expires = futureExpiry();
+    // El intento debe expirar exactamente cuando el lock: re-mockeamos aquí
+    // para no depender de la coincidencia de dos llamadas a futureExpiry().
+    mockedCreate.mockResolvedValue(createdAttempt({ expires_at: expires }));
     mockedGetGuestLocks.mockResolvedValue({
       trip_id: 'trip-1',
       lock_expires_at: expires,
@@ -2082,8 +2182,10 @@ describe('Comprobante de pago (MKT-007)', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Pago pendiente')).toBeInTheDocument();
+    // MKT-007.4: el uploader aparece tras elegir el canal (por defecto el
+    // fixture lo trae preseleccionado).
     expect(
-      screen.getByRole('button', { name: 'Enviar comprobante' }),
+      await screen.findByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
     // MKT-007.1: tras crear el intento no hay countdown de revisión, solo
     // el mensaje por estado (aún no hay comprobante: copy de `created`).
@@ -2762,6 +2864,331 @@ describe('Cancelación de la compra (MKT-007)', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Comprobante de pago' }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// MKT-007.4 — Canales de pago: elegir ANTES del comprobante; aviso
+// WhatsApp cuando la agencia no tiene canales activos.
+// ══════════════════════════════════════════════════════════════════════
+
+describe('Canales de pago del intento (MKT-007.4)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sin canal elegido no se muestra el uploader; elegirlo lo habilita', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    // Sin preselección: el cliente debe elegir antes de subir el comprobante.
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ selected_method_id: null }),
+    );
+    mockedSelectPaymentMethod.mockResolvedValue({
+      attempt_id: 'att-1',
+      status: 'created',
+      amount_cents: 4040,
+      payment_method_id: 'pm-1',
+      payment_method_snapshot: { snapshot_version: 1 },
+      idempotent: false,
+    });
+
+    await renderWizard();
+
+    expect(screen.getByText('Datos de pago')).toBeInTheDocument();
+    // Sin canal: el uploader queda oculto con su instrucción.
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Selecciona un método de pago para continuar con tu comprobante.',
+      ),
+    ).toBeInTheDocument();
+
+    await selectFirstPaymentMethodViaUi();
+
+    expect(mockedSelectPaymentMethod).toHaveBeenCalledWith('att-1', 'pm-1');
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
+    ).toBeInTheDocument();
+    // El canal elegido queda marcado como seleccionado (badge dentro de la
+    // card del canal, no la leyenda del mapa de asientos).
+    expect(
+      screen.getByTestId('payment-method-pm-1').textContent,
+    ).toContain('Seleccionado');
+  });
+
+  it('un canal ya elegido (rehidratación) habilita el uploader de inmediato', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ selected_method_id: 'pm-1' }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
+    ).toBeInTheDocument();
+    expect(mockedSelectPaymentMethod).not.toHaveBeenCalled();
+  });
+
+  it('en la sección de canales, un teléfono inválido explica la ausencia de enlace y ofrece copiar', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    // La agencia no devuelve canales activos en el intento (p. ej. borrados
+    // tras crearse) y su teléfono no tiene forma válida de WhatsApp.
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({
+        methods: [],
+        selected_method_id: null,
+        agency_phone: 'no-telefono',
+      }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByText(
+        'La agencia aún no tiene un método de pago configurado',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Contactar por WhatsApp/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/No pudimos abrir WhatsApp con este número/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: /Copiar teléfono: no-telefono/,
+      }),
+    ).toBeInTheDocument();
+    // El copy obligatorio de contacto se conserva.
+    expect(screen.getByText(/no confirma tu reserva/)).toBeInTheDocument();
+  });
+
+  it('con revisión pendiente el canal es de solo lectura (sin "Elegir")', async () => {
+    seedAttemptLock({
+      status: 'pending_review',
+      submitted_at: '2026-10-04T12:00:00.000Z',
+      proof_count: 1,
+      remaining_submissions: 2,
+    });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'pending_review',
+        proof_count: 1,
+        remaining_submissions: 2,
+        proof_submitted_at: '2026-10-04T12:00:00.000Z',
+      }),
+    );
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({
+        status: 'pending_review',
+        selected_method_id: 'pm-1',
+      }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByTestId('payment-method-pm-1').textContent,
+    ).toContain('Seleccionado');
+    expect(
+      screen.queryByRole('button', { name: 'Elegir' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Este método quedó guardado cuando enviaste tu comprobante y ya no puede cambiarse.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('cuando la agencia no tiene canales activos el intento no avanza y guía a WhatsApp', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: '04121234567',
+            payment_methods_available: false,
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+    await fillValidPassengers(view);
+
+    // Sin CTA de pago: el backend respondería 409, la UI lo previene.
+    expect(
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
+    ).not.toBeInTheDocument();
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'Esta agencia aún no tiene un método de pago configurado',
+      ),
+    ).toBeInTheDocument();
+    // Copy obligatorio del ticket.
+    expect(
+      screen.getByText(
+        /Puedes contactar a la agencia para recibir ayuda/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /no confirma tu reserva/,
+      ),
+    ).toBeInTheDocument();
+    const whatsapp = screen.getByRole('link', {
+      name: /Contactar por WhatsApp/,
+    });
+    expect(whatsapp).toHaveAttribute('href', 'https://wa.me/584121234567');
+    expect(view).toBeTruthy();
+  });
+
+  it('un teléfono inválido no inventa enlace de WhatsApp', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: 'no-telefono',
+            payment_methods_available: false,
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    expect(
+      screen.queryByRole('link', { name: /Contactar por WhatsApp/ }),
+    ).not.toBeInTheDocument();
+    // El copy de aviso se mantiene aunque no haya enlace.
+    expect(
+      screen.getByText(/no confirma tu reserva/),
+    ).toBeInTheDocument();
+    // Se explica por qué no hay enlace y se conserva la copia del teléfono.
+    expect(
+      screen.getByText(/No pudimos abrir WhatsApp con este número/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: /Copiar teléfono: no-telefono/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('sin teléfono público se informa que no hay medio de contacto disponible', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: null,
+            payment_methods_available: false,
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    expect(
+      screen.getByText(
+        'Esta agencia aún no tiene un método de pago configurado',
+      ),
+    ).toBeInTheDocument();
+    // Sin contacto publicado no se invita a escribir a ningún chat ni a
+    // soporte: se informa la ausencia de medio de contacto.
+    expect(
+      screen.getByText(/Tampoco ha publicado un medio de contacto disponible/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/chat de tu compra/),
+    ).not.toBeInTheDocument();
+    // Nunca inventar enlaces ni números.
+    expect(
+      screen.queryByRole('link', { name: /Contactar por WhatsApp/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Copiar teléfono/ }),
+    ).not.toBeInTheDocument();
+    // Sin contacto no hay copy de WhatsApp ni bloqueo de CTA de pago.
+    expect(
+      screen.queryByText(/no confirma tu reserva/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
+    ).not.toBeInTheDocument();
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it('el canal congelado tras el primer comprobante rechaza el cambio (409)', async () => {
+    seedAttemptLock({
+      status: 'rejected',
+      proof_count: 1,
+      remaining_submissions: 2,
+    });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'rejected',
+        proof_count: 1,
+        remaining_submissions: 2,
+      }),
+    );
+    // status='rejected' en la vista de canales: sin cambios permitidos.
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ status: 'rejected', selected_method_id: 'pm-1' }),
+    );
+
+    await renderWizard();
+
+    // Congelado: no hay botón "Elegir" ni "Elegir" para otro canal.
+    expect(
+      screen.queryByRole('button', { name: 'Elegir' }),
+    ).not.toBeInTheDocument();
+    expect(mockedSelectPaymentMethod).not.toHaveBeenCalled();
+    // El uploader de reenvío sí está disponible (quedan reenvíos).
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
   });
 });

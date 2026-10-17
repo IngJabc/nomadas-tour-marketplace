@@ -79,7 +79,7 @@ router.get('/:id', async (req, res, next) => {
       supabaseAdmin
         .from('trip_agencies')
         .select(
-          'agency_id, agencies!inner(id, name, status, agency_settings(logo_url, primary_color, secondary_color, accent_color))',
+          'agency_id, agencies!inner(id, name, status, phone, agency_settings(logo_url, primary_color, secondary_color, accent_color))',
         )
         .eq('trip_id', id)
         .eq('agencies.status', 'active'),
@@ -93,6 +93,29 @@ router.get('/:id', async (req, res, next) => {
       throw new AppError(seatsResult.error.message, 500, 'TRIP_SEATS_QUERY_ERROR');
     }
 
+    // MKT-007.4: agencias de ESTE viaje con al menos un canal de pago
+    // activo. Se resuelve por los agency_id de las ofertas; jamas se
+    // acepta un filtro del cliente.
+    const offerAgencyIds = (offersResult.data ?? []).map((row: any) => row.agency_id);
+    let agenciesWithMethods = new Set<string>();
+    if (offerAgencyIds.length > 0) {
+      const { data: methods, error: methodsError } = await supabaseAdmin
+        .from('agency_payment_methods')
+        .select('agency_id')
+        // Solo metodos soportados por el checkout (hoy: pago_movil).
+        .eq('method', 'pago_movil')
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .in('agency_id', offerAgencyIds);
+
+      if (methodsError) {
+        throw new AppError(methodsError.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+      }
+      agenciesWithMethods = new Set(
+        (methods ?? []).map((row: any) => String(row.agency_id)),
+      );
+    }
+
     const offers = (offersResult.data ?? []).map((row: any) => {
       const agency = row.agencies ?? {};
       const settings = agency.agency_settings ?? null;
@@ -103,6 +126,10 @@ router.get('/:id', async (req, res, next) => {
         primary_color: settings?.primary_color ?? null,
         secondary_color: settings?.secondary_color ?? null,
         accent_color: settings?.accent_color ?? null,
+        // MKT-007.4: teléfono público de la agencia (aviso WhatsApp)
+        // y si la agencia ya tiene canales de pago configurados.
+        phone: agency.phone ?? null,
+        payment_methods_available: agenciesWithMethods.has(String(row.agency_id)),
       };
     });
 
