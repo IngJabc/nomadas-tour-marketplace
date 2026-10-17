@@ -113,6 +113,10 @@ export interface PublicTripOffer {
   primary_color: string | null;
   secondary_color: string | null;
   accent_color: string | null;
+  /** MKT-007.4: teléfono público de la agencia (aviso WhatsApp). */
+  phone: string | null;
+  /** MKT-007.4: la agencia tiene al menos un canal de pago activo. */
+  payment_methods_available: boolean;
 }
 
 export type PublicSeatStatus =
@@ -379,7 +383,64 @@ export const checkoutApi = {
       `/public/checkout/attempts/${encodeURIComponent(attemptId)}/cancel`,
       { method: 'POST' },
     ),
+
+  // — MKT-007.4 · Canales de pago del intento —
+  getPaymentMethods: (attemptId: string) =>
+    request<CheckoutPaymentMethodsView>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/payment-methods`,
+    ),
+
+  selectPaymentMethod: (attemptId: string, paymentMethodId: string) =>
+    request<SelectCheckoutPaymentMethodResult>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/payment-method`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ payment_method_id: paymentMethodId }),
+      },
+    ),
 };
+
+// ── MKT-007.4 · Canales de pago (pago móvil) ────────────────────────────────
+
+/** Datos de un canal pago_movil. Solo lectura para el cliente. */
+export interface CheckoutPagoMovilData {
+  bank_code: string;
+  bank_name: string;
+  phone: string;
+  document_type: string;
+  document_number: string;
+  holder_name: string;
+  account_type?: string;
+  account_number?: string;
+}
+
+export interface CheckoutPaymentMethodDto {
+  id: string;
+  method: string;
+  label: string;
+  data: CheckoutPagoMovilData;
+  is_primary: boolean;
+  sort_order: number;
+}
+
+export interface CheckoutPaymentMethodsView {
+  attempt_id: string;
+  status: string;
+  amount_cents: number;
+  selected_method_id: string | null;
+  methods: CheckoutPaymentMethodDto[];
+  /** Teléfono público de la agencia para el aviso de WhatsApp. */
+  agency_phone: string | null;
+}
+
+export interface SelectCheckoutPaymentMethodResult {
+  attempt_id: string;
+  status: string;
+  amount_cents: number;
+  payment_method_id: string;
+  payment_method_snapshot: Record<string, unknown>;
+  idempotent: boolean;
+}
 
 /** Estado del intento para su dueño. Nunca incluye la ruta del archivo. */
 export interface CheckoutAttemptView {

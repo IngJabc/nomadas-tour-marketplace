@@ -506,6 +506,18 @@ function mapRpcError(error: { message: string }): AppError {
         409,
         'CHECKOUT_PROOF_LIMIT',
       );
+    case 'ERR_CHECKOUT_PAYMENT_METHOD_FROZEN':
+      return checkoutError(
+        'El método de pago de esta compra ya no se puede cambiar',
+        409,
+        'CHECKOUT_PAYMENT_METHOD_FROZEN',
+      );
+    case 'ERR_CHECKOUT_PAYMENT_METHOD_INVALID':
+      return checkoutError(
+        'El método de pago seleccionado ya no está disponible',
+        400,
+        'CHECKOUT_PAYMENT_METHOD_INVALID',
+      );
     default:
       return checkoutError(
         'No se pudo procesar la compra. Intenta de nuevo',
@@ -525,6 +537,38 @@ interface RpcJson {
 }
 
 // ── 1) Crear el intento ──────────────────────────────────────────────────────
+
+/**
+ * MKT-007.4: la agencia debe tener al menos un canal de pago activo y
+ * soportado (hoy solo `pago_movil`) para poder iniciar un checkout. El
+ * filtro de method garantiza que un metodo futuro, aun existente en la
+ * tabla, no habilite un checkout que el frontend no sabe mostrar.
+ */
+async function assertAgencyHasActivePaymentMethods(agencyId: string): Promise<void> {
+  const { count, error } = await supabaseAdmin
+    .from('agency_payment_methods')
+    .select('id', { count: 'exact', head: true })
+    .eq('agency_id', agencyId)
+    .eq('method', 'pago_movil')
+    .eq('is_active', true)
+    .is('deleted_at', null);
+
+  if (error) {
+    throw checkoutError(
+      'No se pudo verificar la agencia. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  if (!count || count === 0) {
+    throw checkoutError(
+      'Esta agencia aún no tiene un método de pago configurado. Contacta a la agencia para continuar',
+      409,
+      'AGENCY_NO_ACTIVE_PAYMENT_METHODS',
+    );
+  }
+}
 
 export interface CreateCheckoutAttemptResult {
   attempt_id: string;
@@ -548,6 +592,10 @@ export interface CreateCheckoutAttemptResult {
  *
  * El payload se normaliza aquí (orden de pasajeros = orden de seat_ids)
  * y el RPC vuelve a validarlo contra el snapshot.
+ *
+ * MKT-007.4: antes de crear el intento se exige que la agencia tenga al
+ * menos UN canal de pago activo; sin canales no hay a donde enviar el
+ * dinero y el checkout se rechaza con 409 AGENCY_NO_ACTIVE_PAYMENT_METHODS.
  */
 export async function createCheckoutAttempt(
   input: CreateCheckoutAttemptInput,
@@ -558,6 +606,8 @@ export async function createCheckoutAttempt(
     seat_ids: input.seat_ids,
     passengers: input.passengers,
   });
+
+  await assertAgencyHasActivePaymentMethods(data.agency_id);
 
   const { data: result, error } = (await callRpc('create_checkout_attempt', {
     p_trip_id: data.trip_id,
@@ -586,11 +636,15 @@ export async function createCheckoutAttempt(
  * Verifica ANTES de subir que el intento exista, pertenezca al customer
  * autenticado y esté en un estado que permita envíos. No filtra intentos
  * ajenos: todas las fallas responden el mismo 404. Nunca hace UPDATE.
+ *
+ * MKT-007.4: también exige que el intento ya tenga canal de pago
+ * elegido (payment_method_id); sin canal no hay datos de conciliación
+ * hacia donde guiar al cliente.
  */
 async function verifyAttemptReady(attemptId: string, customerId: string): Promise<void> {
   const { data, error } = await supabaseAdmin
     .from('checkout_attempts')
-    .select('id, customer_id, status, proof_count, expires_at')
+    .select('id, customer_id, status, proof_count, expires_at, payment_method_id')
     .eq('id', attemptId)
     .maybeSingle();
 
@@ -608,6 +662,7 @@ async function verifyAttemptReady(attemptId: string, customerId: string): Promis
     status: string;
     proof_count: number;
     expires_at: string;
+    payment_method_id: string | null;
   } | null;
 
   if (!attempt || attempt.customer_id !== customerId) {
@@ -632,6 +687,13 @@ async function verifyAttemptReady(attemptId: string, customerId: string): Promis
       'Ya enviaste los tres comprobantes permitidos',
       409,
       'CHECKOUT_PROOF_LIMIT',
+    );
+  }
+  if (!attempt.payment_method_id) {
+    throw checkoutError(
+      'Selecciona un método de pago antes de enviar el comprobante',
+      409,
+      'PAYMENT_METHOD_REQUIRED',
     );
   }
 }
@@ -994,4 +1056,146 @@ export async function cancelCheckoutAttempt(input: {
   }
 
   return data as unknown as CancelCheckoutAttemptResult;
+}
+
+// ── 5) Canales de pago del intento (MKT-007.4) ──────────────────────────────
+
+export interface CheckoutPaymentMethodDto {
+  id: string;
+  method: string;
+  label: string;
+  data: Record<string, unknown>;
+  is_primary: boolean;
+  sort_order: number;
+}
+
+export interface CheckoutPaymentMethodsView {
+  attempt_id: string;
+  status: string;
+  amount_cents: number;
+  selected_method_id: string | null;
+  methods: CheckoutPaymentMethodDto[];
+  agency_phone: string | null;
+}
+
+export interface SelectCheckoutPaymentMethodResult {
+  attempt_id: string;
+  status: string;
+  amount_cents: number;
+  payment_method_id: string;
+  payment_method_snapshot: Record<string, unknown>;
+  idempotent: boolean;
+}
+
+/**
+ * Canales de pago ACTIVOS de la agencia del intento, más el teléfono
+ * público de la agencia (para el aviso de WhatsApp). El intento se
+ * busca SIEMPRE por id + customer_id: el cliente nunca envía un
+ * agency_id arbitrario.
+ */
+export async function getCheckoutPaymentMethods(input: {
+  attemptId: string;
+  customerId: string;
+}): Promise<CheckoutPaymentMethodsView> {
+  const { data: attempt, error: attemptError } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select('id, customer_id, agency_id, status, amount_cents, payment_method_id')
+    .eq('id', input.attemptId)
+    .maybeSingle();
+
+  if (attemptError) {
+    throw checkoutError(
+      'No se pudo cargar la compra. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  const row = attempt as {
+    id: string;
+    customer_id: string;
+    agency_id: string;
+    status: string;
+    amount_cents: number;
+    payment_method_id: string | null;
+  } | null;
+
+  if (!row || row.customer_id !== input.customerId) {
+    throw checkoutError('Compra no encontrada', 404, 'CHECKOUT_ATTEMPT_NOT_FOUND');
+  }
+
+  const [{ data: methods, error: methodsError }, { data: agency, error: agencyError }] =
+    await Promise.all([
+      supabaseAdmin
+        .from('agency_payment_methods')
+        .select('id, method, label, data, is_primary, sort_order')
+        .eq('agency_id', row.agency_id)
+        // Solo metodos que el frontend sabe mostrar (hoy: pago_movil).
+        .eq('method', 'pago_movil')
+        .eq('is_active', true)
+        .is('deleted_at', null)
+        .order('is_primary', { ascending: false })
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true }),
+      supabaseAdmin
+        .from('agencies')
+        .select('phone')
+        .eq('id', row.agency_id)
+        .maybeSingle(),
+    ]);
+
+  if (methodsError) {
+    throw checkoutError(
+      'No se pudieron cargar los métodos de pago. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  return {
+    attempt_id: row.id,
+    status: row.status,
+    amount_cents: row.amount_cents,
+    selected_method_id: row.payment_method_id ?? null,
+    methods: ((methods ?? []) as Record<string, unknown>[]).map((m) => ({
+      id: String(m.id),
+      method: String(m.method),
+      label: String(m.label),
+      data: (m.data as Record<string, unknown>) ?? {},
+      is_primary: Boolean(m.is_primary),
+      sort_order: Number(m.sort_order ?? 0),
+    })),
+    agency_phone: agencyError
+      ? null
+      : (((agency as { phone?: string | null } | null)?.phone as string | null) ?? null),
+  };
+}
+
+/**
+ * El cliente elige el canal de pago. La validación de ownership,
+ * estado (solo 'created' con proof_count=0) y disponibilidad del canal
+ * vive en select_checkout_payment_method (RPC 089); aquí solo se
+ * traducen los errores.
+ */
+export async function selectCheckoutPaymentMethod(input: {
+  attemptId: string;
+  customerId: string;
+  paymentMethodId: string;
+}): Promise<SelectCheckoutPaymentMethodResult> {
+  const { data, error } = (await callRpc('select_checkout_payment_method', {
+    p_attempt_id: input.attemptId,
+    p_customer_id: input.customerId,
+    p_payment_method_id: input.paymentMethodId,
+  })) as RpcJson;
+
+  if (error) throw mapRpcError(error);
+  if (!data?.attempt_id) {
+    throw checkoutError(
+      'No se pudo guardar el método de pago. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  return data as unknown as SelectCheckoutPaymentMethodResult;
 }

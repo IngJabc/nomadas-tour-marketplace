@@ -10,6 +10,7 @@ import {
   CalendarDays,
   LoaderCircle,
   LogIn,
+  MessageCircle,
   RefreshCw,
   ShieldCheck,
   Ticket,
@@ -33,6 +34,8 @@ import { BusLayout } from '@/components/bus/BusLayout';
 import { LockCountdown } from '@/components/booking/LockCountdown';
 import { PassengerCard } from '@/components/booking/PassengerCard';
 import { ProofUploader, newIdempotencyKey } from '@/components/booking/ProofUploader';
+import { PaymentMethodSection } from '@/components/booking/PaymentMethodSection';
+import { whatsappHref, copyToClipboard } from '@/lib/booking/whatsapp';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
 import {
@@ -167,6 +170,24 @@ function NewReservationContent() {
   // crear/enviar comprobante y se limpia al cancelar o volver a cero.
   const [checkoutStatus, setCheckoutStatus] =
     useState<CheckoutAttemptStatus | null>(null);
+  // MKT-007.4: canal de pago elegido para el intento. La fuente de verdad
+  // es el servidor (getPaymentMethods / selectPaymentMethod); este estado
+  // solo gobierna si se muestra el uploader del comprobante.
+  const [selectedMethodId, setSelectedMethodId] = useState<string | null>(null);
+
+  // MKT-007.4: oferta de la agencia elegida. `payment_methods_available`
+  // solo bloquea el checkout cuando el backend lo devuelve en false
+  // explícito; si el campo no existe (respuesta antigua) se asume true y
+  // el guard del backend (409) es la autoridad. Declarado ANTES de
+  // handleCreate porque va en su dep array.
+  const selectedOffer = useMemo(() => {
+    if (!lock || !trip) return null;
+    return (
+      trip.offers.find((offer) => offer.agency_id === lock.agency_id) ?? null
+    );
+  }, [lock, trip]);
+  const agencyWithoutChannels = selectedOffer?.payment_methods_available === false;
+  const offerWhatsApp = whatsappHref(selectedOffer?.phone ?? null);
 
   useEffect(() => {
     // Sin la identidad resuelta no se puede decidir guest vs customer.
@@ -194,6 +215,7 @@ function NewReservationContent() {
         setCreateError(null);
         setVerifiedAt(null);
         setCheckoutStatus(null);
+        setSelectedMethodId(null);
         setPhase('ready');
       } catch (e) {
         if (cancelled) return;
@@ -420,6 +442,15 @@ function NewReservationContent() {
         setCreateError(UNPRICED_MESSAGE);
         return;
       }
+      if (err.code === 'AGENCY_NO_ACTIVE_PAYMENT_METHODS') {
+        // MKT-007.4: la agencia perdió sus canales entre la oferta y el
+        // POST. El mensaje del backend ya es el copy aprobado.
+        setCreateError(
+          err.message ||
+            'Esta agencia aún no tiene un método de pago configurado. Contacta a la agencia para continuar.',
+        );
+        return;
+      }
       if (err.status === 429) {
         setCreateError(
           'Demasiados intentos. Espera un momento y vuelve a intentarlo.',
@@ -447,6 +478,9 @@ function NewReservationContent() {
     if (!sessionUser) return; // gate: sin sesión no hay POST
     if (sessionUser.role !== 'customer') return; // backend: CUSTOMER_REQUIRED
     if (!lock.agency_id) return; // sin oferta de agencia no hay payload válido
+    // MKT-007.4: sin canales activos el backend respondería 409; la UI ya
+    // oculta el CTA, pero el guard cubre handlers directos.
+    if (selectedOffer?.payment_methods_available === false) return;
     // Sin precio publicado no hay POST: el payload jamás lleva precio (lo
     // decide el RPC) y el backend respondería TRIP_PRICE_MISSING. La UI ya
     // oculta el CTA, pero el guard cubre handlers directos y restauraciones.
@@ -526,6 +560,9 @@ function NewReservationContent() {
       setFieldErrors([]);
       setCreateError(null);
       setCheckoutStatus(result.status);
+      // Nuevo intento: el canal de pago se re-hidrata desde el servidor en
+      // PaymentMethodSection; no arrastramos la elección del intento previo.
+      setSelectedMethodId(null);
       toast.success('Compra iniciada. Ahora envía tu comprobante de pago.');
     } catch (err: unknown) {
       handleCreateError(err);
@@ -533,7 +570,7 @@ function NewReservationContent() {
       creatingRef.current = false;
       setCreating(false);
     }
-  }, [handleCreateError, lock, passengers, trip]);
+  }, [handleCreateError, lock, passengers, selectedOffer, trip]);
 
   // ─── Comprobante de pago (MKT-007) ───────────────────────────────────
   // El marcador se persiste con la LockState y solo indica que la interfaz
@@ -612,6 +649,7 @@ function NewReservationContent() {
       setCreateError(null);
       setVerifiedAt(null);
       setCheckoutStatus(null);
+      setSelectedMethodId(null);
       setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
       toast.success(
         result.already_cancelled
@@ -1369,6 +1407,72 @@ function NewReservationContent() {
               <p className="mt-5 text-sm text-brand-muted">
                 Selecciona al menos un asiento para continuar con el pago.
               </p>
+            ) : agencyWithoutChannels ? (
+              // MKT-007.4: la agencia no tiene métodos de pago activos. No
+              // se ofrece el CTA ni se crea el intento. Si la agencia
+              // publicó un teléfono, se guía al cliente hacia él (enlace
+              // de WhatsApp solo cuando el número es válido); si no, se
+              // informa que no hay ningún medio de contacto disponible.
+              <div className="mt-5 rounded-[10px] bg-[#fffbeb] px-4 py-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle
+                    size={18}
+                    strokeWidth={1.75}
+                    className="mt-0.5 shrink-0 text-[#92400e]"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <p className="text-sm font-semibold text-[#92400e]">
+                      Esta agencia aún no tiene un método de pago configurado
+                    </p>
+                    {selectedOffer?.phone ? (
+                      <>
+                        <p className="mt-1 text-xs text-brand-muted">
+                          Puedes contactar a la agencia para recibir ayuda con
+                          tu pago. Enviar el comprobante únicamente por
+                          WhatsApp no confirma tu reserva.
+                        </p>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {offerWhatsApp ? (
+                            <a
+                              href={offerWhatsApp}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 rounded-[10px] bg-[#10b981] px-4 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-[#059669]"
+                            >
+                              <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
+                              Contactar por WhatsApp
+                            </a>
+                          ) : (
+                            <p className="text-xs text-brand-muted">
+                              No pudimos abrir WhatsApp con este número. Cópialo
+                              y contáctalos manualmente.
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void copyToClipboard(selectedOffer.phone!).then((ok) => {
+                                if (ok) toast.success('Copiado al portapapeles');
+                                else toast.error('No se pudo copiar el teléfono');
+                              });
+                            }}
+                            className="inline-flex items-center gap-2 rounded-[10px] bg-white border border-[#e5e7eb] px-4 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#f1f5f9]"
+                          >
+                            Copiar teléfono: {selectedOffer.phone}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-xs text-brand-muted">
+                        Tampoco ha publicado un medio de contacto disponible en
+                        este momento. No puedes iniciar la compra hasta que la
+                        agencia configure un método de pago.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-brand-muted">
@@ -1486,6 +1590,12 @@ function NewReservationContent() {
                 </span>
               </div>
 
+              {/* MKT-007.4: canal de pago elegido ANTES del comprobante. */}
+              <PaymentMethodSection
+                attemptId={attemptId}
+                onSelectionChange={setSelectedMethodId}
+              />
+
               {verifiedAt ? (
                 // Confirmación visual explícita del servidor: es el único caso
                 // en el que se habla de pago aprobado (MKT-007 §7).
@@ -1531,14 +1641,23 @@ function NewReservationContent() {
                         reenvíos (reglas de copy del ticket). */}
                   </div>
                   {(checkoutMarker?.remaining_submissions ?? 0) > 0 ? (
-                    <ProofUploader
-                      attemptId={attemptId}
-                      remainingSubmissions={
-                        checkoutMarker?.remaining_submissions ?? 1
-                      }
-                      onSubmitted={handleProofSubmitted}
-                      onAlreadySubmitted={handleAlreadySubmitted}
-                    />
+                    selectedMethodId ? (
+                      <ProofUploader
+                        attemptId={attemptId}
+                        remainingSubmissions={
+                          checkoutMarker?.remaining_submissions ?? 1
+                        }
+                        onSubmitted={handleProofSubmitted}
+                        onAlreadySubmitted={handleAlreadySubmitted}
+                      />
+                    ) : (
+                      // MKT-007.4: sin canal elegido no hay datos de pago
+                      // hacia donde guiar al cliente.
+                      <p className="mt-4 text-sm text-brand-muted">
+                        Selecciona un método de pago para continuar con tu
+                        comprobante.
+                      </p>
+                    )
                   ) : (
                     <p className="mt-4 text-sm text-brand-muted">
                       Se agotaron los reenvíos de comprobante para esta compra.
@@ -1546,7 +1665,7 @@ function NewReservationContent() {
                     </p>
                   )}
                 </div>
-              ) : (
+              ) : selectedMethodId ? (
                 <ProofUploader
                   attemptId={attemptId}
                   remainingSubmissions={
@@ -1555,6 +1674,10 @@ function NewReservationContent() {
                   onSubmitted={handleProofSubmitted}
                   onAlreadySubmitted={handleAlreadySubmitted}
                 />
+              ) : (
+                <p className="mt-5 text-sm text-brand-muted">
+                  Selecciona un método de pago para continuar con tu comprobante.
+                </p>
               )}
 
               {!verifiedAt && !awaitingReview ? (

@@ -8,7 +8,9 @@ import {
   cancelCheckoutAttempt,
   createCheckoutAttempt,
   getCheckoutAttempt,
+  getCheckoutPaymentMethods,
   parseCheckoutProofUpload,
+  selectCheckoutPaymentMethod,
   submitCheckoutProof,
   type CreateCheckoutAttemptInput,
 } from '../../services/checkout.service.js';
@@ -202,6 +204,68 @@ router.post('/attempts/:attemptId/cancel', cancelLimiter, auth, async (req, res,
     const result = await cancelCheckoutAttempt({
       attemptId,
       customerId: req.ctx!.userId,
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/checkout/attempts/:attemptId/payment-methods (MKT-007.4)
+ * Canales de pago activos de la agencia del intento + teléfono público
+ * de la agencia (para el aviso de WhatsApp).
+ *
+ * El intento se resuelve por id + customer_id: el cliente NUNCA envía
+ * un agency_id arbitrario, por lo que solo ve los canales de la agencia
+ * que le cotizó la compra.
+ */
+router.get('/attempts/:attemptId/payment-methods', auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { attemptId } = parseOrThrow(
+      z.object({ attemptId: uuidSchema }),
+      req.params,
+    );
+
+    const result = await getCheckoutPaymentMethods({
+      attemptId,
+      customerId: req.ctx!.userId,
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /api/public/checkout/attempts/:attemptId/payment-method (MKT-007.4)
+ * El cliente elige el canal de pago ANTES de subir el comprobante.
+ * Solo mientras status='created' y proof_count=0; el RPC 089 congela el
+ * snapshot y rechaza cambios posteriores.
+ */
+router.patch('/attempts/:attemptId/payment-method', submitLimiter, auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { attemptId } = parseOrThrow(
+      z.object({ attemptId: uuidSchema }),
+      req.params,
+    );
+    const { payment_method_id } = parseOrThrow(
+      z.object({ payment_method_id: uuidSchema }).strict(),
+      req.body,
+    );
+
+    const result = await selectCheckoutPaymentMethod({
+      attemptId,
+      customerId: req.ctx!.userId,
+      paymentMethodId: payment_method_id,
     });
 
     res.json(result);
