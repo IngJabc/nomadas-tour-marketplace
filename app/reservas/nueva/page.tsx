@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 import {
   AlertTriangle,
   ArrowLeft,
+  Building2,
   CalendarDays,
   LoaderCircle,
   LogIn,
@@ -35,6 +36,7 @@ import { LockCountdown } from '@/components/booking/LockCountdown';
 import { PassengerCard } from '@/components/booking/PassengerCard';
 import { ProofUploader, newIdempotencyKey } from '@/components/booking/ProofUploader';
 import { PaymentMethodSection } from '@/components/booking/PaymentMethodSection';
+import { AgencyContactLinks } from '@/components/booking/AgencyContactLinks';
 import { whatsappHref, copyToClipboard } from '@/lib/booking/whatsapp';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
@@ -140,6 +142,15 @@ function NewReservationContent() {
   const [verifyAttempt, setVerifyAttempt] = useState(0);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Fase 2 (Bug 3): el backend rechazó la creación con
+  // CHECKOUT_AGENCY_NOT_ASSIGNED. Estado de recuperación PROPIO, separado de
+  // createError: esta rama nunca ofrece el botón "Reintentar", que
+  // reenviaría el mismo agency_id en bucle. Solo se limpia con un refetch
+  // exitoso de las ofertas (reconciliación explícita) o al iniciar una
+  // entrada nueva; un error de red lo conserva.
+  const [agencyMismatch, setAgencyMismatch] = useState(false);
+  // Evita refetch duplicado de ofertas desde el botón de recuperación.
+  const [refreshingOffers, setRefreshingOffers] = useState(false);
   // Dedupe en vuelo: evita doble POST por Strict Mode, re-renders o dos
   // clics concurrentes. El backend además es idempotente (201 → 200).
   const creatingRef = useRef(false);
@@ -170,10 +181,26 @@ function NewReservationContent() {
   // crear/enviar comprobante y se limpia al cancelar o volver a cero.
   const [checkoutStatus, setCheckoutStatus] =
     useState<CheckoutAttemptStatus | null>(null);
+  // M-1: estado terminal REAL del intento, tomado del estado crudo
+  // (getAttempt) y NO del marcador ni de remaining_submissions. El
+  // rechazo por ventana vencida (Tour 090) deja rejected_final con
+  // proof_count < 3, y la vista devuelve remaining_submissions > 0.
+  // Cuando es true, el uploader de comprobantes queda bloqueado en
+  // todos sus caminos, prevaleciendo sobre remaining_submissions,
+  // selectedMethodId y coordinatedPayment.
+  const checkoutFinal = checkoutStatus === 'rejected_final';
   // MKT-007.4: canal de pago elegido para el intento. La fuente de verdad
   // es el servidor (getPaymentMethods / selectPaymentMethod); este estado
   // solo gobierna si se muestra el uploader del comprobante.
   const [selectedMethodId, setSelectedMethodId] = useState<string | null>(null);
+  // MKT-008: el pago se coordina directamente con la agencia y el
+  // uploader de comprobante se habilita sin exigir selección de canal.
+  // Dos escenarios, ambos notificados por PaymentMethodSection al cargar
+  // getPaymentMethods: (a) la agencia no tiene canales activos; (b) modo
+  // agency_direct congelado tras un rechazo (status='rejected' sin
+  // selección; la agencia puede tener canales activos ahora). La fuente
+  // de verdad es el servidor; este estado solo gobierna el uploader.
+  const [coordinatedPayment, setCoordinatedPayment] = useState(false);
 
   // MKT-007.4: oferta de la agencia elegida. `payment_methods_available`
   // solo bloquea el checkout cuando el backend lo devuelve en false
@@ -187,7 +214,21 @@ function NewReservationContent() {
     );
   }, [lock, trip]);
   const agencyWithoutChannels = selectedOffer?.payment_methods_available === false;
+  // MKT-008: contactos públicos de la agencia (E.164). Sin contactos se
+  // cae al teléfono legado; el array vacío conserva el estado actual.
+  const offerContacts = selectedOffer?.contacts ?? [];
   const offerWhatsApp = whatsappHref(selectedOffer?.phone ?? null);
+
+  // Fase 2 (Bug 3): reconciliación de la agencia persistida contra las
+  // ofertas VIGENTES del viaje. El detalle del viaje solo incluye agencias
+  // activas y asignadas, así que una agencia desasignada o inactiva desaparece
+  // de `offers[]` y este flag queda en true sin depender del POST. Con `trip`
+  // sin cargar no se decide nada: el guard de handleCreate ya impide el POST,
+  // y un fetch fallido jamás se interpreta como "agencia desasignada".
+  const agencyStale = useMemo(() => {
+    if (!lock || !trip || !lock.agency_id) return false;
+    return !trip.offers.some((offer) => offer.agency_id === lock.agency_id);
+  }, [lock, trip]);
 
   useEffect(() => {
     // Sin la identidad resuelta no se puede decidir guest vs customer.
@@ -205,7 +246,16 @@ function NewReservationContent() {
         setTrip(response.trip);
         setLock({
           trip_id: response.trip.id,
-          agency_id: response.trip.offers[0]?.agency_id ?? null,
+          // Solo puede fijarse sin elección la oferta ÚNICA del viaje: es la
+          // única agencia válida, no una elección arbitraria. Con varias
+          // ofertas (o ninguna) NO se pincha offers[0] en silencio: el usuario
+          // elige en el selector integrado en ESTA pantalla (la ruta de
+          // detalle /viajes/[id] fue eliminada; el catálogo siempre enlaza
+          // a /reservas/nueva?trip=).
+          agency_id:
+            response.trip.offers.length === 1
+              ? response.trip.offers[0].agency_id
+              : null,
           seats: [],
           lock_expires_at: '',
           passengers: [],
@@ -213,9 +263,13 @@ function NewReservationContent() {
         setPassengers([]);
         setFieldErrors([]);
         setCreateError(null);
+        // Entrada nueva de la pantalla: el estado de recuperación de agencia
+        // pertenece al ciclo anterior (se recalcula solo con los datos vigentes).
+        setAgencyMismatch(false);
         setVerifiedAt(null);
         setCheckoutStatus(null);
         setSelectedMethodId(null);
+        setCoordinatedPayment(false);
         setPhase('ready');
       } catch (e) {
         if (cancelled) return;
@@ -438,6 +492,16 @@ function NewReservationContent() {
         setPhase('expired');
         return;
       }
+      if (err.code === 'CHECKOUT_AGENCY_NOT_ASSIGNED') {
+        // Fase 2 (Bug 3): el backend (autoridad) confirmó que la agencia
+        // persistida ya no pertenece al viaje. NUNCA el createError genérico,
+        // cuyo botón "Reintentar" reenviaría el mismo agency_id en bucle.
+        // No hay estado de reserva que limpiar: el 404 ocurre antes de crear
+        // el intento. El cliente se recupera con un refetch explícito de las
+        // ofertas o eligiendo otra agencia desde el viaje.
+        setAgencyMismatch(true);
+        return;
+      }
       if (err.code === 'TRIP_PRICE_MISSING') {
         setCreateError(UNPRICED_MESSAGE);
         return;
@@ -478,9 +542,12 @@ function NewReservationContent() {
     if (!sessionUser) return; // gate: sin sesión no hay POST
     if (sessionUser.role !== 'customer') return; // backend: CUSTOMER_REQUIRED
     if (!lock.agency_id) return; // sin oferta de agencia no hay payload válido
-    // MKT-007.4: sin canales activos el backend respondería 409; la UI ya
-    // oculta el CTA, pero el guard cubre handlers directos.
-    if (selectedOffer?.payment_methods_available === false) return;
+    // Fase 2 (Bug 3): reconciliación de agencia — jamás se reenvía un
+    // agency_id que los datos vigentes marcaron como fuera de la oferta del
+    // viaje o que el backend rechazó con CHECKOUT_AGENCY_NOT_ASSIGNED.
+    if (agencyStale || agencyMismatch) return;
+    // MKT-008: la agencia sin canales activos ya NO bloquea la creación
+    // del intento; el pago coordinado se resuelve al subir el comprobante.
     // Sin precio publicado no hay POST: el payload jamás lleva precio (lo
     // decide el RPC) y el backend respondería TRIP_PRICE_MISSING. La UI ya
     // oculta el CTA, pero el guard cubre handlers directos y restauraciones.
@@ -503,9 +570,12 @@ function NewReservationContent() {
     const snapshot = { ...lock, passengers };
     // Clave estable ANTES del POST: si la respuesta se pierde, el reintento
     // reutiliza la MISMA `Idempotency-Key` y el RPC devuelve el intento
-    // existente en lugar de crear un segundo.
+    // existente en lugar de crear un segundo. Se guarda también en el estado
+    // React (no solo en sessionStorage): un reintento en la MISMA sesión lee
+    // `lock` y debe reutilizar la clave, no regenerarla (Fase 3).
     const attemptKey = snapshot.attempt_key ?? newIdempotencyKey();
     writeLockState({ ...snapshot, attempt_key: attemptKey });
+    setLock((prev) => (prev ? { ...prev, attempt_key: attemptKey } : prev));
 
     try {
       const result: CreateCheckoutAttemptResult = await checkoutApi.createAttempt(
@@ -563,6 +633,7 @@ function NewReservationContent() {
       // Nuevo intento: el canal de pago se re-hidrata desde el servidor en
       // PaymentMethodSection; no arrastramos la elección del intento previo.
       setSelectedMethodId(null);
+      setCoordinatedPayment(false);
       toast.success('Compra iniciada. Ahora envía tu comprobante de pago.');
     } catch (err: unknown) {
       handleCreateError(err);
@@ -570,7 +641,7 @@ function NewReservationContent() {
       creatingRef.current = false;
       setCreating(false);
     }
-  }, [handleCreateError, lock, passengers, selectedOffer, trip]);
+  }, [handleCreateError, lock, passengers, trip, agencyStale, agencyMismatch]);
 
   // ─── Comprobante de pago (MKT-007) ───────────────────────────────────
   // El marcador se persiste con la LockState y solo indica que la interfaz
@@ -650,6 +721,7 @@ function NewReservationContent() {
       setVerifiedAt(null);
       setCheckoutStatus(null);
       setSelectedMethodId(null);
+      setCoordinatedPayment(false);
       setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
       toast.success(
         result.already_cancelled
@@ -709,6 +781,65 @@ function NewReservationContent() {
     const fresh = await publicApi.tripDetail(trip.id).catch(() => null);
     if (fresh) setTrip(fresh.trip);
   }, [trip]);
+
+  // Fase 2 (Bug 3): reconciliación explícita desde la rama de recuperación.
+  // Solo un fetch EXITOSO decide: el detalle vigente reemplaza el viaje
+  // (agencyStale se recalcula solo contra los offers[] nuevos) y el flag de
+  // rechazo del backend se libera. Un error de red NO cambia nada — la
+  // agencia persistida se conserva y la rama de recuperación permanece; el
+  // usuario puede reintentar el botón o salir por "Elegir otra agencia".
+  // Declarado fuera de handleCreateError (que la invocaría desde su
+  // dep array con referencia a un const posterior → ReferenceError).
+  const handleRefreshOffers = useCallback(async () => {
+    if (!trip || refreshingOffers) return;
+    setRefreshingOffers(true);
+    try {
+      const fresh = await publicApi.tripDetail(trip.id);
+      setTrip(fresh.trip);
+      setAgencyMismatch(false);
+      toast.success('Ofertas actualizadas.');
+    } catch {
+      toast.error('No pudimos actualizar las ofertas. Intenta de nuevo.');
+    } finally {
+      setRefreshingOffers(false);
+    }
+  }, [refreshingOffers, trip]);
+
+  // Fase 1-corregida: selección de agencia EXPLÍCITA dentro del checkout.
+  // Los bloqueos de asiento NO dependen de la agencia (el body de
+  // lockSeats/unlockSeats/unlock solo lleva trip_id y seat_ids), así que
+  // cambiar de agencia con un lock activo es seguro: no se libera ningún
+  // asiento ni se toca la selección. Con un intento creado la agencia queda
+  // comprometida: el handler se niega y la sección del selector ni siquiera
+  // se renderiza. La persistencia la hace el efecto existente de LockState
+  // (solo con ≥1 asiento); el rechazo previo del backend (agencyMismatch)
+  // se limpia porque acabas de hacer una elección explícita nueva.
+  const handleSelectAgency = useCallback(
+    (agencyId: string) => {
+      if (!lock || lock.attempt_id) return;
+      if (lock.agency_id === agencyId) return;
+      setLock((prev) => (prev ? { ...prev, agency_id: agencyId } : prev));
+      setAgencyMismatch(false);
+    },
+    [lock],
+  );
+
+  // Fase 3: salida EXPLÍCITA del estado terminal `verified`. El contrato del
+  // backend trata verified como cerrado (`['verified','rejected_final',
+  // 'expired','cancelled']` bloquean nuevas acciones del intento); aquí solo
+  // se separa la OPERACIÓN LOCAL: se retira la LockState de sessionStorage y
+  // se re-verifica, de modo que el effect arranca una operación nueva con el
+  // `?trip=` de la URL (startFresh reconstruye el draft SIN attempt_id ni
+  // attempt_key → handleCreate generará una clave de idempotencia NUEVA y la
+  // conservará en los reintentos de esa misma operación). NUNCA se cancela el
+  // intento verificado ni se liberan asientos: no hay cancelAttempt ni
+  // unlockSeats en este flujo (los asientos verificados pertenecen a la
+  // reserva confirmada). No se inicia nada automáticamente al recargar: la
+  // restauración sigue pintando la compra verificada en solo lectura.
+  const handleNewPurchase = useCallback(() => {
+    clearLockState();
+    setVerifyAttempt((attempt) => attempt + 1);
+  }, []);
 
   const tripEndedHandledRef = useRef(false);
 
@@ -889,7 +1020,7 @@ function NewReservationContent() {
   );
 
   /**
-   * "Cambiar asientos": libera TODO y reinicia la selección en esta misma
+   * "Liberar asientos": libera TODO y reinicia la selección en esta misma
    * pantalla (el viaje y la URL `?trip=` no cambian; /viajes/[id] ya no forma
    * parte del flujo). Si no hay asientos no hay nada que liberar.
    */
@@ -1099,12 +1230,46 @@ function NewReservationContent() {
                 aria-hidden="true"
               />
             ) : null}
-            Cambiar asientos
+            Liberar asientos
           </button>
         </div>
       </header>
 
-      {attemptCreated ? (
+      {verifiedAt ? (
+        // Confirmación visual explícita del servidor: es el único caso en el
+        // que se habla de pago aprobado (MKT-007 §7). El bloque de cierre
+        // vive en la cabecera para ser lo primero que vea el cliente; dentro
+        // de "Comprobante de pago" ya no se repite.
+        <div className="mt-6 rounded-[10px] bg-[#ecfdf5] px-4 py-4">
+          <p className="text-sm font-semibold text-[#059669]">
+            Tu pago fue aprobado.
+          </p>
+          <p className="mt-1 text-xs text-brand-muted">
+            La agencia confirmó la transferencia y tu reserva ya está
+            confirmada con tus {passengers.length} pasajero
+            {passengers.length === 1 ? '' : 's'} en{' '}
+            {seatCodes.join(', ')}.
+          </p>
+          <p className="mt-2 text-xs text-brand-muted">
+            Aprobado el {formatDateTimeShort(verifiedAt)}
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={handleNewPurchase}
+              className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-5 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+            >
+              Nueva compra
+            </button>
+            <Link
+              href="/viajes"
+              className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-[#f1f5f9] px-5 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
+            >
+              Volver al catálogo
+            </Link>
+          </div>
+        </div>
+      ) : attemptCreated ? (
         // MKT-007.1: mensaje simple por estado, SIN countdown de revisión.
         // `checkoutStatus` es el estado crudo de `getAttempt` (ver su
         // declaración); el fallback lo decide `reviewMessage`.
@@ -1123,6 +1288,123 @@ function NewReservationContent() {
 
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex flex-col gap-6">
+          {!attemptId ? (
+            <section
+              id="agency-selector"
+              aria-label="Agencia"
+              className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+            >
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
+                  Elige la agencia
+                </h2>
+                {trip.offers.length > 1 ? (
+                  <span className="rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted">
+                    {trip.offers.length} agencias disponibles
+                  </span>
+                ) : null}
+              </div>
+
+              {trip.offers.length === 0 ? (
+                // Viaje CARGADO sin agencias activas: estado informativo con CTA,
+                // sin botón de compra. Un error de carga no llega aquí: cae en la
+                // pantalla de fase `error`, distinta de este estado vacío.
+                <div className="mt-5 rounded-[10px] bg-[#f1f5f9] px-4 py-5 text-center">
+                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white">
+                    <Building2
+                      size={20}
+                      strokeWidth={1.75}
+                      className="text-brand-muted"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-brand-navy">
+                    Este viaje no tiene agencias disponibles para reservar
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Ninguna agencia está activa en este viaje ahora mismo, así
+                    que no puedes iniciar una compra.
+                  </p>
+                  <Link
+                    href="/viajes"
+                    className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#f1f5f9] px-5 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
+                  >
+                    <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
+                    Ver otros viajes
+                  </Link>
+                </div>
+              ) : trip.offers.length === 1 &&
+                lock.agency_id === trip.offers[0].agency_id ? (
+                // Oferta única ya fijada por startFresh (flujo directo sin pasos
+                // extra): la agencia solo se IDENTIFICA, nunca se elige en
+                // silencio por el cliente.
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-[#ecfdf5] px-4 py-3">
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold text-[#059669]">
+                    <Building2 size={16} strokeWidth={1.75} aria-hidden="true" />
+                    {trip.offers[0].name}
+                  </span>
+                  <span className="rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-[#059669]">
+                    Única agencia disponible
+                  </span>
+                </div>
+              ) : (
+                // 2-3 ofertas activas (o una oferta única que aún no coincide
+                // con la selección): elección EXPLÍCITA. Ningún radio se marca
+                // si la agencia persistida no pertenece a las ofertas vigentes;
+                // nunca se cambia a otra automáticamente.
+                <fieldset className="mt-5">
+                  <legend className="sr-only">
+                    Selecciona la agencia con la que quieres viajar
+                  </legend>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {trip.offers.map((offer) => {
+                      const selected = lock.agency_id === offer.agency_id;
+                      return (
+                        <label
+                          key={offer.agency_id}
+                          className={`flex cursor-pointer items-start gap-3 rounded-[10px] border bg-white px-4 py-3 transition-shadow duration-200 ${
+                            selected
+                              ? 'border-brand-cyan shadow-[0_0_0_3px_rgba(0,212,255,0.15)]'
+                              : 'border-[#e5e7eb] hover:shadow-[0_6px_24px_rgba(0,212,255,0.12)]'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="checkout-agency"
+                            value={offer.agency_id}
+                            checked={selected}
+                            onChange={() => handleSelectAgency(offer.agency_id)}
+                            className="mt-1 h-4 w-4 shrink-0 accent-brand-cyan"
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-semibold text-brand-navy">
+                              {offer.name}
+                            </span>
+                            {selected ? (
+                              <span className="mt-1 inline-block rounded-full bg-[#ecfdf5] px-2.5 py-0.5 text-[11px] font-semibold text-[#059669]">
+                                Seleccionada
+                              </span>
+                            ) : (
+                              <span className="mt-1 block text-xs text-brand-muted">
+                                Elegir esta agencia
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {lock.agency_id === null || agencyStale ? (
+                    <p className="mt-3 text-xs text-brand-muted">
+                      Selecciona una agencia para continuar: no podemos elegir
+                      una por ti.
+                    </p>
+                  ) : null}
+                </fieldset>
+              )}
+            </section>
+          ) : null}
+
           <section
             id="seat-map"
             aria-label="Asientos"
@@ -1372,10 +1654,74 @@ function NewReservationContent() {
                 </div>
               </div>
             ) : !lock.agency_id ? (
-              <p className="mt-5 text-sm text-brand-muted">
-                Este viaje no tiene una oferta de agencia disponible. Elige otro
-                viaje para continuar.
-              </p>
+              trip && trip.offers.length > 1 ? (
+                // Varias ofertas sin elección aún: NUNCA se fija una en
+                // silencio y NUNCA se deriva a /viajes/[id]. El selector vive
+                // en esta misma pantalla (sección "Elige la agencia").
+                <div className="mt-5">
+                  <p className="text-sm text-brand-muted">
+                    Este viaje opera con varias agencias y no podemos elegir una
+                    por ti. Elige con quién quieres viajar en la sección «Elige
+                    la agencia» de esta página para continuar.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      document
+                        .getElementById('agency-selector')
+                        ?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+                    }
+                    className="mt-3 inline-flex items-center rounded-[10px] bg-brand-cyan px-5 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                  >
+                    Elegir agencia
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-5 text-sm text-brand-muted">
+                  Este viaje no tiene una oferta de agencia disponible. Elige otro
+                  viaje para continuar.
+                </p>
+              )
+            ) : trip && !attemptId && (agencyStale || agencyMismatch) ? (
+              // Fase 2 (Bug 3): recuperación de agencia. `agencyStale` cubre
+              // datos vigentes sin POST (restauración/entrada); `agencyMismatch`
+              // cubre el 404 CHECKOUT_AGENCY_NOT_ASSIGNED del backend. El
+              // wrapper `lock.attempt_id` de arriba ya excluye intentos
+              // existentes/terminales (`!attemptId` lo deja explícito). NO se
+              // toca LockState: asientos, pasajeros y agencia persistida se
+              // conservan hasta que el usuario confirme con un refetch
+              // exitoso o elige otra agencia en el selector de ESTA pantalla
+              // (nunca se deriva a /viajes/[id]).
+              <div className="mt-5" role="alert">
+                <div className="rounded-[10px] bg-[#fffbeb] px-4 py-3">
+                  <p className="text-sm font-semibold text-[#92400e]">
+                    La agencia que elegiste ya no ofrece este viaje.
+                  </p>
+                  <p className="mt-1 text-xs text-brand-muted">
+                    Tus asientos y tus pasajeros siguen guardados. Actualiza
+                    las ofertas, o elige una agencia disponible en la sección
+                    «Elige la agencia» de esta página.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshOffers()}
+                  disabled={refreshingOffers}
+                  className="mt-4 inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {refreshingOffers ? (
+                    <LoaderCircle
+                      size={16}
+                      strokeWidth={1.75}
+                      className="animate-spin"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <RefreshCw size={16} strokeWidth={1.75} aria-hidden="true" />
+                  )}
+                  {refreshingOffers ? 'Actualizando…' : 'Actualizar ofertas'}
+                </button>
+              </div>
             ) : createError ? (
               <div className="mt-5">
                 <p
@@ -1407,95 +1753,117 @@ function NewReservationContent() {
               <p className="mt-5 text-sm text-brand-muted">
                 Selecciona al menos un asiento para continuar con el pago.
               </p>
-            ) : agencyWithoutChannels ? (
-              // MKT-007.4: la agencia no tiene métodos de pago activos. No
-              // se ofrece el CTA ni se crea el intento. Si la agencia
-              // publicó un teléfono, se guía al cliente hacia él (enlace
-              // de WhatsApp solo cuando el número es válido); si no, se
-              // informa que no hay ningún medio de contacto disponible.
-              <div className="mt-5 rounded-[10px] bg-[#fffbeb] px-4 py-4">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle
-                    size={18}
-                    strokeWidth={1.75}
-                    className="mt-0.5 shrink-0 text-[#92400e]"
-                    aria-hidden="true"
-                  />
-                  <div>
-                    <p className="text-sm font-semibold text-[#92400e]">
-                      Esta agencia aún no tiene un método de pago configurado
-                    </p>
-                    {selectedOffer?.phone ? (
-                      <>
-                        <p className="mt-1 text-xs text-brand-muted">
-                          Puedes contactar a la agencia para recibir ayuda con
-                          tu pago. Enviar el comprobante únicamente por
-                          WhatsApp no confirma tu reserva.
-                        </p>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          {offerWhatsApp ? (
-                            <a
-                              href={offerWhatsApp}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-2 rounded-[10px] bg-[#10b981] px-4 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-[#059669]"
-                            >
-                              <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
-                              Contactar por WhatsApp
-                            </a>
-                          ) : (
-                            <p className="text-xs text-brand-muted">
-                              No pudimos abrir WhatsApp con este número. Cópialo
-                              y contáctalos manualmente.
-                            </p>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void copyToClipboard(selectedOffer.phone!).then((ok) => {
-                                if (ok) toast.success('Copiado al portapapeles');
-                                else toast.error('No se pudo copiar el teléfono');
-                              });
-                            }}
-                            className="inline-flex items-center gap-2 rounded-[10px] bg-white border border-[#e5e7eb] px-4 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#f1f5f9]"
-                          >
-                            Copiar teléfono: {selectedOffer.phone}
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="mt-1 text-xs text-brand-muted">
-                        Tampoco ha publicado un medio de contacto disponible en
-                        este momento. No puedes iniciar la compra hasta que la
-                        agencia configure un método de pago.
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
             ) : (
-              <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-brand-muted">
-                  Revisa los datos de los pasajeros y continúa para enviar tu
-                  comprobante de pago.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void handleCreate()}
-                  disabled={busy || creating}
-                  className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {creating ? (
-                    <LoaderCircle
-                      size={16}
-                      strokeWidth={1.75}
-                      className="animate-spin"
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                  {creating ? 'Iniciando tu compra…' : 'Continuar al pago'}
-                </button>
-              </div>
+              <>
+                {agencyWithoutChannels ? (
+                  // MKT-007.4 + MKT-008: la agencia no tiene métodos de pago
+                  // activos. Se muestran el aviso y los contactos públicos
+                  // (o el teléfono legado), pero el checkout CONTINÚA: el
+                  // pago se coordina directamente con la agencia y el
+                  // comprobante se sube igual por Marketplace, quedando
+                  // pendiente de revisión. Sin CTA la compra moría aquí.
+                  <div className="mt-5 rounded-[10px] bg-[#fffbeb] px-4 py-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle
+                        size={18}
+                        strokeWidth={1.75}
+                        className="mt-0.5 shrink-0 text-[#92400e]"
+                        aria-hidden="true"
+                      />
+                      <div>
+                        <p className="text-sm font-semibold text-[#92400e]">
+                          Esta agencia aún no tiene un método de pago configurado
+                        </p>
+                        {offerContacts.length > 0 ? (
+                          <>
+                            <p className="mt-1 text-xs text-brand-muted">
+                              Puedes contactar a la agencia para recibir ayuda
+                              con tu pago. Enviar el comprobante únicamente por
+                              WhatsApp no confirma tu reserva. Coordina el pago
+                              con ellos y súbelo aquí: quedará pendiente de
+                              revisión.
+                            </p>
+                            <AgencyContactLinks
+                              contacts={offerContacts}
+                              className="mt-3"
+                            />
+                          </>
+                        ) : selectedOffer?.phone ? (
+                          <>
+                            <p className="mt-1 text-xs text-brand-muted">
+                              Puedes contactar a la agencia para recibir ayuda
+                              con tu pago. Enviar el comprobante únicamente por
+                              WhatsApp no confirma tu reserva. Coordina el pago
+                              con ellos y súbelo aquí: quedará pendiente de
+                              revisión.
+                            </p>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              {offerWhatsApp ? (
+                                <a
+                                  href={offerWhatsApp}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-2 rounded-[10px] bg-[#10b981] px-4 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-[#059669]"
+                                >
+                                  <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
+                                  Contactar por WhatsApp
+                                </a>
+                              ) : (
+                                <p className="text-xs text-brand-muted">
+                                  No pudimos abrir WhatsApp con este número. Cópialo
+                                  y contáctalos manualmente.
+                                </p>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void copyToClipboard(selectedOffer.phone!).then((ok) => {
+                                    if (ok) toast.success('Copiado al portapapeles');
+                                    else toast.error('No se pudo copiar el teléfono');
+                                  });
+                                }}
+                                className="inline-flex items-center gap-2 rounded-[10px] bg-white border border-[#e5e7eb] px-4 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#f1f5f9]"
+                              >
+                                Copiar teléfono: {selectedOffer.phone}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="mt-1 text-xs text-brand-muted">
+                            Tampoco ha publicado un medio de contacto disponible
+                            en este momento. Coordina el pago directamente con
+                            la agencia cuando puedas y sube tu comprobante aquí:
+                            quedará pendiente de revisión.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-brand-muted">
+                    {agencyWithoutChannels
+                      ? 'Coordina el pago con la agencia y continúa para subir tu comprobante de pago.'
+                      : 'Revisa los datos de los pasajeros y continúa para enviar tu comprobante de pago.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void handleCreate()}
+                    disabled={busy || creating}
+                    className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {creating ? (
+                      <LoaderCircle
+                        size={16}
+                        strokeWidth={1.75}
+                        className="animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    {creating ? 'Iniciando tu compra…' : 'Continuar al pago'}
+                  </button>
+                </div>
+              </>
             )}
           </section>
 
@@ -1590,29 +1958,19 @@ function NewReservationContent() {
                 </span>
               </div>
 
-              {/* MKT-007.4: canal de pago elegido ANTES del comprobante. */}
+              {/* MKT-007.4: canal de pago elegido ANTES del comprobante.
+                  MKT-008: sin canales activos notifica coordinatedPayment y
+                  el uploader se habilita sin selección. */}
               <PaymentMethodSection
                 attemptId={attemptId}
                 onSelectionChange={setSelectedMethodId}
+                onNoMethodsChange={setCoordinatedPayment}
               />
 
               {verifiedAt ? (
-                // Confirmación visual explícita del servidor: es el único caso
-                // en el que se habla de pago aprobado (MKT-007 §7).
-                <div className="mt-5 rounded-[10px] bg-[#ecfdf5] px-4 py-4">
-                  <p className="text-sm font-semibold text-[#059669]">
-                    Tu pago fue aprobado.
-                  </p>
-                  <p className="mt-1 text-xs text-brand-muted">
-                    La agencia confirmó la transferencia y tu reserva ya está
-                    confirmada con tus {passengers.length} pasajero
-                    {passengers.length === 1 ? '' : 's'} en{' '}
-                    {seatCodes.join(', ')}.
-                  </p>
-                  <p className="mt-2 text-xs text-brand-muted">
-                    Aprobado el {formatDateTimeShort(verifiedAt)}
-                  </p>
-                </div>
+                // MKT-007 §7: el cierre aprobado no se repite aquí; el
+                // bloque «Tu pago fue aprobado» vive en la cabecera.
+                null
               ) : awaitingReview ? (
                 // Vista de solo lectura: mientras la agencia no decida no se
                 // admite otro comprobante y jamás se pinta como pagada.
@@ -1631,6 +1989,17 @@ function NewReservationContent() {
                     </p>
                   ) : null}
                 </div>
+              ) : checkoutFinal ? (
+                // M-1: rejected_final es terminal (fuente: estado crudo de
+                // getAttempt). Este bloque va ANTES de la rama de rechazo y
+                // de la rama de creación: prevalece sobre
+                // remaining_submissions (la ventana puede vencer con
+                // proof_count < 3), selectedMethodId y coordinatedPayment.
+                // El backend sigue siendo la autoridad en el submit.
+                <p className="mt-5 text-sm text-brand-muted">
+                  Se agotaron los reenvíos de comprobante para esta compra.
+                  Cancela la compra para elegir otros asientos.
+                </p>
               ) : checkoutRejected ? (
                 <div className="mt-5">
                   <div className="rounded-[10px] bg-[#fef2f2] px-4 py-4">
@@ -1641,7 +2010,7 @@ function NewReservationContent() {
                         reenvíos (reglas de copy del ticket). */}
                   </div>
                   {(checkoutMarker?.remaining_submissions ?? 0) > 0 ? (
-                    selectedMethodId ? (
+                    selectedMethodId || coordinatedPayment ? (
                       <ProofUploader
                         attemptId={attemptId}
                         remainingSubmissions={
@@ -1665,7 +2034,7 @@ function NewReservationContent() {
                     </p>
                   )}
                 </div>
-              ) : selectedMethodId ? (
+              ) : selectedMethodId || coordinatedPayment ? (
                 <ProofUploader
                   attemptId={attemptId}
                   remainingSubmissions={

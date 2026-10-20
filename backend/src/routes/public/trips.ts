@@ -8,6 +8,16 @@ const router = Router();
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// MKT-008: contacto público de agencia (tabla 091 agency_contacts). Solo
+// se publican contactos con is_public=true, is_active=true y
+// deleted_at IS NULL; el teléfono es E.164 por CHECK de la migración.
+interface PublicAgencyContactDto {
+  id: string;
+  label: string;
+  phone: string;
+  channel: 'call' | 'whatsapp';
+}
+
 /**
  * GET /api/public/trips
  * Catálogo público de viajes activos y aún no departidos (solo lectura,
@@ -19,7 +29,9 @@ router.get('/', async (_req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('trips')
-      .select('id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination)')
+      .select(
+        'id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination), trip_agencies(agency_id, agencies(id, name, status))',
+      )
       .eq('status', 'active')
       .gte('departure_time', new Date().toISOString())
       .order('departure_time', { ascending: true })
@@ -29,16 +41,27 @@ router.get('/', async (_req, res, next) => {
       throw new AppError(error.message, 500, 'TRIPS_QUERY_ERROR');
     }
 
-    const trips = (data ?? []).map((row: any) => ({
-      id: row.id,
-      departure_time: row.departure_time,
-      capacity: row.capacity,
-      vehicle_type: row.vehicle_type,
-      status: row.status,
-      seat_price: row.seat_price ?? null,
-      route: row.routes ?? { origin: '', destination: '' },
-      lock_ttl_seconds: env.LOCK_TTL_SECONDS,
-    }));
+    const trips = (data ?? []).map((row: any) => {
+      // Embed izquierdo (sin !inner): un viaje sin agencias se lista con la
+      // colección vacía, nunca se cae del catálogo. Un solo query, sin N+1.
+      const agencies = ((row.trip_agencies ?? []) as Array<any>)
+        .map((link) => link.agencies)
+        .filter((agency: any) => agency?.status === 'active')
+        .map((agency: any) => ({ id: agency.id, name: agency.name ?? '' }))
+        // Orden estable y determinista (sin depender de locale del runtime).
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return {
+        id: row.id,
+        departure_time: row.departure_time,
+        capacity: row.capacity,
+        vehicle_type: row.vehicle_type,
+        status: row.status,
+        seat_price: row.seat_price ?? null,
+        route: row.routes ?? { origin: '', destination: '' },
+        lock_ttl_seconds: env.LOCK_TTL_SECONDS,
+        agencies,
+      };
+    });
 
     res.json({ trips });
   } catch (error) {
@@ -82,7 +105,13 @@ router.get('/:id', async (req, res, next) => {
           'agency_id, agencies!inner(id, name, status, phone, agency_settings(logo_url, primary_color, secondary_color, accent_color))',
         )
         .eq('trip_id', id)
-        .eq('agencies.status', 'active'),
+        .eq('agencies.status', 'active')
+        // Orden determinista: sin ORDER BY el orden de `offers[]` lo decide
+        // el planificador de la base de datos y cambia tras cada
+        // DELETE+INSERT de `update_trip` (084). `agency_id` es único por
+        // viaje (UNIQUE(trip_id, agency_id) de 011), así que sirve de criterio
+        // estable de desempate y de orden total a la vez.
+        .order('agency_id', { ascending: true }),
       supabaseAdmin.from('seats').select('id, seat_code, status').eq('trip_id', id),
     ]);
 
@@ -98,22 +127,60 @@ router.get('/:id', async (req, res, next) => {
     // acepta un filtro del cliente.
     const offerAgencyIds = (offersResult.data ?? []).map((row: any) => row.agency_id);
     let agenciesWithMethods = new Set<string>();
+    const contactsByAgency = new Map<string, PublicAgencyContactDto[]>();
     if (offerAgencyIds.length > 0) {
-      const { data: methods, error: methodsError } = await supabaseAdmin
-        .from('agency_payment_methods')
-        .select('agency_id')
-        // Solo metodos soportados por el checkout (hoy: pago_movil).
-        .eq('method', 'pago_movil')
-        .eq('is_active', true)
-        .is('deleted_at', null)
-        .in('agency_id', offerAgencyIds);
+      const [methodsResult, contactsResult] = await Promise.all([
+        supabaseAdmin
+          .from('agency_payment_methods')
+          .select('agency_id')
+          // Solo metodos soportados por el checkout (hoy: pago_movil).
+          .eq('method', 'pago_movil')
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .in('agency_id', offerAgencyIds),
+        // MKT-008: contactos públicos de las agencias del viaje. Los tres
+        // filtros (is_public, is_active, deleted_at) definen lo publicable;
+        // el orden lo decide la agencia (sort_order y luego created_at).
+        // El filtro va SIEMPRE por los agency_id de las ofertas: el
+        // cliente nunca determina qué agencia se consulta.
+        supabaseAdmin
+          .from('agency_contacts')
+          .select('id, agency_id, label, phone, channel')
+          .in('agency_id', offerAgencyIds)
+          .eq('is_public', true)
+          .eq('is_active', true)
+          .is('deleted_at', null)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true }),
+      ]);
 
-      if (methodsError) {
-        throw new AppError(methodsError.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+      if (methodsResult.error) {
+        throw new AppError(methodsResult.error.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+      }
+      // Un fallo real de base de datos NO se silencia como "sin contactos".
+      if (contactsResult.error) {
+        throw new AppError(contactsResult.error.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
       }
       agenciesWithMethods = new Set(
-        (methods ?? []).map((row: any) => String(row.agency_id)),
+        (methodsResult.data ?? []).map((row: any) => String(row.agency_id)),
       );
+      for (const row of (contactsResult.data ?? []) as Array<{
+        id: unknown;
+        agency_id: unknown;
+        label: unknown;
+        phone: unknown;
+        channel: unknown;
+      }>) {
+        const agencyKey = String(row.agency_id);
+        const list = contactsByAgency.get(agencyKey) ?? [];
+        list.push({
+          id: String(row.id),
+          label: String(row.label),
+          phone: String(row.phone),
+          channel: row.channel === 'call' ? 'call' : 'whatsapp',
+        });
+        contactsByAgency.set(agencyKey, list);
+      }
     }
 
     const offers = (offersResult.data ?? []).map((row: any) => {
@@ -130,6 +197,8 @@ router.get('/:id', async (req, res, next) => {
         // y si la agencia ya tiene canales de pago configurados.
         phone: agency.phone ?? null,
         payment_methods_available: agenciesWithMethods.has(String(row.agency_id)),
+        // MKT-008: contactos públicos de ESTA agencia (vacío si no hay).
+        contacts: contactsByAgency.get(String(row.agency_id)) ?? [],
       };
     });
 

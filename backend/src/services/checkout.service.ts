@@ -518,6 +518,14 @@ function mapRpcError(error: { message: string }): AppError {
         400,
         'CHECKOUT_PAYMENT_METHOD_INVALID',
       );
+    case 'ERR_CHECKOUT_PAYMENT_METHOD_REQUIRED':
+      // Mismo mensaje y código que el guard de verifyAttemptReady: si la
+      // agencia tiene canales activos, elegir uno antes del comprobante.
+      return checkoutError(
+        'Selecciona un método de pago antes de enviar el comprobante',
+        409,
+        'PAYMENT_METHOD_REQUIRED',
+      );
     default:
       return checkoutError(
         'No se pudo procesar la compra. Intenta de nuevo',
@@ -537,38 +545,6 @@ interface RpcJson {
 }
 
 // ── 1) Crear el intento ──────────────────────────────────────────────────────
-
-/**
- * MKT-007.4: la agencia debe tener al menos un canal de pago activo y
- * soportado (hoy solo `pago_movil`) para poder iniciar un checkout. El
- * filtro de method garantiza que un metodo futuro, aun existente en la
- * tabla, no habilite un checkout que el frontend no sabe mostrar.
- */
-async function assertAgencyHasActivePaymentMethods(agencyId: string): Promise<void> {
-  const { count, error } = await supabaseAdmin
-    .from('agency_payment_methods')
-    .select('id', { count: 'exact', head: true })
-    .eq('agency_id', agencyId)
-    .eq('method', 'pago_movil')
-    .eq('is_active', true)
-    .is('deleted_at', null);
-
-  if (error) {
-    throw checkoutError(
-      'No se pudo verificar la agencia. Intenta de nuevo',
-      500,
-      'CHECKOUT_ERROR',
-    );
-  }
-
-  if (!count || count === 0) {
-    throw checkoutError(
-      'Esta agencia aún no tiene un método de pago configurado. Contacta a la agencia para continuar',
-      409,
-      'AGENCY_NO_ACTIVE_PAYMENT_METHODS',
-    );
-  }
-}
 
 export interface CreateCheckoutAttemptResult {
   attempt_id: string;
@@ -593,9 +569,10 @@ export interface CreateCheckoutAttemptResult {
  * El payload se normaliza aquí (orden de pasajeros = orden de seat_ids)
  * y el RPC vuelve a validarlo contra el snapshot.
  *
- * MKT-007.4: antes de crear el intento se exige que la agencia tenga al
- * menos UN canal de pago activo; sin canales no hay a donde enviar el
- * dinero y el checkout se rechaza con 409 AGENCY_NO_ACTIVE_PAYMENT_METHODS.
+ * MKT-008: la ausencia de canales de pago activos NO bloquea la creación
+ * del intento. El pago coordinado directamente con la agencia se resuelve
+ * en la carga del comprobante (ver verifyAttemptReady); aquí no se
+ * consulta agency_payment_methods.
  */
 export async function createCheckoutAttempt(
   input: CreateCheckoutAttemptInput,
@@ -606,8 +583,6 @@ export async function createCheckoutAttempt(
     seat_ids: input.seat_ids,
     passengers: input.passengers,
   });
-
-  await assertAgencyHasActivePaymentMethods(data.agency_id);
 
   const { data: result, error } = (await callRpc('create_checkout_attempt', {
     p_trip_id: data.trip_id,
@@ -637,14 +612,26 @@ export async function createCheckoutAttempt(
  * autenticado y esté en un estado que permita envíos. No filtra intentos
  * ajenos: todas las fallas responden el mismo 404. Nunca hace UPDATE.
  *
- * MKT-007.4: también exige que el intento ya tenga canal de pago
- * elegido (payment_method_id); sin canal no hay datos de conciliación
- * hacia donde guiar al cliente.
+ * MKT-007.4 + MKT-008: si el intento no tiene canal elegido
+ * (payment_method_id), la subida solo procede en dos escenarios:
+ *   1) Primer envío (proof_count = 0) y la agencia no tiene ningún
+ *      canal activo → pago coordinado (la RPC 092 estampa
+ *      agency_direct). Si la agencia sí tiene canales → 409
+ *      PAYMENT_METHOD_REQUIRED (elegir canal antes del comprobante).
+ *   2) Reenvío (proof_count >= 1) congelado en agency_direct: el modo
+ *      se confirma por el SNAPSHOT del intento, nunca por el mero
+ *      hecho de que payment_method_id sea NULL. Un snapshot de canal
+ *      real con id NULL (borrado físico del canal) NO se convierte en
+ *      coordinado → 409.
+ * La consulta de canales ocurre solo en el escenario 1: el flujo con
+ * canal elegido y el reenvío congelado no la necesitan.
  */
 async function verifyAttemptReady(attemptId: string, customerId: string): Promise<void> {
   const { data, error } = await supabaseAdmin
     .from('checkout_attempts')
-    .select('id, customer_id, status, proof_count, expires_at, payment_method_id')
+    .select(
+      'id, customer_id, agency_id, status, proof_count, expires_at, payment_method_id, payment_method_snapshot',
+    )
     .eq('id', attemptId)
     .maybeSingle();
 
@@ -659,10 +646,12 @@ async function verifyAttemptReady(attemptId: string, customerId: string): Promis
   const attempt = data as {
     id: string;
     customer_id: string;
+    agency_id: string;
     status: string;
     proof_count: number;
     expires_at: string;
     payment_method_id: string | null;
+    payment_method_snapshot: { method?: string } | null;
   } | null;
 
   if (!attempt || attempt.customer_id !== customerId) {
@@ -690,11 +679,63 @@ async function verifyAttemptReady(attemptId: string, customerId: string): Promis
     );
   }
   if (!attempt.payment_method_id) {
-    throw checkoutError(
-      'Selecciona un método de pago antes de enviar el comprobante',
-      409,
-      'PAYMENT_METHOD_REQUIRED',
-    );
+    // El modo congelado se confirma por el snapshot, nunca se infiere
+    // del NULL del id: la misma regla vive en el CHECK/RPC 092.
+    const snapshotMethod = attempt.payment_method_snapshot?.method ?? null;
+
+    if (attempt.proof_count > 0) {
+      // Reenvío: tras el primer comprobante la selección ya no puede
+      // cambiar (select_checkout_payment_method está FROZEN). Solo el
+      // modo agency_direct congelado permite reenviar sin canal aunque
+      // la agencia hoy tenga canales activos.
+      if (snapshotMethod !== 'agency_direct') {
+        throw checkoutError(
+          'Selecciona un método de pago antes de enviar el comprobante',
+          409,
+          'PAYMENT_METHOD_REQUIRED',
+        );
+      }
+      return;
+    }
+
+    // Primer envío: un snapshot huérfano de un canal real (id NULL por
+    // borrado físico con ON DELETE SET NULL) no se convierte en
+    // agency_direct (espejo del guard B1 de la RPC 092: sin esto la
+    // base de datos rechazaría la fila con 23514).
+    if (snapshotMethod !== null && snapshotMethod !== 'agency_direct') {
+      throw checkoutError(
+        'Selecciona un método de pago antes de enviar el comprobante',
+        409,
+        'PAYMENT_METHOD_REQUIRED',
+      );
+    }
+
+    // MKT-008: sin canal elegido, la subida solo procede si la agencia
+    // no tiene ningún canal activo (pago coordinado). Si tiene canales,
+    // el cliente debe elegir uno (MKT-007.4). La misma regla vive en el
+    // CHECK/RPC 092 a nivel de base de datos.
+    const { count, error: channelsError } = await supabaseAdmin
+      .from('agency_payment_methods')
+      .select('id', { count: 'exact', head: true })
+      .eq('agency_id', attempt.agency_id)
+      .eq('method', 'pago_movil')
+      .eq('is_active', true)
+      .is('deleted_at', null);
+
+    if (channelsError) {
+      throw checkoutError(
+        'No se pudo verificar la compra. Intenta de nuevo',
+        500,
+        'CHECKOUT_ERROR',
+      );
+    }
+    if (count && count > 0) {
+      throw checkoutError(
+        'Selecciona un método de pago antes de enviar el comprobante',
+        409,
+        'PAYMENT_METHOD_REQUIRED',
+      );
+    }
   }
 }
 
@@ -1069,6 +1110,14 @@ export interface CheckoutPaymentMethodDto {
   sort_order: number;
 }
 
+// MKT-008: contacto público de agencia (tabla 091 agency_contacts).
+export interface AgencyPublicContactDto {
+  id: string;
+  label: string;
+  phone: string;
+  channel: 'call' | 'whatsapp';
+}
+
 export interface CheckoutPaymentMethodsView {
   attempt_id: string;
   status: string;
@@ -1076,6 +1125,8 @@ export interface CheckoutPaymentMethodsView {
   selected_method_id: string | null;
   methods: CheckoutPaymentMethodDto[];
   agency_phone: string | null;
+  /** MKT-008: contactos públicos de la agencia (E.164). Vacío si no hay. */
+  contacts: AgencyPublicContactDto[];
 }
 
 export interface SelectCheckoutPaymentMethodResult {
@@ -1124,29 +1175,54 @@ export async function getCheckoutPaymentMethods(input: {
     throw checkoutError('Compra no encontrada', 404, 'CHECKOUT_ATTEMPT_NOT_FOUND');
   }
 
-  const [{ data: methods, error: methodsError }, { data: agency, error: agencyError }] =
-    await Promise.all([
-      supabaseAdmin
-        .from('agency_payment_methods')
-        .select('id, method, label, data, is_primary, sort_order')
-        .eq('agency_id', row.agency_id)
-        // Solo metodos que el frontend sabe mostrar (hoy: pago_movil).
-        .eq('method', 'pago_movil')
-        .eq('is_active', true)
-        .is('deleted_at', null)
-        .order('is_primary', { ascending: false })
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true }),
-      supabaseAdmin
-        .from('agencies')
-        .select('phone')
-        .eq('id', row.agency_id)
-        .maybeSingle(),
-    ]);
+  const [
+    { data: methods, error: methodsError },
+    { data: agency, error: agencyError },
+    { data: contacts, error: contactsError },
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('agency_payment_methods')
+      .select('id, method, label, data, is_primary, sort_order')
+      .eq('agency_id', row.agency_id)
+      // Solo metodos que el frontend sabe mostrar (hoy: pago_movil).
+      .eq('method', 'pago_movil')
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .order('is_primary', { ascending: false })
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true }),
+    supabaseAdmin
+      .from('agencies')
+      .select('phone')
+      .eq('id', row.agency_id)
+      .maybeSingle(),
+    // MKT-008: contactos públicos de la agencia del intento. Los tres
+    // filtros definen lo publicable; el orden lo decide la agencia. El
+    // agency_id sale SIEMPRE del intento (id + customer_id), nunca del
+    // cliente.
+    supabaseAdmin
+      .from('agency_contacts')
+      .select('id, agency_id, label, phone, channel')
+      .eq('agency_id', row.agency_id)
+      .eq('is_public', true)
+      .eq('is_active', true)
+      .is('deleted_at', null)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true }),
+  ]);
 
   if (methodsError) {
     throw checkoutError(
       'No se pudieron cargar los métodos de pago. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  // Un fallo real de base de datos NO se silencia como "sin contactos".
+  if (contactsError) {
+    throw checkoutError(
+      'No se pudo cargar la información de la agencia. Intenta de nuevo',
       500,
       'CHECKOUT_ERROR',
     );
@@ -1168,6 +1244,17 @@ export async function getCheckoutPaymentMethods(input: {
     agency_phone: agencyError
       ? null
       : (((agency as { phone?: string | null } | null)?.phone as string | null) ?? null),
+    contacts: ((contacts ?? []) as Array<{
+      id: unknown;
+      label: unknown;
+      phone: unknown;
+      channel: unknown;
+    }>).map((c) => ({
+      id: String(c.id),
+      label: String(c.label),
+      phone: String(c.phone),
+      channel: c.channel === 'call' ? 'call' : 'whatsapp',
+    })),
   };
 }
 

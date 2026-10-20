@@ -5,6 +5,7 @@ import {
   checkoutApi,
   publicApi,
   seatApi,
+  type AgencyPublicContact,
   type CreateCheckoutAttemptResult,
   type CheckoutAttemptView,
   type MySeatLocksResult,
@@ -171,6 +172,20 @@ function buildTrip(overrides: Partial<PublicTripDetail> = {}): PublicTripDetail 
   };
 }
 
+/** Oferta de agencia para `buildTrip({ offers: [...] })` (PublicTripOffer). */
+function makeOffer(agencyId: string, name: string) {
+  return {
+    agency_id: agencyId,
+    name,
+    logo_url: null,
+    primary_color: null,
+    secondary_color: null,
+    accent_color: null,
+    phone: null,
+    payment_methods_available: true,
+  };
+}
+
 function seedLock(overrides: Record<string, unknown> = {}) {
   const expires = futureExpiry();
   sessionStorage.setItem(
@@ -333,6 +348,7 @@ function paymentMethodsView(
     selected_method_id: string | null;
     methods: ReturnType<typeof pagoMovilMethod>[];
     agency_phone: string | null;
+    contacts: AgencyPublicContact[];
     amount_cents: number;
   }> = {},
 ) {
@@ -350,6 +366,7 @@ function paymentMethodsView(
     selected_method_id,
     methods,
     agency_phone,
+    contacts: overrides.contacts ?? [],
   };
 }
 
@@ -654,7 +671,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     ).toBeInTheDocument();
   });
 
-  it('libera la selección completa al pulsar Cambiar asientos y se queda en el checkout', async () => {
+  it('libera la selección completa al pulsar Liberar asientos y se queda en el checkout', async () => {
     seedLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
     mockedLocks.mockResolvedValue(serverLocks());
@@ -663,7 +680,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     await renderWizard();
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Cambiar asientos' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Liberar asientos' }));
     });
 
     expect(mockedUnlock).toHaveBeenCalledWith('trip-1');
@@ -1298,7 +1315,7 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     expect(
       view.container.querySelector('#passenger-0-first-name'),
     ).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Cambiar asientos' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Liberar asientos' })).toBeDisabled();
 
     expect(mockedCreate).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
@@ -1398,6 +1415,398 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
     expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+
+  it('CHECKOUT_AGENCY_NOT_ASSIGNED abre recuperación sin Reintentar y el refetch no re-POSTea', async () => {
+    // Fase 2 (Bug 3): antes caía al createError genérico y el botón
+    // "Reintentar" reenviaría el mismo agency_id → bucle de 404.
+    mockedCreate.mockRejectedValueOnce(
+      new ApiError(
+        'Esta agencia no ofrece el viaje seleccionado',
+        'CHECKOUT_AGENCY_NOT_ASSIGNED',
+        404,
+      ),
+    );
+    seedLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+    await createAttemptViaUi(view);
+
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'La agencia que elegiste ya no ofrece este viaje.',
+    );
+    expect(
+      screen.queryByRole('button', { name: /Reintentar/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /Actualizar ofertas/ }),
+      );
+    });
+
+    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+      'Ofertas actualizadas.',
+    );
+    // La reconciliación NO vuelve a crear el intento: solo un fetch
+    // exitoso libera la rama y el CTA de pago regresa.
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole('button', { name: 'Continuar al pago' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('si actualizar ofertas falla por red, la agencia persistida se conserva y la rama permanece', async () => {
+    let tripDetailCalls = 0;
+    mockedTripDetail.mockImplementation(async () => {
+      tripDetailCalls += 1;
+      if (tripDetailCalls >= 2) {
+        // Falla SOLO el refetch del botón; la carga inicial (verify) es OK.
+        throw new ApiError('network down', 'ERR_NETWORK', 500);
+      }
+      return { trip: buildTrip() };
+    });
+    mockedCreate.mockRejectedValueOnce(
+      new ApiError(
+        'Esta agencia no ofrece el viaje seleccionado',
+        'CHECKOUT_AGENCY_NOT_ASSIGNED',
+        404,
+      ),
+    );
+    seedLock({
+      passengers: [
+        {
+          seat_id: 'seat-1',
+          first_name: 'María',
+          last_name: 'González',
+          document: '12345678',
+          phone: '04241234567',
+        },
+        {
+          seat_id: 'seat-2',
+          first_name: 'José',
+          last_name: 'Pérez',
+          document: '87654321',
+          phone: '04121234567',
+        },
+      ],
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+    await createAttemptViaUi(view);
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'La agencia que elegiste ya no ofrece este viaje.',
+    );
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: /Actualizar ofertas/ }),
+      );
+    });
+
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      'No pudimos actualizar las ofertas. Intenta de nuevo.',
+    );
+    // Un error de red NUNCA se interpreta como desasignación: la agencia
+    // de LockState queda intacta (sin reasignación) y la rama persiste.
+    const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
+    expect(stored.agency_id).toBe('ag-1');
+    expect(stored.seats).toHaveLength(2);
+    expect(stored.passengers).toHaveLength(2);
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Fase 2 (Bug 3): reconciliación de la agencia persistida contra las
+// ofertas vigentes del viaje. Cubre (1) agencia todavía en offers[] → flujo
+// normal (ver "POSTea trip, oferta, asientos y pasajeros"), (2) agencia
+// fuera de offers[] → recuperación sin POST y sin reasignación, (6) intento
+// existente fuera de la rama, (7) pasajeros intactos y (8) recuperación con
+// el selector integrado en /reservas/nueva (sin derivar a /viajes/[id]).
+describe('Reconciliación de agencia (Bug 3)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+  });
+
+  const twoPassengers = [
+    {
+      seat_id: 'seat-1',
+      first_name: 'María',
+      last_name: 'González',
+      document: '12345678',
+      phone: '04241234567',
+    },
+    {
+      seat_id: 'seat-2',
+      first_name: 'José',
+      last_name: 'Pérez',
+      document: '87654321',
+      phone: '04121234567',
+    },
+  ];
+
+  it('agencia fuera de los offers vigentes: recupera sin POST y conserva asientos y pasajeros', async () => {
+    seedLock({ passengers: twoPassengers });
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [makeOffer('ag-2', 'Beta Tours'), makeOffer('ag-3', 'Gamma Viajes')],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'La agencia que elegiste ya no ofrece este viaje.',
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Reintentar/ }),
+    ).not.toBeInTheDocument();
+
+    // (8) la recuperación ocurre DENTRO de /reservas/nueva: el selector de
+    // las ofertas vigentes está integrado y jamás se deriva a /viajes/[id].
+    expect(
+      screen.queryByRole('link', { name: 'Elegir otra agencia' }),
+    ).not.toBeInTheDocument();
+    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    expect(screen.getAllByRole('radio')).toHaveLength(2);
+    // Ninguna opción se marca sola: la agencia obsoleta (ag-1) no existe aquí.
+    expect(screen.getByRole('radio', { name: /Beta Tours/ })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: /Gamma Viajes/ })).not.toBeChecked();
+    expect(
+      screen.queryByRole('radio', { name: /Bianchi travels/ }),
+    ).not.toBeInTheDocument();
+
+    // (7) + (2) conservación total: nada de LockState se borra ni se
+    // reasigna en silencio.
+    const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
+    expect(stored.agency_id).toBe('ag-1');
+    expect(stored.seats).toHaveLength(2);
+    expect(stored.passengers).toHaveLength(2);
+    expect(stored.passengers[0]).toMatchObject({ document: '12345678' });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it('un intento existente nunca entra en la rama de recuperación', async () => {
+    // (6) con intento terminal la agencia desactualizada es irrelevante:
+    // la rama de recuperación no debe aparecer ni ocultar el estado de pago.
+    seedAttemptLock(
+      { status: 'pending_review', remaining_submissions: 0 },
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({ offers: [makeOffer('ag-2', 'Beta Tours')] }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'verified',
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        verified_at: '2026-10-04T11:10:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.queryByText('La agencia que elegiste ya no ofrece este viaje'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Actualizar ofertas' }),
+    ).not.toBeInTheDocument();
+    // Con un intento creado la agencia queda comprometida: el selector de
+    // agencia no se renderiza (nunca se cambia la agencia de un intento).
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(
+      screen.queryByRole('region', { name: 'Agencia' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText('Pago aprobado').length).toBeGreaterThan(0);
+  });
+});
+
+// Corrección de Fase 1: la selección de agencia es un paso VISIBLE dentro
+// de /reservas/nueva (antes se derivaba a /viajes/[id], flujo anterior que ya
+// no es requisito de compra). Cobertura: (1) oferta única directa, (2)/(3)
+// selector con 2 y 3 ofertas, (4) elección explícita de2ª/3ª agencia,
+// (6) ningún flujo normal deriva a /viajes/[slug-or-id], (7) viaje sin
+// agencias, (8) error de carga ≠ ausencia confirmada, (10) cambiar selección
+// no libera asientos ni cancela intentos.
+describe('Selector de agencia integrado (Fase 1-corregida)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+    search.value = '?trip=trip-1';
+  });
+
+  it('una sola agencia: flujo directo, la agencia se identifica sin pedir elección', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+
+    const view = await renderWizard();
+
+    const seccion = screen.getByRole('region', { name: 'Agencia' });
+    expect(seccion).toHaveTextContent('Bianchi travels');
+    expect(seccion).toHaveTextContent('Única agencia disponible');
+    // Sin radios: no hay paso de elección que supere al flujo directo.
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+  });
+
+  it('tres agencias: las tres opciones están disponibles para elegir', async () => {
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          makeOffer('ag-1', 'Alfa Tours'),
+          makeOffer('ag-2', 'Beta Rutas'),
+          makeOffer('ag-3', 'Gamma Viajes'),
+        ],
+      }),
+    });
+
+    await renderWizard();
+
+    expect(screen.getByText('3 agencias disponibles')).toBeInTheDocument();
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(
+      screen.getByRole('radio', { name: /Alfa Tours/ }),
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole('radio', { name: /Beta Rutas/ }),
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole('radio', { name: /Gamma Viajes/ }),
+    ).not.toBeChecked();
+    // Nunca se fija offers[0] en silencio con varias ofertas.
+    expect(
+      screen.getByText(/Selecciona una agencia para continuar/),
+    ).toBeInTheDocument();
+  });
+
+  it('seleccionar la segunda agencia envía ese agency_id al checkout', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          makeOffer('ag-1', 'Alfa Tours'),
+          makeOffer('ag-2', 'Beta Rutas'),
+          makeOffer('ag-3', 'Gamma Viajes'),
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+
+    // La agencia restaurada (ag-1) sigue marcada hasta que el cliente elija.
+    expect(screen.getByRole('radio', { name: /Alfa Tours/ })).toBeChecked();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('radio', { name: /Beta Rutas/ }));
+    });
+    expect(screen.getByRole('radio', { name: /Beta Rutas/ })).toBeChecked();
+    expect(
+      screen.getByRole('radio', { name: /Alfa Tours/ }),
+    ).not.toBeChecked();
+
+    await createAttemptViaUi(view);
+
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    const payload = mockedCreate.mock.calls[0][0] as unknown as Record<
+      string,
+      unknown
+    >;
+    // El payload corresponde a la elección EXPLÍCITA del cliente.
+    expect(payload.agency_id).toBe('ag-2');
+    expect(payload.seat_ids).toEqual(['seat-1', 'seat-2']);
+  });
+
+  it('seleccionar la tercera agencia persiste la elección y no libera asientos ni cancela intentos', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          makeOffer('ag-1', 'Alfa Tours'),
+          makeOffer('ag-2', 'Beta Rutas'),
+          makeOffer('ag-3', 'Gamma Viajes'),
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('radio', { name: /Gamma Viajes/ }));
+    });
+    expect(screen.getByRole('radio', { name: /Gamma Viajes/ })).toBeChecked();
+
+    // (req 10) cambiar de agencia NO toca los locks de asiento (son
+    // independientes de la agencia) ni ningún intento terminal.
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedUnlockGuest).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedLock).not.toHaveBeenCalled();
+    expect(screen.getByText('2 seleccionados')).toBeInTheDocument();
+
+    // La elección se persiste en la LockState existente (seats ≥ 1) y los
+    // asientos/pasajeros quedan intactos.
+    const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
+    expect(stored.agency_id).toBe('ag-3');
+    expect(stored.seats).toHaveLength(2);
+    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+  });
+
+  it('un viaje sin agencias activas muestra el estado informativo y no permite comprar', async () => {
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip({ offers: [] }) });
+
+    const view = await renderWizard();
+
+    const seccion = screen.getByRole('region', { name: 'Agencia' });
+    expect(seccion).toHaveTextContent(
+      'Este viaje no tiene agencias disponibles para reservar',
+    );
+    expect(
+      screen.getByRole('link', { name: /Ver otros viajes/ }),
+    ).toHaveAttribute('href', '/viajes');
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(
+      screen.queryByRole('button', { name: 'Continuar al pago' }),
+    ).not.toBeInTheDocument();
+    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+  });
+
+  it('un error al cargar el viaje no se interpreta como ausencia confirmada de agencias', async () => {
+    mockedTripDetail.mockRejectedValue(
+      new ApiError('No pudimos contactar el servidor', 'ERR_NETWORK', 500),
+    );
+
+    await renderWizard();
+
+    // Fase de error con reintento: distinta del estado vacío "sin agencias".
+    expect(
+      screen.getByText('No pudimos contactar el servidor'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Este viaje no tiene agencias disponibles para reservar',
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Agencia' }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('Persistencia del intento de compra (MKT-007)', () => {
@@ -1437,7 +1846,7 @@ describe('Persistencia del intento de compra (MKT-007)', () => {
     expect(
       view.container.querySelector('#passenger-0-first-name'),
     ).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Cambiar asientos' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Liberar asientos' })).toBeDisabled();
   });
 
   it('refresh con pasajeros completos restaura hasta pasajeros (sin reserva)', async () => {
@@ -1489,7 +1898,7 @@ describe('Persistencia del intento de compra (MKT-007)', () => {
     // El guard de attempt_id bloquea el POST aunque se reintente la verificación.
     await act(async () => {
       fireEvent.click(
-        screen.getByRole('button', { name: 'Cambiar asientos' }),
+        screen.getByRole('button', { name: 'Liberar asientos' }),
       );
     });
 
@@ -1570,9 +1979,11 @@ describe('Persistencia del intento de compra (MKT-007)', () => {
   });
 });
 
-// Flujo nuevo: /viajes → "Reservar" → /reservas/nueva?trip=<id>. El checkout
-// carga el viaje directamente con 0 asientos (sin LockState previa) y /viajes/[id]
-// ya no forma parte del recorrido.
+// Flujo nuevo: /viajes → "Reservar" → /reservas/nueva?trip=<id> SIEMPRE
+// (con1, 2 o 3 agencias): el selector de agencias vive dentro del checkout.
+// El checkout jamás fija offers[0] en silencio con varias ofertas y nunca
+// deriva a /viajes/[id] para elegir agencia. La carga directa con 0 asientos
+// (sin LockState previa) se mantiene.
 describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1615,6 +2026,44 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
     expect(
       screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('con varias ofertas no fija ninguna agencia: muestra el selector dentro del checkout', async () => {
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [makeOffer('ag-1', 'Alfa Tours'), makeOffer('ag-2', 'Beta Rutas')],
+      }),
+    });
+
+    const view = await renderWizard();
+
+    expect(mockedTripDetail).toHaveBeenCalledWith('trip-1');
+    // Estado claro en lugar de offers[0] silencioso: el selector de agencias
+    // vive DENTRO de /reservas/nueva con sus opciones y ninguna marcada.
+    expect(screen.getAllByRole('radio')).toHaveLength(2);
+    expect(screen.getByRole('radio', { name: /Alfa Tours/ })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: /Beta Rutas/ })).not.toBeChecked();
+    // El flujo de compra jamás deriva a /viajes/[id] para elegir agencia.
+    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    // La rama de agencia intercepta ANTES que la de asientos: no hay
+    // agencia fijada, así que no se ofrece continuar al pago.
+    expect(
+      screen.getByText(/Este viaje opera con varias agencias/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Elegir agencia' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Selecciona al menos un asiento para continuar con el pago.',
+      ),
+    ).not.toBeInTheDocument();
+    // Tampoco se pinta una agencia elegida en nombre del cliente.
+    expect(screen.queryByText(/Pagas directamente a/)).not.toBeInTheDocument();
+    // El mapa de asientos sigue disponible para explorar el viaje.
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
   });
 
   it('el primer asiento crea la LockState con el endpoint autenticado (customer)', async () => {
@@ -1682,9 +2131,9 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
       '/login?redirect=%2Freservas%2Fnueva%3Ftrip%3Dtrip-1',
     );
 
-    // Cambiar asientos también libera por la vía guest.
+    // Liberar asientos también libera por la vía guest.
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Cambiar asientos' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Liberar asientos' }));
     });
     expect(mockedUnlockGuest).toHaveBeenCalledWith('trip-1', undefined);
     expect(mockedUnlock).not.toHaveBeenCalled();
@@ -2977,6 +3426,81 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
     expect(screen.getByText(/no confirma tu reserva/)).toBeInTheDocument();
   });
 
+  it('MKT-008: la sección sin canales muestra los contactos públicos de la agencia', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({
+        methods: [],
+        selected_method_id: null,
+        agency_phone: '04121234567',
+        contacts: [
+          {
+            id: 'c-1',
+            label: 'Ventas',
+            phone: '+584121234567',
+            channel: 'whatsapp',
+          },
+          {
+            id: 'c-2',
+            label: 'Mesa de servicio',
+            phone: '+18095551234',
+            channel: 'call',
+          },
+        ],
+      }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByText(
+        'La agencia aún no tiene un método de pago configurado',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Ventas:')).toBeInTheDocument();
+    expect(screen.getByText('+584121234567')).toBeInTheDocument();
+    expect(screen.getByText('Mesa de servicio:')).toBeInTheDocument();
+    expect(screen.getByText('+18095551234')).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /Ventas/ }),
+    ).toHaveAttribute('href', 'https://wa.me/584121234567');
+    expect(
+      screen.getByRole('link', { name: /Mesa de servicio/ }),
+    ).toHaveAttribute('href', 'tel:+18095551234');
+    // Sin contactos no se recurre al teléfono legado: los públicos mandan.
+    expect(
+      screen.queryByRole('button', { name: /Copiar teléfono: 04121234567/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/no confirma tu reserva/)).toBeInTheDocument();
+  });
+
+  it('MKT-008: la sección sin canales ni contactos conserva el fallback a agency_phone', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({
+        methods: [],
+        selected_method_id: null,
+        agency_phone: '04121234567',
+        contacts: [],
+      }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByRole('link', { name: /Contactar por WhatsApp/ }),
+    ).toHaveAttribute('href', 'https://wa.me/584121234567');
+    expect(
+      screen.getByRole('button', {
+        name: /Copiar teléfono: 04121234567/,
+      }),
+    ).toBeInTheDocument();
+  });
+
   it('con revisión pendiente el canal es de solo lectura (sin "Elegir")', async () => {
     seedAttemptLock({
       status: 'pending_review',
@@ -3016,7 +3540,7 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
     ).toBeInTheDocument();
   });
 
-  it('cuando la agencia no tiene canales activos el intento no avanza y guía a WhatsApp', async () => {
+  it('cuando la agencia no tiene canales activos el checkout continúa con pago coordinado', async () => {
     seedLock();
     mockedTripDetail.mockResolvedValue({
       trip: buildTrip({
@@ -3039,10 +3563,11 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
     const view = await renderWizard();
     await fillValidPassengers(view);
 
-    // Sin CTA de pago: el backend respondería 409, la UI lo previene.
+    // MKT-008: sin canales el CTA existe y el intento se crea igual
+    // (pago coordinado directamente con la agencia).
     expect(
-      screen.queryByRole('button', { name: 'Continuar al pago' }),
-    ).not.toBeInTheDocument();
+      screen.getByRole('button', { name: 'Continuar al pago' }),
+    ).toBeInTheDocument();
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(
       screen.getByText(
@@ -3064,6 +3589,15 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
       name: /Contactar por WhatsApp/,
     });
     expect(whatsapp).toHaveAttribute('href', 'https://wa.me/584121234567');
+    expect(
+      screen.getByText(
+        /Coordina el pago con la agencia y continúa para subir tu comprobante/,
+      ),
+    ).toBeInTheDocument();
+
+    await createAttemptViaUi(view);
+
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
     expect(view).toBeTruthy();
   });
 
@@ -3149,14 +3683,177 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
     expect(
       screen.queryByRole('button', { name: /Copiar teléfono/ }),
     ).not.toBeInTheDocument();
-    // Sin contacto no hay copy de WhatsApp ni bloqueo de CTA de pago.
+    // Sin contacto no hay copy de WhatsApp, pero el CTA de pago existe:
+    // MKT-008 elimina el bloqueo del checkout en el Caso B.
     expect(
       screen.queryByText(/no confirma tu reserva/),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Continuar al pago' }),
+      screen.getByRole('button', { name: 'Continuar al pago' }),
+    ).toBeInTheDocument();
+  });
+
+  // ── MKT-008: contactos públicos en el estado sin métodos de pago ──────────
+
+  it('MKT-008: muestra los contactos públicos con etiqueta y enlaces en el estado sin métodos', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: '04121234567',
+            payment_methods_available: false,
+            contacts: [
+              {
+                id: 'c-1',
+                label: 'Ventas',
+                phone: '+584121234567',
+                channel: 'whatsapp',
+              },
+              {
+                id: 'c-2',
+                label: 'Emergencias',
+                phone: '+447911123456',
+                channel: 'call',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    expect(
+      screen.getByText(
+        'Esta agencia aún no tiene un método de pago configurado',
+      ),
+    ).toBeInTheDocument();
+    // MKT-008: el CTA existe aunque no haya canales (pago coordinado).
+    expect(
+      screen.getByRole('button', { name: 'Continuar al pago' }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByText('Ventas:')).toBeInTheDocument();
+    expect(screen.getByText('+584121234567')).toBeInTheDocument();
+    expect(screen.getByText('Emergencias:')).toBeInTheDocument();
+    expect(screen.getByText('+447911123456')).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /Ventas/ }),
+    ).toHaveAttribute('href', 'https://wa.me/584121234567');
+    expect(
+      screen.getByRole('link', { name: /Emergencias/ }),
+    ).toHaveAttribute('href', 'tel:+447911123456');
+    // El aviso de que enviar comprobante no confirma la reserva se conserva.
+    expect(screen.getByText(/no confirma tu reserva/)).toBeInTheDocument();
+  });
+
+  it('MKT-008: un contacto con número inválido no inventa enlace', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: null,
+            payment_methods_available: false,
+            contacts: [
+              {
+                id: 'c-bad',
+                label: 'Principal',
+                phone: 'no-telefono',
+                channel: 'whatsapp',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    expect(screen.getByText('Principal:')).toBeInTheDocument();
+    expect(screen.getByText('no-telefono')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Principal/ }),
     ).not.toBeInTheDocument();
-    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it('MKT-008: sin canales el uploader se habilita sin elegir método (pago coordinado)', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          {
+            agency_id: 'ag-1',
+            name: 'Bianchi travels',
+            logo_url: null,
+            primary_color: '#000024',
+            secondary_color: null,
+            accent_color: '#00D4FF',
+            phone: '04121234567',
+            payment_methods_available: false,
+          },
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+    // La agencia no tiene ningún canal activo: la sección notifica
+    // onNoMethodsChange(true) y la página habilita el uploader sin
+    // selección (coordinatedPayment).
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ methods: [], selected_method_id: null }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
+    ).toBeInTheDocument();
+    // No hay botón "Elegir": no existe canal alguno.
+    expect(
+      screen.queryByRole('button', { name: 'Elegir' }),
+    ).not.toBeInTheDocument();
+    // El copy coordinado de la sección de canales está visible.
+    expect(
+      screen.getByText(/Coordina el pago directamente con la agencia/),
+    ).toBeInTheDocument();
+  });
+
+  it('MKT-008: si la agencia sí tiene canales el uploader exige elegir método', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    // canales activos + sin selección → onNoMethodsChange(false): el
+    // uploader permanece oculto hasta elegir (MKT-007.4 intacta).
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ selected_method_id: null }),
+    );
+
+    await renderWizard();
+
+    expect(
+      screen.getByRole('button', { name: 'Elegir' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Selecciona un método de pago para continuar con tu comprobante.'),
+    ).toBeInTheDocument();
   });
 
   it('el canal congelado tras el primer comprobante rechaza el cambio (409)', async () => {
@@ -3190,5 +3887,445 @@ describe('Canales de pago del intento (MKT-007.4)', () => {
     expect(
       screen.getByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
+  });
+
+  it('MKT-008 M1: rechazado congelado en agency_direct conserva el uploader aunque la agencia ya tenga canales', async () => {
+    // Escenario del punto muerto M1: el primer comprobante se envió en
+    // modo coordinado (sin canal); tras el rechazo la agencia ya configuró
+    // canales. El modo congelado lo acredita la vista del servidor
+    // (status='rejected' sin selección): no se exige elegir canal.
+    seedAttemptLock({
+      status: 'rejected',
+      proof_count: 1,
+      remaining_submissions: 2,
+    });
+    // La oferta YA anuncia métodos disponibles (la agencia configuró
+    // canales después del primer envío).
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'rejected',
+        proof_count: 1,
+        remaining_submissions: 2,
+      }),
+    );
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ status: 'rejected', selected_method_id: null }),
+    );
+
+    await renderWizard();
+
+    // Modo coordinado congelado: el reenvío no exige selección.
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
+    ).toBeInTheDocument();
+    // status='rejected' → sección de canales en solo lectura: sin "Elegir".
+    expect(
+      screen.queryByRole('button', { name: 'Elegir' }),
+    ).not.toBeInTheDocument();
+    expect(mockedSelectPaymentMethod).not.toHaveBeenCalled();
+  });
+
+  it('MKT-008 M1: rejected_final no ofrece reenvío aunque la vista diga coordinado', async () => {
+    seedAttemptLock({
+      status: 'rejected',
+      proof_count: 3,
+      remaining_submissions: 0,
+    });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'rejected_final',
+        proof_count: 3,
+        remaining_submissions: 0,
+      }),
+    );
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ status: 'rejected_final', selected_method_id: null }),
+    );
+
+    await renderWizard();
+
+    // Sin reenvíos disponibles: jamás se muestra el uploader, ni en modo
+    // coordinado congelado.
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Se agotaron los reenvíos de comprobante/),
+    ).toBeInTheDocument();
+  });
+
+  it('M-1: rejected_final bloquea el uploader aunque queden reenvíos y método elegido', async () => {
+    // Escenario real del defecto (Tour 090): la ventana de pago vence con
+    // proof_count < 3 → rejected_final con remaining_submissions > 0 en la
+    // vista del servidor. El marcador colapsa a 'rejected', así que sin el
+    // gate por estado crudo el uploader se renderizaría (quedan reenvíos +
+    // método elegido). El estado terminal debe prevalecer siempre.
+    seedAttemptLock({
+      status: 'rejected',
+      proof_count: 1,
+      remaining_submissions: 2,
+    });
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'rejected_final',
+        proof_count: 1,
+        remaining_submissions: 2,
+      }),
+    );
+    // Método real congelado seleccionado: selectedMethodId será truthy.
+    mockedGetPaymentMethods.mockResolvedValue(
+      paymentMethodsView({ status: 'rejected_final', selected_method_id: 'pm-1' }),
+    );
+
+    await renderWizard();
+
+    // Ni el botón de envío ni los controles del ProofUploader
+    // (input de archivo y dropzone "Seleccionar comprobante").
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('proof-file-input')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Seleccionar comprobante'),
+    ).not.toBeInTheDocument();
+    // El estado terminal sí comunica cierre (sin contadores ni motivo).
+    expect(
+      screen.getByText(/Se agotaron los reenvíos de comprobante/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Comprobante rechazado. No es posible enviar más comprobantes. Tus asientos quedaron liberados.',
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+// Fase 3: después de que un checkout llega a `verified` el cliente necesita
+// salir del estado terminal SIN tocar la compra confirmada: «Nueva compra»
+// solo separa la operación LOCAL (retira la LockState y re-verifica con el
+// ?trip= de la URL); nunca cancela el intento ni libera asientos, y la nueva
+// operación arranca con una attempt_key NUEVA.
+describe('Nueva compra tras checkout verificado (Fase 3)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+    search.value = '?trip=trip-1';
+  });
+
+  const VERIFIED_AT = '2026-10-04T11:10:00.000Z';
+  const VERIFIED_KEY = 'b2f1f6d0-0000-4000-8000-000000000001';
+
+  function seedVerifiedRestore() {
+    // El marcador local NUNCA lleva `status: 'verified'` (no existe en
+    // CheckoutMarker y la inválida entera): la aprobación sale solo del
+    // `getAttempt` del servidor, como en MKT-007.
+    seedAttemptLock(
+      {
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      },
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'verified',
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        verified_at: VERIFIED_AT,
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
+  }
+
+  it('la restauración del intento verificado muestra el panel de éxito con «Nueva compra» y «Volver al catálogo», sin crear nada automáticamente', async () => {
+    seedVerifiedRestore();
+
+    await renderWizard();
+
+    expect(screen.getByText(/Tu pago fue aprobado/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Nueva compra' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Volver al catálogo' }),
+    ).toHaveAttribute('href', '/viajes');
+    // Sin compra automática ni acciones destructivas sobre la verificada.
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedUnlockGuest).not.toHaveBeenCalled();
+    // verified es terminal: tampoco se ofrece cancelación.
+    expect(
+      screen.queryByRole('button', { name: 'Cancelar compra' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('el bloque «Tu pago fue aprobado» sube a la cabecera y el banner de estado verified desaparece', async () => {
+    seedVerifiedRestore();
+
+    await renderWizard();
+
+    // Sin banner de estado para verified: el cierre ya se comunica arriba.
+    expect(
+      screen.queryByText('Comprobante verificado. Tu reserva está confirmada.'),
+    ).not.toBeInTheDocument();
+
+    // El bloque de cierre vive en la cabecera: después del título y antes
+    // de la sección "Comprobante de pago".
+    const title = screen.getByRole('heading', {
+      level: 1,
+      name: 'Completa tu reserva',
+    });
+    const panel = screen
+      .getByText(/Tu pago fue aprobado/)
+      .closest('div') as HTMLElement;
+    expect(panel).toHaveClass('bg-[#ecfdf5]');
+    const comprobante = screen.getByRole('heading', {
+      name: 'Comprobante de pago',
+    });
+    expect(
+      title.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      panel.compareDocumentPosition(comprobante) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Las acciones de cierre viajan con el bloque subido.
+    expect(
+      screen.getByRole('button', { name: 'Nueva compra' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Volver al catálogo' }),
+    ).toBeInTheDocument();
+  });
+
+  it('el banner de estado pending_review conserva el ámbar de revisión (sin verde ni icono)', async () => {
+    seedAttemptLock(
+      {
+        status: 'pending_review',
+        submitted_at: '2026-10-04T12:00:00.000Z',
+        proof_count: 1,
+        remaining_submissions: 2,
+        expires_at: '2099-01-01T00:00:00.000Z',
+      },
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'pending_review',
+        proof_count: 1,
+        remaining_submissions: 2,
+        proof_submitted_at: '2026-10-04T12:00:00.000Z',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
+
+    await renderWizard();
+
+    const banner = screen
+      .getByText(
+        'Tu comprobante está en revisión. Dentro de 24 horas recibirás respuesta.',
+      )
+      .closest('div') as HTMLElement;
+    expect(banner).toHaveClass('bg-[#fffbeb]');
+    expect(banner).toHaveClass('text-[#92400e]');
+    expect(banner).not.toHaveClass('bg-[#ecfdf5]');
+    expect(banner.querySelector('svg')).toBeNull();
+  });
+
+  it('recargar con el intento verificado restaura la compra confirmada sin re-POSTear ni auto-crear otra operación', async () => {
+    seedVerifiedRestore();
+
+    const first = await renderWizard();
+    expect(mockedCreate).not.toHaveBeenCalled();
+
+    // Simulación de recarga: el mismo sessionStorage persiste y la pantalla
+    // vuelve a restaurar desde el servidor.
+    first.unmount();
+    await renderWizard();
+
+    expect(screen.getByText(/Tu pago fue aprobado/)).toBeInTheDocument();
+    expect(mockedGetAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+  });
+
+  it('«Nueva compra» retira la LockState local y arranca el viaje de cero, sin cancelar el intento ni liberar asientos', async () => {
+    seedVerifiedRestore();
+
+    await renderWizard();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+
+    // Arranque nuevo del MISMO viaje (?trip= en la URL).
+    expect(mockedTripDetail).toHaveBeenLastCalledWith('trip-1');
+    // La compra verificada desaparece de la vista y no hay datos heredados.
+    expect(screen.queryByText(/Tu pago fue aprobado/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Pago aprobado')).not.toBeInTheDocument();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+    expect(
+      screen.getByText('Aún no has seleccionado asientos'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Comprobante de pago' }),
+    ).not.toBeInTheDocument();
+    // La LockState quedó vacía: sin asientos no se persiste nada y no
+    // quedan attempt_id ni attempt_key de la operación anterior.
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(storedLock().attempt_id).toBeUndefined();
+    expect(storedLock().attempt_key).toBeUndefined();
+    // El intento verificado NO se cancela ni se liberan sus asientos.
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedUnlockGuest).not.toHaveBeenCalled();
+    // No se revalidan locks del servidor (eso borraría la compra verificada)
+    // ni se vuelve a consultar el intento cerrado.
+    expect(mockedGetAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedLocks).not.toHaveBeenCalled();
+  });
+
+  it('con varias ofertas, «Nueva compra» deja el selector de agencias para una elección explícita (Fase 1 intacta)', async () => {
+    seedAttemptLock(
+      {
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      },
+      { lock_expires_at: '2099-01-01T00:00:00.000Z' },
+    );
+    mockedTripDetail.mockResolvedValue({
+      trip: buildTrip({
+        offers: [
+          makeOffer('ag-1', 'Alfa Tours'),
+          makeOffer('ag-2', 'Beta Rutas'),
+          makeOffer('ag-3', 'Gamma Viajes'),
+        ],
+      }),
+    });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({
+        status: 'verified',
+        proof_count: 1,
+        remaining_submissions: 0,
+        proof_submitted_at: '2026-10-04T11:00:00.000Z',
+        verified_at: VERIFIED_AT,
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    );
+
+    await renderWizard();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+
+    // Nunca se fija offers[0] en silencio: el usuario elige.
+    expect(screen.getByText('3 agencias disponibles')).toBeInTheDocument();
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(
+      screen.getByRole('radio', { name: /Alfa Tours/ }),
+    ).not.toBeChecked();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('radio', { name: /Beta Rutas/ }));
+    });
+    expect(screen.getByRole('radio', { name: /Beta Rutas/ })).toBeChecked();
+  });
+
+  it('la nueva operación crea el intento con una attempt_key NUEVA (distinta de la del intento verificado) y en formato uuid', async () => {
+    seedVerifiedRestore();
+    mockedLock.mockImplementation(async (_tripId: string, seatIds: string[]) => ({
+      locked: true,
+      trip_id: 'trip-1',
+      ttl_seconds: 900,
+      lock_expires_at: futureExpiry(),
+      seats: seatIds.map((id) => ({
+        id,
+        seat_code: id === 'seat-1' ? 'A1' : 'A2',
+      })),
+    }));
+
+    const view = await renderWizard();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Asiento A1, disponible' }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Asiento A2, disponible' }),
+      );
+    });
+    expect(screen.getByText('2 seleccionados')).toBeInTheDocument();
+
+    await createAttemptViaUi(view);
+
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    const key = String(mockedCreate.mock.calls[0][1]);
+    expect(key).not.toBe(VERIFIED_KEY);
+    expect(key).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it('los reintentos de la NUEVA operación conservan su propia attempt_key (idempotencia intacta)', async () => {
+    mockedCreate.mockRejectedValueOnce(
+      new ApiError('boom interno', 'INTERNAL_ERROR', 500),
+    );
+    seedVerifiedRestore();
+    mockedLock.mockImplementation(async (_tripId: string, seatIds: string[]) => ({
+      locked: true,
+      trip_id: 'trip-1',
+      ttl_seconds: 900,
+      lock_expires_at: futureExpiry(),
+      seats: seatIds.map((id) => ({
+        id,
+        seat_code: id === 'seat-1' ? 'A1' : 'A2',
+      })),
+    }));
+
+    const view = await renderWizard();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Asiento A1, disponible' }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Asiento A2, disponible' }),
+      );
+    });
+
+    await createAttemptViaUi(view);
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert')).toHaveTextContent('boom interno');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Reintentar/ }));
+    });
+
+    // Mismo POST reenviado: MISMA clave de idempotencia, nunca la del
+    // intento verificado.
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    expect(mockedCreate.mock.calls[1][1]).toBe(mockedCreate.mock.calls[0][1]);
+    expect(String(mockedCreate.mock.calls[0][1])).not.toBe(VERIFIED_KEY);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

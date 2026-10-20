@@ -33,6 +33,7 @@ const trip: PublicTrip = {
   route: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
   seat_price: 2020,
   lock_ttl_seconds: 900,
+  agencies: [{ id: 'ag-1', name: 'Bianchi travels' }],
 };
 
 const pastTrip: PublicTrip = {
@@ -65,6 +66,8 @@ describe('ViajesPage (MKT-002)', () => {
     expect(screen.getByText(/31 asientos disponibles/)).toBeInTheDocument();
     expect(screen.getByText('Disponible')).toBeInTheDocument();
     expect(screen.getByText('Autobús · 31 asientos')).toBeInTheDocument();
+    // Una sola agencia: se muestra su nombre en la tarjeta.
+    expect(screen.getByText('Bianchi travels')).toBeInTheDocument();
     expect(screen.getByText('Precio por asiento')).toBeInTheDocument();
     expect(screen.getByText(formatSeatPrice(2020))).toBeInTheDocument();
     expect(screen.queryByText('Precio por definir')).not.toBeInTheDocument();
@@ -142,6 +145,72 @@ describe('ViajesPage (MKT-002)', () => {
       'href',
       `/reservas/nueva?trip=${trip.id}`,
     );
+  });
+
+  it('con dos agencias muestra la primera con el indicador +N y el CTA abre el checkout', async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [
+        {
+          ...trip,
+          agencies: [
+            { id: 'ag-1', name: 'Alfa Tours' },
+            { id: 'ag-2', name: 'Beta Rutas' },
+          ],
+        },
+      ],
+    });
+
+    render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    expect(screen.getByText('Alfa Tours')).toBeInTheDocument();
+    expect(screen.getByText('+1')).toBeInTheDocument();
+    // El selector de agencias vive DENTRO de /reservas/nueva: el CTA jamás
+    // fija una agencia en silencio ni deriva a /viajes/[id] (flujo anterior).
+    const reservar = screen.getByRole('link', { name: 'Reservar' });
+    expect(reservar).toHaveAttribute('href', `/reservas/nueva?trip=${trip.id}`);
+  });
+
+  it('con tres agencias el indicador cuenta las que no se muestran', async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [
+        {
+          ...trip,
+          agencies: [
+            { id: 'ag-1', name: 'Alfa Tours' },
+            { id: 'ag-2', name: 'Beta Rutas' },
+            { id: 'ag-3', name: 'Gamma Viajes' },
+          ],
+        },
+      ],
+    });
+
+    render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    expect(screen.getByText('Alfa Tours')).toBeInTheDocument();
+    expect(screen.getByText('+2')).toBeInTheDocument();
+    // Con3 agencias el CTA también va directo al checkout: el selector de
+    // agencia es parte del wizard, nunca /viajes/[id].
+    const reservar = screen.getByRole('link', { name: 'Reservar' });
+    expect(reservar).toHaveAttribute('href', `/reservas/nueva?trip=${trip.id}`);
+  });
+
+  it('sin agencias activas deshabilita el CTA y explica el motivo', async () => {
+    mockedTrips.mockResolvedValue({ trips: [{ ...trip, agencies: [] }] });
+
+    render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    expect(
+      screen.getByText('Sin agencias disponibles para reservar'),
+    ).toBeInTheDocument();
+    // Viaje visible, pero ninguna acción de reserva que se sepa imposible.
+    const reservar = screen.getByRole('button', { name: 'Reservar' });
+    expect(reservar).toBeDisabled();
+    expect(
+      screen.queryByRole('link', { name: 'Reservar' }),
+    ).not.toBeInTheDocument();
   });
 
   it('filtra por destino y permite limpiar los filtros', async () => {

@@ -328,13 +328,15 @@ Solo usar tablas cuando existan grandes cantidades de registros.
 
 ### Catálogo público
 
-- `/viajes` → Buscador de viajes (origen, destino, fecha)
-- `/viajes/[id]` → Detalle del viaje + mapa de asientos (PENDING)
+- `/viajes` → Buscador de viajes (origen, destino, fecha); el CTA "Reservar"
+  SIEMPRE enlaza a `/reservas/nueva?trip=<id>`
+- `/viajes/[id]` → **ELIMINADA**: detalle, mapa de asientos y selección de
+  agencia viven en el wizard `/reservas/nueva?trip=<id>`
 - `/agencias` → Agencias conectadas (PENDING)
 
 ### Reserva (cliente autenticado)
 
-- `/reservas/nueva` → Wizard de reserva: asientos → pasajeros → pago (PENDING)
+- `/reservas/nueva` → Wizard de reserva: agencia → asientos → pasajeros → pago (PENDING)
 - `/reservas/[id]` → Detalle de reserva + estado de pago + boleto (PENDING)
 - `/cuenta` → Mi cuenta / perfil (PENDING)
 

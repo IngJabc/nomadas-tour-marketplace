@@ -14,17 +14,29 @@ import {
 } from 'lucide-react';
 import {
   checkoutApi,
+  type AgencyPublicContact,
   type CheckoutPaymentMethodsView,
   type CheckoutPagoMovilData,
 } from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
 import { formatSeatPrice } from '@/lib/price';
 import { copyToClipboard, whatsappHref } from '@/lib/booking/whatsapp';
+import { AgencyContactLinks } from '@/components/booking/AgencyContactLinks';
 
 interface PaymentMethodSectionProps {
   attemptId: string;
   /** Notifica al padre el canal elegido (null = aún sin elegir). */
   onSelectionChange: (methodId: string | null) => void;
+  /**
+   * MKT-008: notifica al padre que el pago está coordinado directamente
+   * con la agencia y el uploader de comprobante no exige selección de
+   * canal. Dos escenarios: (a) la agencia no tiene canales activos; (b)
+   * modo agency_direct congelado tras un rechazo (status='rejected' sin
+   * selección: el snapshot del intento ya estampa agency_direct y la
+   * selección no puede cambiarse). El padre usa este estado para
+   * habilitar el uploader sin exigir canal.
+   */
+  onNoMethodsChange?: (noMethods: boolean) => void;
 }
 
 const WHATSAPP_NOTICE =
@@ -68,11 +80,17 @@ function SkeletonRows() {
  * intento (amount_cents), nunca un total recalculado por el frontend.
  *
  * Mientras status='created' el cliente puede cambiar de canal; una vez
- * enviado el primer comprobante el canal queda congelado (solo lectura).
+ * enviado el primer comprobante el canal queda congelado (solo
+ * lectura). Un intento agency_direct rechazado (status='rejected' sin
+ * selección) conserva el modo coordinado congelado: notifica
+ * onNoMethodsChange aunque la agencia ya tenga canales activos, para
+ * que el padre habilite el reenvío de comprobante sin exigir una
+ * selección nueva.
  */
 export function PaymentMethodSection({
   attemptId,
   onSelectionChange,
+  onNoMethodsChange,
 }: PaymentMethodSectionProps) {
   const [view, setView] = useState<CheckoutPaymentMethodsView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,6 +98,7 @@ export function PaymentMethodSection({
   const [selectingId, setSelectingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const notifiedRef = useRef<string | null | undefined>(undefined);
+  const notifiedNoMethodsRef = useRef<boolean | undefined>(undefined);
 
   const notify = useCallback(
     (methodId: string | null) => {
@@ -90,6 +109,15 @@ export function PaymentMethodSection({
     [onSelectionChange],
   );
 
+  const notifyNoMethods = useCallback(
+    (noMethods: boolean) => {
+      if (notifiedNoMethodsRef.current === noMethods) return;
+      notifiedNoMethodsRef.current = noMethods;
+      onNoMethodsChange?.(noMethods);
+    },
+    [onNoMethodsChange],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -97,6 +125,16 @@ export function PaymentMethodSection({
       const result = await checkoutApi.getPaymentMethods(attemptId);
       setView(result);
       notify(result.selected_method_id);
+      // MKT-008: pago coordinado con la agencia. Escenario (a): no hay
+      // canales activos. Escenario (b): modo agency_direct congelado
+      // tras un rechazo — status='rejected' sin selección solo ocurre
+      // cuando el primer comprobante se envió en modo coordinado (la
+      // selección de canal real siempre queda congelada con su id). La
+      // agencia puede tener canales activos AHORA: no se exige una
+      // selección nueva ni se permite cambiar el modo congelado.
+      const frozenCoordinated =
+        result.status === 'rejected' && result.selected_method_id === null;
+      notifyNoMethods(result.methods.length === 0 || frozenCoordinated);
     } catch (error) {
       setLoadError(
         getApiErrorMessage(error, 'No pudimos cargar los métodos de pago.'),
@@ -104,7 +142,7 @@ export function PaymentMethodSection({
     } finally {
       setLoading(false);
     }
-  }, [attemptId, notify]);
+  }, [attemptId, notify, notifyNoMethods]);
 
   useEffect(() => {
     void load();
@@ -202,7 +240,19 @@ export function PaymentMethodSection({
               <p className="text-sm font-semibold text-[#92400e]">
                 La agencia aún no tiene un método de pago configurado
               </p>
-              {view.agency_phone ? (
+              {/* MKT-008: primero los contactos públicos de la agencia; si
+                  no hay, se cae al teléfono legado (compatibilidad). El
+                  pago se coordina directamente con la agencia y el
+                  comprobante se sube igual por Marketplace. */}
+              {(view.contacts ?? []).length > 0 ? (
+                <>
+                  <p className="mt-1 text-xs text-brand-muted">{WHATSAPP_NOTICE}</p>
+                  <AgencyContactLinks
+                    contacts={view.contacts as AgencyPublicContact[]}
+                    className="mt-3"
+                  />
+                </>
+              ) : view.agency_phone ? (
                 <>
                   <p className="mt-1 text-xs text-brand-muted">{WHATSAPP_NOTICE}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -239,10 +289,16 @@ export function PaymentMethodSection({
               ) : (
                 <p className="mt-1 text-xs text-brand-muted">
                   Tampoco ha publicado un medio de contacto disponible en este
-                  momento. Elige un método de pago para continuar cuando la
-                  agencia lo habilite.
+                  momento. Coordina el pago directamente con la agencia cuando
+                  puedas y sube aquí tu comprobante: quedará pendiente de
+                  revisión.
                 </p>
               )}
+              <p className="mt-3 text-xs text-brand-muted">
+                Coordina el pago directamente con la agencia y sube aquí tu
+                comprobante. Seguirá pendiente de revisión hasta que la agencia
+                lo confirme.
+              </p>
             </div>
           </div>
         </div>
