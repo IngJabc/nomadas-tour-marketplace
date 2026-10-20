@@ -97,6 +97,18 @@ export interface PublicTrip {
   route: { origin: string; destination: string };
   seat_price: number | null;
   lock_ttl_seconds?: number;
+  /**
+   * Agencias activas que operan este viaje (orden alfabético estable).
+   * Opcional para no romper consumidores con respuestas antiguas; los
+   * consumidores deben usar `trip.agencies ?? []`.
+   */
+  agencies?: PublicTripAgencyRef[];
+}
+
+/** Agencia activa resumida para el catálogo público (sin datos internos). */
+export interface PublicTripAgencyRef {
+  id: string;
+  name: string;
 }
 
 export const publicApi = {
@@ -105,6 +117,21 @@ export const publicApi = {
     request<{ trip: PublicTripDetail }>(`/public/trips/${tripId}`),
   agencies: () => request<{ agencies: unknown[] }>('/public/agencies'),
 };
+
+// ── MKT-008 · Contactos públicos de agencia (091 agency_contacts) ────────────
+
+export type AgencyContactChannel = 'call' | 'whatsapp';
+
+/**
+ * Contacto público de agencia. `phone` viene en E.164 desde la base de
+ * datos (CHECK de la migración 091): nunca se le antepone código país.
+ */
+export interface AgencyPublicContact {
+  id: string;
+  label: string;
+  phone: string;
+  channel: AgencyContactChannel;
+}
 
 export interface PublicTripOffer {
   agency_id: string;
@@ -117,6 +144,13 @@ export interface PublicTripOffer {
   phone: string | null;
   /** MKT-007.4: la agencia tiene al menos un canal de pago activo. */
   payment_methods_available: boolean;
+  /**
+   * MKT-008: contactos públicos de la agencia (is_public + is_active +
+   * no eliminados), ordenados por sort_order y created_at. Opcional para
+   * compatibilidad con respuestas antiguas; los consumidores deben usar
+   * `contacts ?? []`.
+   */
+  contacts?: AgencyPublicContact[];
 }
 
 export type PublicSeatStatus =
@@ -431,6 +465,11 @@ export interface CheckoutPaymentMethodsView {
   methods: CheckoutPaymentMethodDto[];
   /** Teléfono público de la agencia para el aviso de WhatsApp. */
   agency_phone: string | null;
+  /**
+   * MKT-008: contactos públicos de la agencia (E.164). Opcional para
+   * compatibilidad con respuestas antiguas; usar `contacts ?? []`.
+   */
+  contacts?: AgencyPublicContact[];
 }
 
 export interface SelectCheckoutPaymentMethodResult {

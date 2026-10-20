@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import Link from "next/link";
 import {
   AlertTriangle,
+  Building2,
   CalendarDays,
   RefreshCw,
   Search,
@@ -270,85 +271,127 @@ export default function ViajesPage() {
             </div>
 
             <div className="mt-4 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleTrips.map((trip) => (
-                <article
-                  key={trip.id}
-                  className="flex flex-col rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_24px_rgba(0,212,255,0.12)]"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="rounded-full bg-[#ecfdf5] px-2.5 py-0.5 text-[11px] font-semibold text-[#059669]">
-                      Disponible
-                    </span>
-                    <span className="rounded-full bg-[#f1f5f9] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">
-                      {vehicleLabel(trip.vehicle_type)} · {trip.capacity} asientos
-                    </span>
-                  </div>
-
-                  <h2 className="mt-4 text-[17px] font-semibold leading-snug [font-family:var(--font-sans)]">
-                    {trip.route.origin} → {trip.route.destination}
-                  </h2>
-
-                  <div className="mt-4 space-y-2 text-sm text-brand-muted">
-                    <p className="flex items-center gap-2">
-                      <CalendarDays
-                        size={16}
-                        strokeWidth={1.75}
-                        className="shrink-0"
-                        aria-hidden
-                      />
-                      {formatDateTimeShort(trip.departure_time)}
-                    </p>
-                    <p className="flex items-center gap-2">
-                      <Users
-                        size={16}
-                        strokeWidth={1.75}
-                        className="shrink-0"
-                        aria-hidden
-                      />
-                      {trip.capacity} asientos disponibles
-                    </p>
-                  </div>
-
-                  <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-medium uppercase text-brand-muted">
-                        Precio por asiento
+              {visibleTrips.map((trip) => {
+                const agencies = trip.agencies ?? [];
+                return (
+                  <article
+                    key={trip.id}
+                    className="flex flex-col rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_24px_rgba(0,212,255,0.12)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="rounded-full bg-[#ecfdf5] px-2.5 py-0.5 text-[11px] font-semibold text-[#059669]">
+                        Disponible
                       </span>
-                      {trip.seat_price === null ? (
-                        <span className="text-sm font-semibold text-brand-muted">
-                          {TRIP_PRICE_PENDING_LABEL}
-                        </span>
+                      <span className="rounded-full bg-[#f1f5f9] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">
+                        {vehicleLabel(trip.vehicle_type)} · {trip.capacity}{" "}
+                        asientos
+                      </span>
+                    </div>
+
+                    <h2 className="mt-4 text-[17px] font-semibold leading-snug [font-family:var(--font-sans)]">
+                      {trip.route.origin} → {trip.route.destination}
+                    </h2>
+
+                    <div className="mt-4 space-y-2 text-sm text-brand-muted">
+                      {agencies.length > 0 ? (
+                        <p className="flex items-center gap-2">
+                          <Building2
+                            size={16}
+                            strokeWidth={1.75}
+                            className="shrink-0"
+                            aria-hidden
+                          />
+                          <span className="font-medium text-brand-navy">
+                            {agencies[0].name}
+                          </span>
+                          {agencies.length > 1 && (
+                            <>
+                              <span className="rounded-full bg-[#f1f5f9] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">
+                                +{agencies.length - 1}
+                              </span>
+                              <span className="sr-only">
+                                Agencias disponibles:{" "}
+                                {agencies.map((agency) => agency.name).join(", ")}
+                              </span>
+                            </>
+                          )}
+                        </p>
                       ) : (
-                        <span className="text-[17px] font-extrabold leading-none text-brand-navy">
-                          {formatSeatPrice(trip.seat_price)}
+                        <p className="flex items-center gap-2 text-[#92400e]">
+                          <AlertTriangle
+                            size={16}
+                            strokeWidth={1.75}
+                            className="shrink-0"
+                            aria-hidden
+                          />
+                          <span>Sin agencias disponibles para reservar</span>
+                        </p>
+                      )}
+                      <p className="flex items-center gap-2">
+                        <CalendarDays
+                          size={16}
+                          strokeWidth={1.75}
+                          className="shrink-0"
+                          aria-hidden
+                        />
+                        {formatDateTimeShort(trip.departure_time)}
+                      </p>
+                      <p className="flex items-center gap-2">
+                        <Users
+                          size={16}
+                          strokeWidth={1.75}
+                          className="shrink-0"
+                          aria-hidden
+                        />
+                        {trip.capacity} asientos disponibles
+                      </p>
+                    </div>
+
+                    <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium uppercase text-brand-muted">
+                          Precio por asiento
                         </span>
+                        {trip.seat_price === null ? (
+                          <span className="text-sm font-semibold text-brand-muted">
+                            {TRIP_PRICE_PENDING_LABEL}
+                          </span>
+                        ) : (
+                          <span className="text-[17px] font-extrabold leading-none text-brand-navy">
+                            {formatSeatPrice(trip.seat_price)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-auto pt-6">
+                      {trip.seat_price === null || agencies.length === 0 ? (
+                        // Sin precio publicado o sin agencias activas no hay
+                        // reserva posible: el CTA queda deshabilitado en lugar
+                        // de enviar al checkout.
+                        <button
+                          type="button"
+                          disabled
+                          aria-disabled="true"
+                          className="block w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white opacity-40"
+                        >
+                          Reservar
+                        </button>
+                      ) : (
+                        <Link
+                          // El selector de agencias vive DENTRO del checkout
+                          // (/reservas/nueva?trip=): el catálogo nunca deriva
+                          // a /viajes/[id] para elegir agencia.
+                          href={`/reservas/nueva?trip=${trip.id}`}
+                          className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                        >
+                          Reservar
+                        </Link>
                       )}
                     </div>
-                  </div>
-
-                  <div className="mt-auto pt-6">
-                    {trip.seat_price === null ? (
-                      // Sin precio publicado no hay reserva posible: el CTA
-                      // queda deshabilitado en lugar de enviar al checkout.
-                      <button
-                        type="button"
-                        disabled
-                        aria-disabled="true"
-                        className="block w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white opacity-40"
-                      >
-                        Reservar
-                      </button>
-                    ) : (
-                      <Link
-                        href={`/reservas/nueva?trip=${trip.id}`}
-                        className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-                      >
-                        Reservar
-                      </Link>
-                    )}
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           </>
         )}

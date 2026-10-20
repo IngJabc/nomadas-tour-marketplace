@@ -1282,7 +1282,10 @@ describe('API pública de checkout (MKT-007)', () => {
       };
     }
 
-    it('crear el intento responde 409 AGENCY_NO_ACTIVE_PAYMENT_METHODS sin canales', async () => {
+    it('crear el intento funciona sin canales activos (MKT-008)', async () => {
+      // MKT-008: el guard 409 AGENCY_NO_ACTIVE_PAYMENT_METHODS se eliminó.
+      // La creación ya no consulta agency_payment_methods: el RPC es la
+      // autoridad y la misma regla vive en el RPC/CHECK 092 (propuesta).
       harness.push('agency_payment_methods', {
         data: null,
         error: null,
@@ -1299,24 +1302,193 @@ describe('API pública de checkout (MKT-007)', () => {
         },
       );
 
-      expect(status).toBe(409);
-      expect(body.error.code).toBe('AGENCY_NO_ACTIVE_PAYMENT_METHODS');
-      // Ni el RPC ni storage se tocan cuando no hay a donde pagar.
-      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(0);
+      expect(status).toBe(201);
+      expect(body.attempt_id).toBe(ATTEMPT_ID);
+      expect(body.status).toBe('created');
+      expect(lastRpcCall().fn).toBe(RPC_CREATE);
+      // Ni el guard ni storage: la creación sin canales es un POST normal.
       expect(harness.uploads()).toHaveLength(0);
-      // El guard solo cuenta canales soportados por el frontend (pago_movil).
-      const guardChain = harness
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+      // MKT-008: la creación tampoco consulta contactos.
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_contacts'),
+      ).toHaveLength(0);
+    });
+
+    it('subir comprobante sin canal elegido con agencia CON canales responde 409 PAYMENT_METHOD_REQUIRED', async () => {
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+        }),
+        error: null,
+      });
+      // beforeEach deja count=1: la agencia sí tiene canales activos.
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('PAYMENT_METHOD_REQUIRED');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
+      // La consulta de canales solo ocurre en este camino condicional.
+      const channelsChain = harness
         .chains()
         .find((c) => c.table === 'agency_payment_methods');
-      expect(guardChain?.calls).toContainEqual({
+      expect(channelsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['agency_id', AGENCY_ID],
+      });
+      expect(channelsChain?.calls).toContainEqual({
         method: 'eq',
         args: ['method', 'pago_movil'],
       });
     });
 
-    it('subir comprobante sin canal elegido responde 409 PAYMENT_METHOD_REQUIRED', async () => {
+    it('subir comprobante sin canal elegido con agencia SIN canales procede (pago coordinado)', async () => {
       harness.push('checkout_attempts', {
-        data: readyAttemptRow({ payment_method_id: null }),
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+        }),
+        error: null,
+      });
+      harness.push('agency_payment_methods', {
+        data: null,
+        error: null,
+        count: 0,
+      });
+      harness.pushRpc(RPC_PROOF, submittedProof());
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(201);
+      expect(body.status).toBe('pending_review');
+      expect(body.proof_count).toBe(1);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(1);
+      expect(harness.uploads()).toHaveLength(1);
+      // El intento queda marcado para que la UI muestre el estado
+      // coordinado en los reenvíos (coordinatedPayment).
+      expect(body.payment_method_id ?? null).toBeNull();
+      // La consulta de canales se hace SIEMPRE bajo el lock del intento,
+      // con el agency_id derivado del intento (nunca del cliente).
+      const channelsChain = harness
+        .chains()
+        .find((c) => c.table === 'agency_payment_methods');
+      expect(channelsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['agency_id', AGENCY_ID],
+      });
+    });
+
+    it('un fallo al consultar canales activos responde 500 CHECKOUT_ERROR sin subir nada', async () => {
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+        }),
+        error: null,
+      });
+      harness.push('agency_payment_methods', {
+        data: null,
+        error: { message: 'channels table missing' },
+      });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('CHECKOUT_ERROR');
+      // Nunca sube ni invoca el RPC cuando la autoridad de canales falla.
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
+    });
+
+    it('reenvío rejected congelado en agency_direct permite continuar aunque la agencia ya tenga canales (M1)', async () => {
+      // MKT-008/M1: tras un rechazo, un intento agency_direct reenvía sin
+      // canal elegido. El modo lo acredita el SNAPSHOT (no el NULL del id)
+      // y NO se consulta agency_payment_methods aunque hoy haya canales.
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+          status: 'rejected',
+          proof_count: 1,
+          payment_method_snapshot: {
+            method: 'agency_direct',
+            snapshot_version: 1,
+          },
+        }),
+        error: null,
+      });
+      // beforeEach deja count=1 (la agencia YA tiene canales activos).
+      harness.pushRpc(
+        RPC_PROOF,
+        submittedProof({ proof_count: 2, remaining_submissions: 1 }),
+      );
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(201);
+      expect(body.status).toBe('pending_review');
+      expect(body.proof_count).toBe(2);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(1);
+      expect(harness.uploads()).toHaveLength(1);
+      // El camino congelado jamás consulta canales.
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+    });
+
+    it('reenvío rejected con snapshot de método real (id NULL huérfano) responde 409 (M1)', async () => {
+      // Un canal real borrado físicamente deja payment_method_id NULL
+      // (ON DELETE SET NULL) pero el snapshot conserva el método original:
+      // NO se convierte en modo coordinado.
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+          status: 'rejected',
+          proof_count: 1,
+          payment_method_snapshot: {
+            method: 'pago_movil',
+            snapshot_version: 1,
+          },
+        }),
+        error: null,
+      });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('PAYMENT_METHOD_REQUIRED');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
+      // El snapshot ya descarta el coordinado: sin consulta de canales.
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+    });
+
+    it('reenvío rejected sin snapshot ni canal no infiere agency_direct y responde 409', async () => {
+      // payment_method_id NULL sin snapshot no acredita modo coordinado.
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+          status: 'rejected',
+          proof_count: 1,
+        }),
         error: null,
       });
 
@@ -1330,17 +1502,136 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
     });
 
+    it('primer envío con snapshot huérfano de método real responde 409 sin escrituras (espejo B1 del RPC 092)', async () => {
+      // Mismo guard que la RPC 092: un snapshot de método real con id
+      // NULL nunca se estampa como agency_direct (evitaría el 23514 del
+      // CHECK en pending_review).
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          payment_method_id: null,
+          agency_id: AGENCY_ID,
+          payment_method_snapshot: {
+            method: 'pago_movil',
+            snapshot_version: 1,
+          },
+        }),
+        error: null,
+      });
+      // La agencia NO tiene canales (count=0): aun así el snapshot
+      // huérfano se rechaza ANTES de consultarlos.
+      harness.push('agency_payment_methods', {
+        data: null,
+        error: null,
+        count: 0,
+      });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('PAYMENT_METHOD_REQUIRED');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(0);
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+    });
+
+    it('traduce ERR_CHECKOUT_PAYMENT_METHOD_REQUIRED del RPC a 409 (M2)', async () => {
+      // M2: el RAISE de la RPC 092 (carrera: la agencia configura un canal
+      // entre el GET de payment-methods y el submit) no debe caer al
+      // default 500 CHECKOUT_ERROR.
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow(),
+        error: null,
+      });
+      harness.pushRpc(RPC_PROOF, {
+        data: null,
+        error: {
+          message:
+            'ERR_CHECKOUT_PAYMENT_METHOD_REQUIRED: Select a payment method before submitting the proof',
+        },
+      });
+      harness.push('payments', { data: null, error: null });
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('PAYMENT_METHOD_REQUIRED');
+      expect(body.error.message).toBe(
+        'Selecciona un método de pago antes de enviar el comprobante',
+      );
+    });
+
+    it('un error RPC desconocido responde 500 CHECKOUT_ERROR sin convertirlo en negocio (B-2)', async () => {
+      // B-2: el default de mapRpcError es la última red de seguridad. Un
+      // código no mapeado (p. ej. un RAISE futuro de la RPC) debe quedar
+      // como 500 genérico, nunca como 409 ni como error de negocio
+      // conocido. La ruta ejercitada es la pública real de checkout.
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow(),
+        error: null,
+      });
+      harness.pushRpc(RPC_PROOF, {
+        data: null,
+        error: {
+          message: 'ERR_DESCONOCIDO: failure mode not mapped by the service',
+        },
+      });
+      // Limpieza tras el fallo del RPC: payments y checkout_attempts no
+      // referencian el objeto, así que el upload se elimina.
+      harness.push('payments', { data: null, error: null });
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(1);
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('CHECKOUT_ERROR');
+      expect(body.error.message).toBe(
+        'No se pudo procesar la compra. Intenta de nuevo',
+      );
+      // El desconocido no se convierte en 409 ni en un código de negocio.
+      expect(status).not.toBe(409);
+      expect(body.error.code).not.toBe('PAYMENT_METHOD_REQUIRED');
+    });
+
     it('GET payment-methods devuelve los canales activos y el teléfono de la agencia', async () => {
       harness.push('checkout_attempts', {
         data: methodsAttemptRow({ payment_method_id: METHOD_ID }),
         error: null,
       });
-      // Promise.all: primero los canales, luego el teléfono.
+      // Promise.all: primero los canales, luego el teléfono y contactos.
       harness.push('agency_payment_methods', {
         data: [methodRow()],
         error: null,
       });
       harness.push('agencies', { data: { phone: '04121234567' }, error: null });
+      harness.push('agency_contacts', {
+        data: [
+          {
+            id: 'c-1',
+            agency_id: AGENCY_ID,
+            label: 'Ventas',
+            phone: '+584121234567',
+            channel: 'whatsapp',
+          },
+          {
+            id: 'c-2',
+            agency_id: AGENCY_ID,
+            label: 'Emergencias',
+            phone: '+447911123456',
+            channel: 'call',
+          },
+        ],
+        error: null,
+      });
 
       const { status, body } = await requestJson(
         port,
@@ -1353,6 +1644,20 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(body.amount_cents).toBe(4040);
       expect(body.selected_method_id).toBe(METHOD_ID);
       expect(body.agency_phone).toBe('04121234567');
+      expect(body.contacts).toEqual([
+        {
+          id: 'c-1',
+          label: 'Ventas',
+          phone: '+584121234567',
+          channel: 'whatsapp',
+        },
+        {
+          id: 'c-2',
+          label: 'Emergencias',
+          phone: '+447911123456',
+          channel: 'call',
+        },
+      ]);
       expect(body.methods).toHaveLength(1);
       expect(body.methods[0]).toEqual({
         id: METHOD_ID,
@@ -1371,6 +1676,87 @@ describe('API pública de checkout (MKT-007)', () => {
         method: 'eq',
         args: ['method', 'pago_movil'],
       });
+      // MKT-008: la consulta de contactos exige los tres filtros públicos,
+      // el aislamiento por la agencia del intento y el orden elegido.
+      const contactsChain = harness
+        .chains()
+        .filter((c) => c.table === 'agency_contacts')
+        .at(-1);
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'select',
+        args: ['id, agency_id, label, phone, channel'],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['agency_id', AGENCY_ID],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['is_public', true],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'eq',
+        args: ['is_active', true],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'is',
+        args: ['deleted_at', null],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'order',
+        args: ['sort_order', { ascending: true }],
+      });
+      expect(contactsChain?.calls).toContainEqual({
+        method: 'order',
+        args: ['created_at', { ascending: true }],
+      });
+    });
+
+    it('GET payment-methods sin contactos publicables devuelve coleccion vacia y conserva agency_phone', async () => {
+      harness.push('checkout_attempts', {
+        data: methodsAttemptRow({ payment_method_id: METHOD_ID }),
+        error: null,
+      });
+      harness.push('agency_payment_methods', {
+        data: [methodRow()],
+        error: null,
+      });
+      harness.push('agencies', { data: { phone: '04121234567' }, error: null });
+      harness.push('agency_contacts', { data: [], error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-methods`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.contacts).toEqual([]);
+      expect(body.agency_phone).toBe('04121234567');
+    });
+
+    it('GET payment-methods responde 500 CHECKOUT_ERROR si la consulta de contactos falla', async () => {
+      harness.push('checkout_attempts', {
+        data: methodsAttemptRow({ payment_method_id: METHOD_ID }),
+        error: null,
+      });
+      harness.push('agency_payment_methods', {
+        data: [methodRow()],
+        error: null,
+      });
+      harness.push('agencies', { data: { phone: '04121234567' }, error: null });
+      // Un fallo real de base de datos NO se convierte en "sin contactos".
+      harness.push('agency_contacts', {
+        data: null,
+        error: { message: 'contacts table missing' },
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/payment-methods`,
+      );
+
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('CHECKOUT_ERROR');
     });
 
     it('GET payment-methods oculta los intentos ajenos con el mismo 404', async () => {
@@ -1389,6 +1775,10 @@ describe('API pública de checkout (MKT-007)', () => {
       // Nunca consulta canales de una agencia que no es del dueño.
       expect(
         harness.chains().filter((c) => c.table === 'agency_payment_methods'),
+      ).toHaveLength(0);
+      // MKT-008: tampoco se consultan contactos de una agencia ajena.
+      expect(
+        harness.chains().filter((c) => c.table === 'agency_contacts'),
       ).toHaveLength(0);
     });
 

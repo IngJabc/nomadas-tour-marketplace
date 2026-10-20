@@ -131,7 +131,7 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
     con la cookie — elegir asientos NUNCA redirige al login (el gate vive en
     el paso de pago), estados
     `loading/missing/expired/error`, countdown derivado de `lock_expires_at`
-    (server), mínimo 1 asiento, "Cambiar asientos" libera todo y reinicia la
+    (server), mínimo 1 asiento, "Liberar asientos" libera todo y reinicia la
     selección **en la misma pantalla** (deshabilitado tras crear), pasajeros
     con teléfono requerido y documentos duplicados
     rechazados; creación con "Confirmar y pagar" (`handleCreate`, guard por
