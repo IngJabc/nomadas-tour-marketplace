@@ -52,6 +52,14 @@ export function Navbar() {
           >
             Viajes
           </Link>
+          {signedIn && auth?.user?.role === 'customer' && (
+            <Link
+              href="/cuenta/compras"
+              className="text-sm text-white/75 transition-opacity hover:opacity-100"
+            >
+              Mis compras
+            </Link>
+          )}
           {signedIn ? (
             <button
               type="button"

@@ -193,13 +193,14 @@ revisar siempre los flags del worker de `nomadas-tour` en Render.
 | ---- | ------ |
 | Bootstrap (config, app, backend, docs) | ✅ Completado |
 | Validación (build, tests, audit, smoke) | ✅ 2026-09-30: build raíz+backend ✓, tests 9/9 + 8/8 ✓, `audit:deps` 0 vulns ✓, dev `/healthz` 200 ✓ |
-| Auth cliente (login/register/me) | ✅ API base + UI placeholder |
-| Catálogo `/viajes` | ⚠️ Empty state (API pública devuelve viajes) |
+| Auth cliente (login/register/me) | ✅ Completado |
+| Catálogo `/viajes` (+ detalle y mapa de asientos) | ✅ Completado |
 | Wizard de reserva + mapa de asientos | ✅ Completado |
 | Pagos/comprobantes + allocations (MKT-005/007) | ✅ Completado |
 | Panel de revisión de pagos (agencia, en repo tour) | ✅ Completado |
+| Historial de compras + boleto QR (RT-01…RT-03) | ✅ Completado (2026-10-20) |
 | Workers (T-1, comisiones) | ⏳ PENDING (MKT-008/009) |
-| Migraciones marketplace (074–080) | 📝 ESCRITAS 2026-09-30/10-06 (en repo tour) · ✅ APLICADAS (verificado en vivo 2026-10-06) |
+| Migraciones marketplace (074–087) | ✅ APLICADAS (074–080 verificado en vivo 2026-10-06; 085–087 posterior) |
 | Docs de diseño (6 auditorías) | ✅ Consolidadas en business-rules.md |
 
 ---

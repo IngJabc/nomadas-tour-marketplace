@@ -115,7 +115,9 @@ pago y las allocations **solo se crean** en la aprobación atómica
 | Método | Ruta | Descripción |
 | ------ | ---- | ----------- |
 | POST | `/api/public/checkout/attempts` | Crear intento de compra (retiene asientos) |
+| GET | `/api/public/checkout/attempts` | Historial de compras del cliente (RT-01) |
 | GET | `/api/public/checkout/attempts/:attemptId` | Ver estado del intento |
+| GET | `/api/public/checkout/attempts/:attemptId/ticket` | Boleto QR de una compra aprobada (RT-03) |
 | POST | `/api/public/checkout/attempts/:attemptId/proof` | Subir comprobante con conciliación |
 | POST | `/api/public/checkout/attempts/:attemptId/cancel` | Cancelar intento y liberar asientos |
 
@@ -167,7 +169,35 @@ de desplegar este flujo. La migración:
 
 ---
 
-## 7. REGLAS DE CONVIVENCIA
+## 7. RT-01…RT-03 — Historial de compras y boleto QR (2026-10-20)
+
+El cliente autenticado ve su historial de compras y su boleto QR en
+`/cuenta/compras`. Implementado **íntegramente en el marketplace**; este
+repo hermano **no cambia** (escáner, RPC de abordaje y contrato QR intactos).
+
+- **RT-01 (backend):** `GET /api/public/checkout/attempts` lista los
+  intentos propios con estado derivado `buildPurchaseEstado`
+  (`pendiente_comprobante` → `reserva_confirmada`, más
+  `rechazado(_final)`, `aprobado`, `expirado`, `cancelado`, `desconocido`).
+- **RT-02 (frontend):** `/cuenta/compras` con badges de estado, pasajeros
+  en orden natural de asientos y acción "Ver boleto" solo cuando el
+  backend marca `can_view_ticket` (reserva confirmada con `ticket_code`).
+- **RT-03 (boleto):** `GET /api/public/checkout/attempts/:attemptId/ticket`
+  devuelve `qr_code` + `ticket_code` **tal como los creó la migración 087**
+  sobre `reservations` (la reserva ya existe; **nunca se regenera** un QR).
+  La página `/cuenta/compras/[attemptId]/boleto` renderiza con
+  `react-qr-code` (mismo componente y valor que `ReservationTicket` de
+  Tour) y descarga PNG con `html-to-image`.
+- **Elegibilidad:** el endpoint responde `404 TICKET_NOT_FOUND` (uniforme,
+  sin filtrar estados) salvo reserva `reserved` + `fully_paid`; el frontend
+  además exige `ticket_code` antes de ofrecer la acción.
+- **Contrato QR:** **un solo QR por reserva** (`reservations.qr_code`);
+  el escáner de Tour valida exactamente ese valor — cero cambios de
+  escaneo, abordaje ni protección de duplicados.
+
+---
+
+## 8. REGLAS DE CONVIVENCIA
 
 1. **No romper el contrato de tour**: si una migración marketplace cambia una
    tabla que tour lee, primero leer tour (`../nomadas-tour/supabase/migrations`)
@@ -182,7 +212,7 @@ de desplegar este flujo. La migración:
 
 ---
 
-## 8. Env vars compartidas (advertencia BD compartida)
+## 9. Env vars compartidas (advertencia BD compartida)
 
 Ambos backends apuntan al mismo Supabase. En Render:
 

@@ -339,6 +339,10 @@ Solo usar tablas cuando existan grandes cantidades de registros.
 - `/reservas/nueva` → Wizard de reserva: agencia → asientos → pasajeros → pago (PENDING)
 - `/reservas/[id]` → Detalle de reserva + estado de pago + boleto (PENDING)
 - `/cuenta` → Mi cuenta / perfil (PENDING)
+- `/cuenta/compras` → Historial de compras del cliente: badges de estado,
+  pasajeros y acción "Ver boleto" solo en compras elegibles (RT-01/RT-02)
+- `/cuenta/compras/[attemptId]/boleto` → Boleto QR de una compra
+  (un QR por reserva, todos los asientos, descarga PNG) (RT-03)
 
 ### Área admin marketplace (PENDING IMPLEMENTATION)
 

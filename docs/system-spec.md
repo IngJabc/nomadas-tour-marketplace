@@ -108,7 +108,11 @@ son interactivos.
 | GET | `/api/auth/me` | Bearer | Implementado |
 | GET | `/api/public/trips` | no | Implementado |
 | POST | `/api/public/checkout/attempts` | Bearer | Implementado (MKT-007) |
+| GET | `/api/public/checkout/attempts` | Bearer | Implementado (RT-01) |
 | GET | `/api/public/checkout/attempts/:attemptId` | Bearer | Implementado (MKT-007) |
+| GET | `/api/public/checkout/attempts/:attemptId/ticket` | Bearer | Implementado (RT-03) |
+| GET | `/api/public/checkout/attempts/:attemptId/payment-methods` | Bearer | Implementado (MKT-007.4) |
+| PATCH | `/api/public/checkout/attempts/:attemptId/payment-method` | Bearer | Implementado (MKT-007.4) |
 | POST | `/api/public/checkout/attempts/:attemptId/proof` | Bearer | Implementado (MKT-007) |
 | POST | `/api/public/checkout/attempts/:attemptId/cancel` | Bearer | Implementado (MKT-007) |
 | POST | `/api/public/reservations` | Bearer | **410 Gone** (legacy, `CHECKOUT_ATTEMPTS_REQUIRED`) |

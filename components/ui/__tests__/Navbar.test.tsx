@@ -80,4 +80,40 @@ describe('Navbar', () => {
 
     expect(authState.value.signOut).toHaveBeenCalledTimes(1);
   });
+
+  it('ofrece "Mis compras" solo a clientes autenticados', () => {
+    authState.value.user = {
+      id: 'user-me',
+      email: 'cliente@test.com',
+      role: 'customer',
+    };
+
+    render(<Navbar />);
+
+    expect(
+      screen.getByRole('link', { name: 'Mis compras' }),
+    ).toHaveAttribute('href', '/cuenta/compras');
+  });
+
+  it('no ofrece "Mis compras" sin sesión', () => {
+    render(<Navbar />);
+
+    expect(
+      screen.queryByRole('link', { name: 'Mis compras' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('no ofrece "Mis compras" a roles que no son de cliente', () => {
+    authState.value.user = {
+      id: 'user-agency',
+      email: 'agencia@test.com',
+      role: 'agency',
+    };
+
+    render(<Navbar />);
+
+    expect(
+      screen.queryByRole('link', { name: 'Mis compras' }),
+    ).not.toBeInTheDocument();
+  });
 });

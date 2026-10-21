@@ -28,6 +28,7 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | Workers (T-1, comisiones, emails) | ⏳ Diseño aprobado (MKT-008…011) |
 | Panel superadmin marketplace (`/admin`) | ⏳ Planificado (MKT-012) |
 | Cuenta de cliente (`/cuenta`) | ⏳ Planificado (MKT-013) |
+| Historial de compras + boleto QR (`/cuenta/compras`) | ✅ Completado (RT-01…RT-03) |
 | Migraciones marketplace (074–087) | ✅ Aplicadas (074–080 verificado en vivo 2026-10-06; 085–087 posterior) |
 
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
@@ -76,9 +77,12 @@ FASE 3 — Ciclo de vida                       ⏳ Planificada
   MKT-010  Refunds (reservation_refunds)
   MKT-011  Emails (outbox) con EMAIL_DELIVERY_MODE
 
-FASE 4 — Panel admin + Cuenta                ⏳ Planificada
+FASE 4 — Panel admin + Cuenta                ⏳ Planificada (parcial ✅)
   MKT-012  /admin (sidebar) pagos, comisiones, viajes
   MKT-013  /cuenta (mis reservas, boletos, perfil)
+           — ✅ 2026-10-20: historial de compras + boleto QR
+             (/cuenta/compras, RT-01…RT-03); perfil y mis reservas
+             siguen pendientes
 ```
 
 ---
