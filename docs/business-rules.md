@@ -91,6 +91,24 @@ lo contradiga está mal.
 - `reservations.payment_status` es **derivado**
   (`pending|partial|fully_paid|refunded|cancelled`), no fuente de verdad.
   Fuente de verdad: allocations.
+- El historial de compras (RT-01) deriva el estado de cada
+  `checkout_attempt` (`buildPurchaseEstado`): `pendiente_comprobante`,
+  `en_revision`, `rechazado`, `rechazado_final`, `aprobado`,
+  `reserva_confirmada`, `expirado`, `cancelado`, `desconocido`.
+  `reserva_confirmada` **solo** se emite cuando existe la fila de reserva
+  nacida en `verify_checkout_attempt` (estado ≠ pago): un intento
+  `verified` sin reserva es `aprobado`, nunca `reserva_confirmada`.
+
+### Boleto QR (RT-03)
+
+- **Un solo QR por reserva.** El valor es `reservations.qr_code` emitido
+  por la migración 087; el ticket lo devuelve **sin regenerar** nunca.
+  El escáner de `nomadas-tour` valida exactamente ese valor.
+- Elegibilidad: reserva `reserved` + `fully_paid` + `ticket_code` presente.
+  Si no, `GET /…/ticket` responde `404 TICKET_NOT_FOUND` **uniforme**
+  (no se filtra por estado para no revelar existencia).
+- El boleto muestra **todos** los asientos de la reserva y la salida del
+  viaje (`departure_time`), nunca fechas de la reserva (AGENTS reglas 13/14).
 
 ---
 

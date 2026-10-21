@@ -56,6 +56,7 @@ import {
   type PassengerError,
 } from '@/lib/booking/passengers';
 import { applySeatRow, removeSeatRow } from '@/lib/booking/seat-map';
+import { compareSeatCodes, sortSeatCodes } from '@/lib/booking/seat-code';
 import { reviewMessage } from '@/lib/booking/review-message';
 import { claimPendingGuestLocks } from '@/lib/booking/guest-claim';
 import { useSeatLocking } from '@/lib/booking/useSeatLocking';
@@ -1066,8 +1067,9 @@ function NewReservationContent() {
     toast.success('Selección liberada. Elige tus asientos de nuevo.');
   }, [lock, refreshTrip]);
 
+  // Orden natural (A1, A4, A10), independiente del orden de selección.
   const seatCodes = useMemo(
-    () => lock?.seats.map((seat) => seat.seat_code) ?? [],
+    () => sortSeatCodes(lock?.seats.map((seat) => seat.seat_code) ?? []),
     [lock],
   );
 
@@ -1922,29 +1924,30 @@ function NewReservationContent() {
                     {seatCodes.join(', ')}
                   </dd>
                 </div>
-                <div className="flex items-start justify-between gap-4">
-                  <dt className="text-brand-muted">Folio de compra</dt>
-                  <dd className="break-all text-right font-semibold text-brand-navy">
-                    {attemptId}
-                  </dd>
-                </div>
               </dl>
 
               <p className="mt-5 text-[12px] font-medium uppercase text-brand-muted">
                 Pasajeros
               </p>
               <ul className="mt-2 space-y-2">
-                {passengers.map((passenger) => (
-                  <li
-                    key={passenger.seat_id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] bg-[#f1f5f9] px-4 py-2.5 text-sm"
-                  >
-                    <span className="font-medium text-brand-navy">
-                      {passengerFullName(passenger)} · {passenger.document} ·
-                      asiento {seatCodeFor(passenger.seat_id)}
-                    </span>
-                  </li>
-                ))}
+                {[...passengers]
+                  .sort((a, b) =>
+                    compareSeatCodes(
+                      seatCodeFor(a.seat_id),
+                      seatCodeFor(b.seat_id),
+                    ),
+                  )
+                  .map((passenger) => (
+                    <li
+                      key={passenger.seat_id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] bg-[#f1f5f9] px-4 py-2.5 text-sm"
+                    >
+                      <span className="font-medium text-brand-navy">
+                        {passengerFullName(passenger)} · {passenger.document} ·
+                        asiento {seatCodeFor(passenger.seat_id)}
+                      </span>
+                    </li>
+                  ))}
               </ul>
 
               <div className="mt-5 flex items-center justify-between rounded-[10px] bg-[#f1f5f9] px-4 py-3">
@@ -2098,20 +2101,27 @@ function NewReservationContent() {
 
             {passengers.length > 0 ? (
               <ul className="mt-4 space-y-2">
-                {passengers.map((passenger) => (
-                  <li
-                    key={passenger.seat_id}
-                    className="flex items-start justify-between gap-2 text-sm"
-                  >
-                    <span className="font-medium text-brand-navy">
-                      {passengerFullName(passenger)}
-                    </span>
-                    <span className="text-brand-muted">
-                      {passenger.document} · Asiento{' '}
-                      {seatCodeFor(passenger.seat_id)}
-                    </span>
-                  </li>
-                ))}
+                {[...passengers]
+                  .sort((a, b) =>
+                    compareSeatCodes(
+                      seatCodeFor(a.seat_id),
+                      seatCodeFor(b.seat_id),
+                    ),
+                  )
+                  .map((passenger) => (
+                    <li
+                      key={passenger.seat_id}
+                      className="flex items-start justify-between gap-2 text-sm"
+                    >
+                      <span className="font-medium text-brand-navy">
+                        {passengerFullName(passenger)}
+                      </span>
+                      <span className="text-brand-muted">
+                        {passenger.document} · Asiento{' '}
+                        {seatCodeFor(passenger.seat_id)}
+                      </span>
+                    </li>
+                  ))}
               </ul>
             ) : null}
 

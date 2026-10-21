@@ -1286,3 +1286,778 @@ export async function selectCheckoutPaymentMethod(input: {
 
   return data as unknown as SelectCheckoutPaymentMethodResult;
 }
+
+// ── 6) Historial de compras (RT-01) ──────────────────────────────────────────
+
+/** Límites de la lista: el cliente solo puede paginar dentro de estos. */
+export const PURCHASE_HISTORY_DEFAULT_LIMIT = 20;
+export const PURCHASE_HISTORY_MAX_LIMIT = 50;
+export const PURCHASE_HISTORY_MAX_OFFSET = 10_000;
+
+/**
+ * Estado de compra listo para UI. Se deriva del status real del
+ * checkout_attempt; nunca se infiere del hecho de haber enviado un
+ * comprobante. `desconocido` existe para no inventar significado si
+ * una migración futura agrega un status fuera del CHECK actual.
+ */
+export type PurchaseEstado =
+  | 'pendiente_comprobante'
+  | 'en_revision'
+  | 'rechazado'
+  | 'rechazado_final'
+  | 'aprobado'
+  | 'reserva_confirmada'
+  | 'expirado'
+  | 'cancelado'
+  | 'desconocido';
+
+export type PurchaseAccion =
+  | 'enviar_comprobante'
+  | 'reenviar_comprobante'
+  | 'ver_reserva'
+  | 'ninguna';
+
+export type PurchasePagoEstado = 'pendiente' | 'aprobado' | 'rechazado';
+
+export interface PurchaseComprobanteDto {
+  envios: number;
+  restantes: number;
+  referencia: string | null;
+  banco: string | null;
+  fecha_pago: string | null;
+  enviado_en: string | null;
+  rechazos: number;
+  motivo_rechazo: string | null;
+}
+
+export interface PurchasePagoDto {
+  id: string;
+  estado: PurchasePagoEstado;
+  amount_cents: number;
+  currency: string;
+  aprobado_en: string | null;
+}
+
+export interface PurchaseReservaDto {
+  id: string;
+  status: string;
+  payment_status: string | null;
+  ticket_code: string | null;
+  created_at: string;
+}
+
+export interface PurchaseItemDto {
+  attempt_id: string;
+  /** Status crudo de checkout_attempts, sin reinterpretar. */
+  status: string;
+  estado: PurchaseEstado;
+  mensaje: string;
+  accion: PurchaseAccion;
+  puede_reenviar_comprobante: boolean;
+  trip: {
+    id: string;
+    origin: string | null;
+    destination: string | null;
+    departure_time: string | null;
+  };
+  agency: { id: string; name: string | null };
+  /**
+   * `detalle` expone nombre y documento del propio cliente (snapshot que
+   * escribió al crear el intento); jamás incluye teléfono ni el JSON crudo.
+   */
+  pasajeros: {
+    total: number;
+    asientos: string[];
+    detalle: Array<{ asiento: string; nombre: string; documento: string }>;
+  };
+  monto: { unit_price: number; amount_cents: number };
+  comprobante: PurchaseComprobanteDto | null;
+  pago: PurchasePagoDto | null;
+  reserva: PurchaseReservaDto | null;
+  ventana: { expires_at: string; vencida: boolean };
+  created_at: string;
+  closed_at: string | null;
+  verified_at: string | null;
+}
+
+export interface PurchaseHistoryView {
+  items: PurchaseItemDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+interface PurchaseAttemptRow {
+  id: string;
+  status: string;
+  trip_id: string;
+  agency_id: string;
+  seat_ids: string[];
+  passenger_data: Array<{
+    seat_id: string;
+    first_name: string;
+    last_name: string;
+    document: string;
+    phone: string;
+  }> | null;
+  unit_price: number;
+  amount_cents: number;
+  proof_count: number;
+  payment_reference: string | null;
+  bank_origin: string | null;
+  payment_datetime: string | null;
+  proof_submitted_at: string | null;
+  rejection_reason: string | null;
+  rejection_count: number;
+  expires_at: string;
+  created_at: string;
+  closed_at: string | null;
+  verified_at: string | null;
+}
+
+interface PurchasePaymentRow {
+  id: string;
+  reservation_id: string;
+  idempotency_key: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  verified_at: string | null;
+}
+
+interface PurchaseReservationRow {
+  id: string;
+  status: string;
+  payment_status: string | null;
+  ticket_code: string | null;
+  created_at: string;
+}
+
+interface PurchaseTripRow {
+  id: string;
+  route_id: string;
+  departure_time: string;
+}
+
+interface PurchaseRouteRow {
+  id: string;
+  origin: string;
+  destination: string;
+}
+
+interface PurchaseAgencyRow {
+  id: string;
+  name: string;
+}
+
+function purchaseHistoryError(): AppError {
+  return checkoutError(
+    'No se pudo cargar tu historial de compras. Intenta de nuevo',
+    500,
+    'CHECKOUT_ERROR',
+  );
+}
+
+const PAGO_ESTADO_BY_STATUS: Record<string, PurchasePagoEstado> = {
+  pending: 'pendiente',
+  verified: 'aprobado',
+  rejected: 'rechazado',
+};
+
+/**
+ * Traduce el status del intento a los estados de UI. La aprobación y la
+ * reserva confirmada son estados distintos: `reserva_confirmada` SOLO se
+ * emite cuando existe la fila de reserva nacida en verify; enviar un
+ * comprobante nunca basta para afirmarla.
+ */
+function buildPurchaseEstado(input: {
+  status: string;
+  vencida: boolean;
+  proofCount: number;
+  tieneReserva: boolean;
+}): {
+  estado: PurchaseEstado;
+  mensaje: string;
+  accion: PurchaseAccion;
+  puede_reenviar_comprobante: boolean;
+} {
+  const { status, vencida, proofCount, tieneReserva } = input;
+  const puedeReenviar =
+    status === 'rejected' && !vencida && proofCount < MAX_PROOF_SUBMISSIONS;
+
+  switch (status) {
+    case 'created':
+      if (vencida) {
+        return {
+          estado: 'expirado',
+          mensaje: 'El plazo para enviar el comprobante de pago venció.',
+          accion: 'ninguna',
+          puede_reenviar_comprobante: false,
+        };
+      }
+      return {
+        estado: 'pendiente_comprobante',
+        mensaje: 'Compra iniciada: falta enviar el comprobante de pago.',
+        accion: 'enviar_comprobante',
+        puede_reenviar_comprobante: false,
+      };
+    case 'pending_review':
+      return {
+        estado: 'en_revision',
+        mensaje: vencida
+          ? 'Comprobante enviado. El plazo de revisión venció y la agencia aún puede decidir.'
+          : 'Comprobante enviado: la agencia está revisando tu pago.',
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+    case 'rejected': {
+      if (puedeReenviar) {
+        return {
+          estado: 'rechazado',
+          mensaje: 'Comprobante rechazado: puedes enviar uno nuevo.',
+          accion: 'reenviar_comprobante',
+          puede_reenviar_comprobante: true,
+        };
+      }
+      const motivo = vencida
+        ? 'el plazo de reenvío venció'
+        : proofCount >= MAX_PROOF_SUBMISSIONS
+          ? `se alcanzó el límite de ${MAX_PROOF_SUBMISSIONS} envíos`
+          : 'no está habilitado el reenvío';
+      return {
+        estado: 'rechazado',
+        mensaje: `Comprobante rechazado: ${motivo}.`,
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+    }
+    case 'rejected_final':
+      return {
+        estado: 'rechazado_final',
+        mensaje: 'Comprobante rechazado tras los tres intentos permitidos.',
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+    case 'verified':
+      return tieneReserva
+        ? {
+            estado: 'reserva_confirmada',
+            mensaje: 'Reserva confirmada: tu pago fue aprobado por la agencia.',
+            accion: 'ver_reserva',
+            puede_reenviar_comprobante: false,
+          }
+        : {
+            estado: 'aprobado',
+            mensaje: 'Pago aprobado por la agencia.',
+            accion: 'ninguna',
+            puede_reenviar_comprobante: false,
+          };
+    case 'expired':
+      return {
+        estado: 'expirado',
+        mensaje: 'Esta compra venció sin completarse.',
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+    case 'cancelled':
+      return {
+        estado: 'cancelado',
+        mensaje: 'Compra cancelada.',
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+    default:
+      return {
+        estado: 'desconocido',
+        mensaje: 'Esta compra tiene un estado que la app aún no reconoce.',
+        accion: 'ninguna',
+        puede_reenviar_comprobante: false,
+      };
+  }
+}
+
+/**
+ * Historial de compras del cliente autenticado (RT-01).
+ *
+ * Cada item es UN checkout_attempt del propio cliente, enriquecido con
+ * su comprobante, su pago y su reserva definitiva. Solo lectura: nunca
+ * crea reservas ni modifica estados.
+ *
+ * Seguridad:
+ * - El identificador SIEMPRE es input.customer_id (req.ctx.userId del
+ *   servidor); ningún id llega en la query y no hay forma de pedir la
+ *   lista de otra persona.
+ * - Los ids de payments/reservations se derivan EXCLUSIVAMENTE de
+ *   filas ya filtradas por dueño (idempotency_key = mkt007:{attempt}:verify).
+ * - Nunca se selecciona proof_path, history ni idempotency_key: el DTO se
+ *   construye campo a campo. `passenger_data` se selecciona SOLO para
+ *   derivar `pasajeros.detalle` (nombre + documento del propio cliente);
+ *   el teléfono y el JSON crudo jamás salen en la respuesta.
+ * - Paginación acotada (limit 1..50, offset 0..10000).
+ */
+export async function listPurchaseHistory(input: {
+  customerId: string;
+  limit: number;
+  offset: number;
+}): Promise<PurchaseHistoryView> {
+  const { data, error } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select(
+      'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, proof_count, ' +
+        'payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
+        'rejection_reason, rejection_count, expires_at, created_at, closed_at, verified_at',
+    )
+    .eq('customer_id', input.customerId)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    // range es inclusivo: se pide una fila extra para conocer has_more.
+    .range(input.offset, input.offset + input.limit);
+
+  if (error) throw purchaseHistoryError();
+
+  const rows = (data ?? []) as unknown as PurchaseAttemptRow[];
+  const hasMore = rows.length > input.limit;
+  const page = rows.slice(0, input.limit);
+
+  if (page.length === 0) {
+    return { items: [], limit: input.limit, offset: input.offset, has_more: false };
+  }
+
+  const seatIds = [...new Set(page.flatMap((row) => row.seat_ids))];
+  const tripIds = [...new Set(page.map((row) => row.trip_id))];
+  const agencyIds = [...new Set(page.map((row) => row.agency_id))];
+  const attemptIdByKey = new Map(page.map((row) => [`mkt007:${row.id}:verify`, row.id]));
+
+  const [seatsResult, tripsResult, agenciesResult, paymentsResult] = await Promise.all([
+    supabaseAdmin.from('seats').select('id, seat_code').in('id', seatIds),
+    supabaseAdmin.from('trips').select('id, route_id, departure_time').in('id', tripIds),
+    supabaseAdmin.from('agencies').select('id, name').in('id', agencyIds),
+    supabaseAdmin
+      .from('payments')
+      .select('id, reservation_id, idempotency_key, status, amount_cents, currency, verified_at')
+      .in('idempotency_key', [...attemptIdByKey.keys()]),
+  ]);
+
+  if (seatsResult.error || tripsResult.error || agenciesResult.error || paymentsResult.error) {
+    throw purchaseHistoryError();
+  }
+
+  const seatRows = (seatsResult.data ?? []) as unknown as Array<{
+    id: string;
+    seat_code: string;
+  }>;
+  const tripRows = (tripsResult.data ?? []) as unknown as PurchaseTripRow[];
+  const agencyRows = (agenciesResult.data ?? []) as unknown as PurchaseAgencyRow[];
+  const paymentRows = (paymentsResult.data ?? []) as unknown as PurchasePaymentRow[];
+
+  const seatCodeById = new Map(seatRows.map((row) => [row.id, row.seat_code]));
+  const tripById = new Map(tripRows.map((row) => [row.id, row]));
+  const agencyById = new Map(agencyRows.map((row) => [row.id, row]));
+
+  const paymentByAttemptId = new Map<string, PurchasePaymentRow>();
+  for (const payment of paymentRows) {
+    const attemptId = attemptIdByKey.get(payment.idempotency_key);
+    if (attemptId) paymentByAttemptId.set(attemptId, payment);
+  }
+
+  const routeIds = [
+    ...new Set(
+      tripRows
+        .map((row) => row.route_id)
+        .filter((routeId): routeId is string => Boolean(routeId)),
+    ),
+  ];
+  const reservationIds = [
+    ...new Set(
+      paymentRows
+        .map((row) => row.reservation_id)
+        .filter((reservationId): reservationId is string => Boolean(reservationId)),
+    ),
+  ];
+
+  const [routesResult, reservationsResult] = await Promise.all([
+    routeIds.length > 0
+      ? supabaseAdmin.from('routes').select('id, origin, destination').in('id', routeIds)
+      : Promise.resolve({ data: [], error: null }),
+    reservationIds.length > 0
+      ? supabaseAdmin
+          .from('reservations')
+          .select('id, status, payment_status, ticket_code, created_at')
+          .in('id', reservationIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (routesResult.error || reservationsResult.error) {
+    throw purchaseHistoryError();
+  }
+
+  const routeById = new Map(
+    ((routesResult.data ?? []) as unknown as PurchaseRouteRow[]).map((row) => [row.id, row]),
+  );
+  const reservationById = new Map(
+    ((reservationsResult.data ?? []) as unknown as PurchaseReservationRow[]).map((row) => [
+      row.id,
+      row,
+    ]),
+  );
+
+  const now = Date.now();
+  const items: PurchaseItemDto[] = page.map((row) => {
+    const vencida = Date.parse(row.expires_at) <= now;
+    const payment = paymentByAttemptId.get(row.id) ?? null;
+    const reservation = payment
+      ? (reservationById.get(payment.reservation_id) ?? null)
+      : null;
+    const trip = tripById.get(row.trip_id);
+    const route = trip ? routeById.get(trip.route_id) : undefined;
+    const agency = agencyById.get(row.agency_id);
+
+    const estado = buildPurchaseEstado({
+      status: row.status,
+      vencida,
+      proofCount: row.proof_count,
+      tieneReserva: reservation !== null,
+    });
+
+    return {
+      attempt_id: row.id,
+      status: row.status,
+      estado: estado.estado,
+      mensaje: estado.mensaje,
+      accion: estado.accion,
+      puede_reenviar_comprobante: estado.puede_reenviar_comprobante,
+      trip: {
+        id: row.trip_id,
+        origin: route?.origin ?? null,
+        destination: route?.destination ?? null,
+        departure_time: trip?.departure_time ?? null,
+      },
+      agency: { id: row.agency_id, name: agency?.name ?? null },
+      pasajeros: {
+        total: row.seat_ids.length,
+        asientos: row.seat_ids.map((seatId) => seatCodeById.get(seatId) ?? seatId),
+        // Snapshot del cliente: nombre + documento por asiento, sin teléfono.
+        detalle: (Array.isArray(row.passenger_data) ? row.passenger_data : []).map(
+          (passenger) => ({
+            asiento: seatCodeById.get(passenger.seat_id) ?? passenger.seat_id,
+            nombre: `${passenger.first_name} ${passenger.last_name}`.trim(),
+            documento: passenger.document,
+          }),
+        ),
+      },
+      monto: { unit_price: row.unit_price, amount_cents: row.amount_cents },
+      comprobante:
+        row.proof_count > 0
+          ? {
+              envios: row.proof_count,
+              restantes: Math.max(0, MAX_PROOF_SUBMISSIONS - row.proof_count),
+              referencia: row.payment_reference,
+              banco: row.bank_origin,
+              fecha_pago: row.payment_datetime,
+              enviado_en: row.proof_submitted_at,
+              rechazos: row.rejection_count,
+              motivo_rechazo: row.rejection_reason,
+            }
+          : null,
+      pago: payment
+        ? {
+            id: payment.id,
+            estado: PAGO_ESTADO_BY_STATUS[payment.status] ?? 'pendiente',
+            amount_cents: payment.amount_cents,
+            currency: payment.currency,
+            aprobado_en: payment.verified_at,
+          }
+        : null,
+      reserva: reservation
+        ? {
+            id: reservation.id,
+            status: reservation.status,
+            payment_status: reservation.payment_status,
+            ticket_code: reservation.ticket_code,
+            created_at: reservation.created_at,
+          }
+        : null,
+      ventana: { expires_at: row.expires_at, vencida },
+      created_at: row.created_at,
+      closed_at: row.closed_at,
+      verified_at: row.verified_at,
+    };
+  });
+
+  return {
+    items,
+    limit: input.limit,
+    offset: input.offset,
+    has_more: hasMore,
+  };
+}
+
+// ── 7) Boleto QR de una compra (RT-03) ───────────────────────────────────────
+
+/**
+ * Error uniforme para boleto no disponible. Se emite el MISMO 404 ante
+ * cualquier motivo (no existe, ajeno, sin reserva, sin códigos) para no
+ * permitir enumerar compras ajenas ni filtrar el estado interno.
+ */
+function ticketNotFoundError(): AppError {
+  return checkoutError(
+    'Boleto no disponible para esta compra',
+    404,
+    'TICKET_NOT_FOUND',
+  );
+}
+
+/** Fallo real de base de datos: 500 genérico, sin internals filtrados. */
+function ticketQueryError(): AppError {
+  return checkoutError(
+    'No se pudo cargar el boleto. Intenta de nuevo',
+    500,
+    'CHECKOUT_ERROR',
+  );
+}
+
+/**
+ * Aprobación completa de una reserva nacida en verify_checkout_attempt (087).
+ *
+ * Devuelve true SOLO cuando la reserva cumple el contrato atómico de 087:
+ * `status='reserved'` y `payment_status='fully_paid'`. NO se equipara
+ * `reserved` con `confirmed` (075:104-111): `reserved` es el estado
+ * definitivo del ciclo marketplace; `confirmed` es el flujo tour y no se
+ * acepta aquí. Un pago `verified` sin reserva válida (o con una reserva
+ * distinta a la del intento) NUNCA habilita el boleto.
+ */
+function isFullyApprovedReservation(reservation: {
+  status: string;
+  payment_status: string | null;
+}): boolean {
+  return (
+    reservation.status === 'reserved' &&
+    reservation.payment_status === 'fully_paid'
+  );
+}
+
+export interface CheckoutTicketPaxDto {
+  asiento: string;
+  nombre: string;
+}
+
+export interface CheckoutTicketTripDto {
+  origin: string | null;
+  destination: string | null;
+  departure_time: string | null;
+}
+
+/**
+ * Boleto QR de UNA compra para su dueño (RT-03).
+ *
+ * Devuelve el `qr_code` y el `ticket_code` EXACTOS generados por Tour en
+ * `verify_checkout_attempt` (087:1118-1143). No se crean códigos nuevos ni
+ * un sistema de QR paralelo: se reutiliza la fila de reserva ya persistida.
+ *
+ * Cadena de autorización (nunca se acepta customer_id del cliente):
+ *   checkout_attempts (id + customer_id de sesión)
+ *     → payments (idempotency_key = 'mkt007:{attempt}:verify')
+ *     → payments.reservation_id
+ *     → reservations (status='reserved', payment_status='fully_paid',
+ *       qr_code y ticket_code presentes).
+ *
+ * Seguridad:
+ * - Identidad SIEMPRE de input.customerId (req.ctx.userId del servidor).
+ * - 404 uniforme (`TICKET_NOT_FOUND`) para intento inexistente, ajeno,
+ *   no verificado, sin reserva de verificación, pago inexistente/no
+ *   verificado, reserva asociada a otro intento o sin códigos: nada de eso
+ *   se distingue al cliente para evitar enumeración.
+ * - Un intento `verified` sin reserva vinculada (`aprobado` en el
+ *   historial) NO habilita boleto: no existe QR que servir.
+ * - El QR no se expone en la lista del historial (sin select de
+ *   `qr_code` allí); solo se sirve bajo este endpoint autorizado, sin URL
+ *   pública permanente.
+ * - Multi-pasajero: un SOLO QR por reserva (modelo de Tour); se listan los
+ *   asientos/nombres del snapshot del intento para el detalle.
+ * - El DTO se construye campo a campo: jamás salen proof_path, history,
+ *   idempotency_key ni el teléfono del pasajero.
+ */
+export async function getCheckoutTicket(input: {
+  attemptId: string;
+  customerId: string;
+}): Promise<{
+  attempt_id: string;
+  estado: PurchaseEstado;
+  qr_code: string;
+  ticket_code: string;
+  reservation_id: string;
+  reservation_created_at: string;
+  amount_cents: number;
+  currency: string;
+  paid_at: string | null;
+  agency: { id: string; name: string | null };
+  trip: CheckoutTicketTripDto;
+  seats: string[];
+  passengers: CheckoutTicketPaxDto[];
+}> {
+  // 1) Intento del propio cliente. El filtro de dueño es parte de la query.
+  const { data: attempt, error: attemptError } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select(
+      'id, customer_id, status, agency_id, trip_id, seat_ids, passenger_data, amount_cents',
+    )
+    .eq('id', input.attemptId)
+    .eq('customer_id', input.customerId)
+    .maybeSingle();
+
+  if (attemptError) throw ticketQueryError();
+
+  const row = attempt as {
+    id: string;
+    customer_id: string;
+    status: string;
+    agency_id: string;
+    trip_id: string;
+    seat_ids: string[];
+    passenger_data: Array<{
+      seat_id: string;
+      first_name: string;
+      last_name: string;
+    }> | null;
+    amount_cents: number;
+  } | null;
+
+  // 404 uniforme: no existe o es de otro cliente. Nunca se revela cuál.
+  if (!row) throw ticketNotFoundError();
+
+  // 2) Solo un intento verificado puede tener boleto. Los demás estados
+  //    (pending_review, rejected, rejected_final, expired, cancelled,
+  //    created) caen al mismo 404 para no filtrar el ciclo de vida.
+  if (row.status !== 'verified') throw ticketNotFoundError();
+
+  // 3) Pago de verificación nacido en 087, vinculado por idempotency_key.
+  const { data: payment, error: paymentError } = await supabaseAdmin
+    .from('payments')
+    .select('id, reservation_id, status, amount_cents, currency, verified_at')
+    .eq('idempotency_key', `mkt007:${row.id}:verify`)
+    .maybeSingle();
+
+  if (paymentError) throw ticketQueryError();
+
+  const pay = payment as {
+    id: string;
+    reservation_id: string;
+    status: string;
+    amount_cents: number;
+    currency: string;
+    verified_at: string | null;
+  } | null;
+
+  // Sin fila de pago, sin reserva o pago no verificado: mismo 404.
+  if (!pay || pay.status !== 'verified' || !pay.reservation_id) {
+    throw ticketNotFoundError();
+  }
+
+  // 4) Reserva de verificación con sus códigos de boleto.
+  const { data: reservation, error: reservationError } = await supabaseAdmin
+    .from('reservations')
+    .select(
+      'id, status, payment_status, ticket_code, qr_code, created_at, trip_id',
+    )
+    .eq('id', pay.reservation_id)
+    .maybeSingle();
+
+  if (reservationError) throw ticketQueryError();
+
+  const res = reservation as {
+    id: string;
+    status: string;
+    payment_status: string | null;
+    ticket_code: string | null;
+    qr_code: string | null;
+    created_at: string;
+    trip_id: string;
+  } | null;
+
+  // 5) Aprobación completa + códigos presentes. La reserva debe pertenecer
+  //    al mismo intento vía pago y al mismo viaje; QR y ticket_code deben
+  //    existir. Cualquier fallo → 404 uniforme.
+  if (
+    !res ||
+    !isFullyApprovedReservation(res) ||
+    !res.qr_code ||
+    !res.ticket_code
+  ) {
+    throw ticketNotFoundError();
+  }
+
+  // Contexto de agencia y viaje para el boleto (sin teléfono ni extras).
+  const [agencyResult, tripResult, seatResult] = await Promise.all([
+    supabaseAdmin
+      .from('agencies')
+      .select('id, name')
+      .eq('id', row.agency_id)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('trips')
+      .select('id, route_id, departure_time')
+      .eq('id', row.trip_id)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('seats')
+      .select('id, seat_code')
+      .in('id', [...new Set(row.seat_ids)]),
+  ]);
+
+  if (agencyResult.error || tripResult.error || seatResult.error) {
+    throw ticketQueryError();
+  }
+
+  const tripRow = tripResult.data as {
+    id: string;
+    route_id: string | null;
+    departure_time: string | null;
+  } | null;
+
+  let routeRow: { origin: string; destination: string } | null = null;
+  if (tripRow?.route_id) {
+    const { data: r, error: routeError } = await supabaseAdmin
+      .from('routes')
+      .select('origin, destination')
+      .eq('id', tripRow.route_id)
+      .maybeSingle();
+    if (routeError) throw ticketQueryError();
+    routeRow = (r as { origin: string; destination: string } | null) ?? null;
+  }
+
+  const seatRows = (seatResult.data ?? []) as unknown as Array<{
+    id: string;
+    seat_code: string;
+  }>;
+  const seatCodeById = new Map(seatRows.map((s) => [s.id, s.seat_code]));
+
+  const agencyRow = agencyResult.data as { id: string; name: string } | null;
+  const seats = row.seat_ids.map((id) => seatCodeById.get(id) ?? id);
+  const passengers = (Array.isArray(row.passenger_data)
+    ? row.passenger_data
+    : []
+  ).map((p) => ({
+    asiento: seatCodeById.get(p.seat_id) ?? p.seat_id,
+    nombre: `${p.first_name} ${p.last_name}`.trim(),
+  }));
+
+  return {
+    attempt_id: row.id,
+    estado: 'reserva_confirmada',
+    qr_code: res.qr_code,
+    ticket_code: res.ticket_code,
+    reservation_id: res.id,
+    reservation_created_at: res.created_at,
+    amount_cents: pay.amount_cents,
+    currency: pay.currency,
+    paid_at: pay.verified_at,
+    agency: { id: row.agency_id, name: agencyRow?.name ?? null },
+    trip: {
+      origin: routeRow?.origin ?? null,
+      destination: routeRow?.destination ?? null,
+      departure_time: tripRow?.departure_time ?? null,
+    },
+    seats,
+    passengers,
+  };
+}

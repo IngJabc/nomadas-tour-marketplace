@@ -9,7 +9,12 @@ import {
   createCheckoutAttempt,
   getCheckoutAttempt,
   getCheckoutPaymentMethods,
+  getCheckoutTicket,
+  listPurchaseHistory,
   parseCheckoutProofUpload,
+  PURCHASE_HISTORY_DEFAULT_LIMIT,
+  PURCHASE_HISTORY_MAX_LIMIT,
+  PURCHASE_HISTORY_MAX_OFFSET,
   selectCheckoutPaymentMethod,
   submitCheckoutProof,
   type CreateCheckoutAttemptInput,
@@ -122,6 +127,50 @@ router.post('/attempts', createLimiter, auth, async (req, res, next) => {
 });
 
 /**
+ * GET /api/public/checkout/attempts
+ * Historial de compras del cliente autenticado (RT-01): lista paginada
+ * de SUS intentos de compra con estado de checkout, comprobante, pago y
+ * reserva definitiva, más un mensaje de estado listo para UI.
+ *
+ * - Identidad SIEMPRE de req.ctx (servidor): la query no acepta ids.
+ * - Solo lectura: no crea reservas ni modifica estados.
+ * - Paginación acotada: limit 1..50 (default 20), offset 0..10000.
+ */
+const purchaseHistoryQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PURCHASE_HISTORY_MAX_LIMIT)
+    .default(PURCHASE_HISTORY_DEFAULT_LIMIT),
+  offset: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(PURCHASE_HISTORY_MAX_OFFSET)
+    .default(0),
+});
+
+router.get('/attempts', auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { limit, offset } = parseOrThrow(purchaseHistoryQuerySchema, req.query);
+
+    const result = await listPurchaseHistory({
+      customerId: req.ctx!.userId,
+      limit,
+      offset,
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/public/checkout/attempts/:attemptId
  * Estado de la compra para su dueño: estado, ventana, conciliación,
  * snapshot de pasajeros y comprobantes restantes.
@@ -140,6 +189,48 @@ router.get('/attempts/:attemptId', auth, async (req, res, next) => {
     );
 
     const result = await getCheckoutAttempt({
+      attemptId,
+      customerId: req.ctx!.userId,
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/checkout/attempts/:attemptId/ticket
+ * Boleto QR de una compra para su dueño (RT-03).
+ *
+ * Devuelve el `qr_code` y `ticket_code` EXACTOS generados por Tour en
+ * `verify_checkout_attempt` (087). El backend comprueba la aprobación
+ * completa (intento verificado + reserva nacida en verify con
+ * status='reserved', payment_status='fully_paid' y códigos presentes);
+ * jamás confía en el estado del frontend.
+ *
+ * Seguridad:
+ * - Identidad SIEMPRE de req.ctx (servidor); el cliente no envía ids de
+ *   propiedad. Requiere rol customer.
+ * - 404 uniforme (TICKET_NOT_FOUND) para intento inexistente, ajeno,
+ *   pendiente, rechazado, expirado o sin reserva válida: nada de eso se
+ *   distingue, para no permitir enumerar compras ajenas ni filtrar el
+ *   ciclo de vida.
+ * - Un intento `verified` sin reserva vinculada NO devuelve boleto.
+ * - El QR solo se sirve bajo este endpoint autorizado; no hay URL pública
+ *   permanente ni select de `qr_code` en el historial.
+ */
+router.get('/attempts/:attemptId/ticket', auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { attemptId } = parseOrThrow(
+      z.object({ attemptId: uuidSchema }),
+      req.params,
+    );
+
+    const result = await getCheckoutTicket({
       attemptId,
       customerId: req.ctx!.userId,
     });

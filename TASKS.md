@@ -1,7 +1,7 @@
 # TASKS
 
 > Documento **operativo del sprint**. Una tarea activa a la vez; marcar `[x]` al completar.
-> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas. Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
+> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras) y RT-03 (boleto QR)** completados. Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
 > **Visión de producto:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 > **Contexto del proyecto:** [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md)
 > **Contrato con nomadas-tour:** [`docs/NOMADAS_TOUR_INTEGRATION.md`](docs/NOMADAS_TOUR_INTEGRATION.md)
@@ -346,13 +346,56 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 ---
 
+## RT-01…RT-03 — Historial de compras + boleto QR (2026-10-20)
+
+- [x] **RT-01** — Historial de compras (backend)
+  - `listPurchaseHistory()` en `backend/src/services/checkout.service.ts`:
+    un item por `checkout_attempt` propio del cliente, con estado derivado
+    `buildPurchaseEstado`: `pendiente_comprobante`, `en_revision`,
+    `rechazado`, `rechazado_final`, `aprobado`, `reserva_confirmada`,
+    `expirado`, `cancelado`, `desconocido`.
+  - `GET /api/public/checkout/attempts` (Bearer + `requireCustomer`):
+    lista paginada de las compras propias; nunca expone ajenas.
+  - `reserva_confirmada` **solo** con reserva `reserved` + `fully_paid` +
+    fila de reserva existente (estado ≠ pago; enviar comprobante nunca basta).
+- [x] **RT-02** — Historial de compras (frontend)
+  - `/cuenta/compras` → `app/cuenta/compras/page.tsx`: badges de estado,
+    pasajeros con asientos en orden natural (A1, A2, …, A10), estados
+    vacíos/loading/error y `retry`.
+  - Acción **"Ver boleto"** solo si el backend marca `can_view_ticket`
+    (reserva confirmada con `ticket_code` real) — RT-03 decide elegibilidad.
+  - `Navbar`: enlace "Mis compras" solo para rol `customer` autenticado.
+  - Folio/`attempt_id` **oculto en pantalla** (solo en el href del boleto).
+- [x] **RT-03** — Boleto QR (backend + frontend)
+  - `getCheckoutTicket()` + `GET /api/public/checkout/attempts/:attemptId/ticket`:
+    exige reserva `reserved` + `fully_paid`; 404 uniforme `TICKET_NOT_FOUND`
+    (no filtra por estado); devuelve `qr_code`/`ticket_code` de la migración
+    087 **sin regenerar**.
+  - `/cuenta/compras/[attemptId]/boleto` → `components/compras/PurchaseTicket.tsx`
+    con `react-qr-code@^2.2.0` (mismo componente/valor que
+    `ReservationTicket` de Tour) y descarga PNG con `html-to-image@^1.11.13`
+    sobre el nodo visible (`boleto-<ticket_code>.png`).
+  - Un **un** QR por reserva; el escáner y las RPC de abordaje de
+    `nomadas-tour` **no cambian**.
+  - Reglas AGENTS ya presentes y respetadas: todos los asientos en el
+    boleto (regla 13) y "Salida" = `departure_time` del viaje (regla 14).
+- Validación (2026-10-20): frontend **271/271** (19 archivos) · backend
+  **272/274** (los 2 fallos son preexistentes: `085-payment-admin-actions`
+  y `auth.test.ts` de roles) · `tsc --noEmit` raíz ✓ y backend ✓ ·
+  `next build` ✓ (ruta `ƒ /cuenta/compras/[attemptId]/boleto`) ·
+  `git diff --check` ✓.
+- Dependencias: `+react-qr-code`, `+html-to-image`; se descartó `qrcode`
+  de la primera iteración (nunca llegó a commit).
+
+---
+
 ## Después
 
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
 | — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
-| — | Fase 4 — Panel admin + /cuenta | Planificada |
+| — | Fase 4 — Panel admin + /cuenta | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
 | — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
 | — | Migrar `middleware.ts` → `proxy` (deprecación Next 16; evaluar en ambos repos) | Deuda técnica |

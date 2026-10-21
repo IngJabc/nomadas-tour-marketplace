@@ -2738,8 +2738,9 @@ describe('Comprobante de pago (MKT-007)', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Pago' })).toBeInTheDocument();
     expect(screen.getByText(/Enviado el/)).toBeInTheDocument();
-    // El folio de compra es el intento, no una reserva inexistente.
-    expect(screen.getByText('att-1')).toBeInTheDocument();
+    // El folio (id del intento) ya NO se muestra en pantalla (RT-02):
+    // la restauración sigue funcionando, pero el id no se expone al cliente.
+    expect(screen.queryByText('att-1')).not.toBeInTheDocument();
   });
 
   it('ignora un marcador de checkout malformado y aplica la recuperación habitual', async () => {
@@ -4327,5 +4328,48 @@ describe('Nueva compra tras checkout verificado (Fase 3)', () => {
     expect(mockedCreate.mock.calls[1][1]).toBe(mockedCreate.mock.calls[0][1]);
     expect(String(mockedCreate.mock.calls[0][1])).not.toBe(VERIFIED_KEY);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+// ─── RT-02 · Orden natural de los asientos ──────────────────────────────────
+
+describe('Orden de asientos (RT-02)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+  });
+
+  it('el resumen muestra A2, A10 (orden natural) sin importar el orden de selección', async () => {
+    search.value = '?trip=trip-1';
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    // El servidor devuelve los asientos en el orden en que se bloquearon:
+    // A10 primero, A2 después. El resumen debe ordenarlos de todos modos.
+    mockedLock.mockResolvedValue({
+      locked: true,
+      trip_id: 'trip-1',
+      ttl_seconds: 900,
+      lock_expires_at: futureExpiry(),
+      seats: [
+        { id: 'seat-10', seat_code: 'A10' },
+        { id: 'seat-2', seat_code: 'A2' },
+      ],
+    });
+
+    await renderWizard();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Asiento A2, disponible' }),
+      );
+    });
+
+    expect(screen.getByText('2 seleccionados')).toBeInTheDocument();
+    // Orden natural: A2 antes que A10.
+    expect(
+      screen.getByText('2 pasajeros · asientos A2, A10'),
+    ).toBeInTheDocument();
+    // Ni el orden de selección (A10, A2) ni el lexicográfico.
+    expect(
+      screen.queryByText('2 pasajeros · asientos A10, A2'),
+    ).not.toBeInTheDocument();
   });
 });

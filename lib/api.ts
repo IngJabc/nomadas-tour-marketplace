@@ -432,6 +432,25 @@ export const checkoutApi = {
         body: JSON.stringify({ payment_method_id: paymentMethodId }),
       },
     ),
+
+  // — RT-01/RT-02 · Historial de compras del cliente —
+  // Colección paginada de LOS intentos del cliente autenticado. El backend
+  // filtra por el customer_id de la sesión: aquí solo se envían limit/offset.
+  listPurchases: (limit: number, offset: number) =>
+    request<PurchaseHistoryView>('/public/checkout/attempts', {
+      params: { limit: String(limit), offset: String(offset) },
+    }),
+
+  // — RT-03 · Boleto QR de una compra —
+  // El backend deriva el cliente de la sesión y comprueba la aprobación
+  // completa (intento verificado + reserva nacida en verify). Un 404
+  // uniforme (TICKET_NOT_FOUND) significa que la compra no es elegible para
+  // boleto: no distingue entre inexistente, ajena o sin reserva. El
+  // `qr_code` es el valor EXACTO generado por Tour; no se inventa aquí.
+  getTicket: (attemptId: string) =>
+    request<CheckoutTicketView>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/ticket`,
+    ),
 };
 
 // ── MKT-007.4 · Canales de pago (pago móvil) ────────────────────────────────
@@ -505,6 +524,122 @@ export interface CheckoutAttemptView {
   created_at: string;
   closed_at: string | null;
   verified_at: string | null;
+}
+
+// ── RT-01/RT-02 · Historial de compras (DTO de GET /public/checkout/attempts) ──
+// Espejo del DTO del backend (checkout.service.ts): el campo `estado` es el
+// estado derivado listo para UI; `status` conserva el valor crudo de la DB.
+
+export type PurchaseEstado =
+  | 'pendiente_comprobante'
+  | 'en_revision'
+  | 'rechazado'
+  | 'rechazado_final'
+  | 'aprobado'
+  | 'reserva_confirmada'
+  | 'expirado'
+  | 'cancelado'
+  | 'desconocido';
+
+export type PurchaseAccion =
+  | 'enviar_comprobante'
+  | 'reenviar_comprobante'
+  | 'ver_reserva'
+  | 'ninguna';
+
+export interface PurchaseComprobanteDto {
+  envios: number;
+  restantes: number;
+  referencia: string | null;
+  banco: string | null;
+  fecha_pago: string | null;
+  enviado_en: string | null;
+  rechazos: number;
+  motivo_rechazo: string | null;
+}
+
+export interface PurchasePagoDto {
+  id: string;
+  estado: 'pendiente' | 'aprobado' | 'rechazado';
+  amount_cents: number;
+  currency: string;
+  aprobado_en: string | null;
+}
+
+export interface PurchaseReservaDto {
+  id: string;
+  status: string;
+  payment_status: string | null;
+  ticket_code: string | null;
+  created_at: string;
+}
+
+export interface PurchaseItemDto {
+  attempt_id: string;
+  /** Status crudo de checkout_attempts, sin reinterpretar. */
+  status: string;
+  estado: PurchaseEstado;
+  mensaje: string;
+  accion: PurchaseAccion;
+  puede_reenviar_comprobante: boolean;
+  trip: {
+    id: string;
+    origin: string | null;
+    destination: string | null;
+    departure_time: string | null;
+  };
+  agency: { id: string; name: string | null };
+  pasajeros: {
+    total: number;
+    asientos: string[];
+    /** Nombre y documento del propio cliente; sin teléfono ni datos crudos. */
+    detalle: Array<{ asiento: string; nombre: string; documento: string }>;
+  };
+  monto: { unit_price: number; amount_cents: number };
+  comprobante: PurchaseComprobanteDto | null;
+  pago: PurchasePagoDto | null;
+  reserva: PurchaseReservaDto | null;
+  ventana: { expires_at: string; vencida: boolean };
+  created_at: string;
+  closed_at: string | null;
+  verified_at: string | null;
+}
+
+/** Respuesta real del endpoint: SIN total_returned ni total de registros. */
+export interface PurchaseHistoryView {
+  items: PurchaseItemDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+// ── RT-03 · Boleto QR de una compra (DTO de
+// GET /public/checkout/attempts/:attemptId/ticket) ──
+// El backend solo responde 200 cuando la compra es elegible (intento
+// verificado + reserva nacida en verify con aprobación completa). El
+// `qr_code` es el valor EXACTO generado por Tour en 087; jamás se inventa.
+
+export interface CheckoutTicketView {
+  attempt_id: string;
+  estado: 'reserva_confirmada';
+  /** Valor crudo del QR escaneable, generado por Tour. */
+  qr_code: string;
+  /** CHAR(8) derivado del UUID de la reserva por Tour. */
+  ticket_code: string;
+  reservation_id: string;
+  reservation_created_at: string;
+  amount_cents: number;
+  currency: string;
+  paid_at: string | null;
+  agency: { id: string; name: string | null };
+  trip: {
+    origin: string | null;
+    destination: string | null;
+    departure_time: string | null;
+  };
+  seats: string[];
+  /** Nombre + asiento del propio cliente; sin teléfono ni documento. */
+  passengers: Array<{ asiento: string; nombre: string }>;
 }
 
 // ── Revisión de pagos de agencia — OBSOLETO desde MKT-007 ───────────────────

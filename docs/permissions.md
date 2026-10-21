@@ -8,7 +8,10 @@ Rol nuevo propio de este repo. Acceso al storefront autenticado:
 - Crear y consultar **sus propias** reservas (`reservations.customer_id`).
 - Subir comprobantes de pago de **sus propias** reservas.
 - Consultar estado de saldo por pasajero de sus reservas.
-- Ver su boleto / QR de sus reservas.
+- Consultar el historial de **sus propias** compras (`checkout_attempts`)
+  con estado derivado (RT-01).
+- Ver su boleto / QR de sus reservas aprobadas (`qr_code`/`ticket_code`
+  emitidos por la migración 087; RT-03, solo `reserved` + `fully_paid`).
 - Gestionar su perfil (`public.users` fila propia).
 
 No puede:
@@ -18,16 +21,19 @@ No puede:
 - Acceder a rutas admin ni agency de `nomadas-tour`.
 - Modificar precios, comisiones ni configuración de viajes.
 
-La propiedad se determina por `reservations.customer_id` (PENDING: columna a
-crear — ver `docs/NOMADAS_TOUR_INTEGRATION.md`).
+La propiedad se determina por `reservations.customer_id` (columna creada en
+la migración 075 — ver `docs/NOMADAS_TOUR_INTEGRATION.md`) y, en el
+historial, por `checkout_attempts.customer_id`.
 
 ## SUPERADMIN (marketplace)
 
 Disponible en este repo para el panel admin marketplace (PENDING):
 
 - Lectura/escritura de reservas marketplace.
-- Verificación/rechazo de pagos (por `payment_id`, nunca por `reservation_id`).
 - Lectura de comisiones y `platform_config`.
+- La verificación/rechazo de pagos **vive en `nomadas-tour`**
+  (`/agency/payments`, por `attempt_id`, MKT-006/007); los endpoints admin
+  legacy de pagos de este repo responden `410 Gone`.
 - Sin acceso a operación de agencias (eso vive en `nomadas-tour`).
 
 ## Roles de `nomadas-tour` (referencia — otro repo)
