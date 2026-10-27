@@ -12,7 +12,7 @@ import { useOptionalAuthUser } from "@/components/auth/AuthProvider";
 /** Solo rutas internas: evita open redirect con el parámetro `redirect`. */
 function safeRedirect(value: string | null): string {
   if (value && value.startsWith("/") && !value.startsWith("//")) return value;
-  return "/viajes";
+  return "/trips";
 }
 
 function LoginForm() {
@@ -53,7 +53,7 @@ function LoginForm() {
   };
 
   return (
-    <main className="flex flex-1 items-center justify-center px-8 pt-24 pb-16">
+    <main className="flex flex-1 items-center justify-center px-4 sm:px-6 pt-24 pb-16">
       <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-brand-surface p-8 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
         <div className="border-l-4 border-brand-cyan pl-3">
           <h1 className="text-2xl font-bold">Iniciar sesión</h1>

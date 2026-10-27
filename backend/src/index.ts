@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import app from './app.js';
 import { env } from './config/env.js';
-import { supabaseAdmin } from './config/database.js';
 import { expireStaleGuestSessions } from './services/guest-session.service.js';
+import { runPeriodicCheckoutCleanup } from './services/checkout-cleanup.service.js';
 import { initSentryFromEnv } from './observability/init-from-env.js';
 import {
   captureException,
@@ -39,32 +39,16 @@ async function gracefulShutdown() {
 process.on('SIGTERM', () => { void gracefulShutdown(); });
 process.on('SIGINT', () => { void gracefulShutdown(); });
 
-// Auto-expiration for locked seats (every 60s).
-// Marketplace TTL: env.LOCK_TTL_SECONDS (900). Interno/nomadas-tour: 600.
+// MKT-010: auto-expiración del checkout + locks de asientos (cada 60 s).
+// 1) `cleanup_expired_checkout_attempts` (RPC 087) cierra los intentos
+//    vencidos y libera SOLO sus locks — la autoridad del tiempo es la BD.
+// 2) El release directo de locks vencidos excluye asientos de compras en
+//    curso (`.is('checkout_attempt_id', null)`): esos solo los libera la
+//    RPC en (1). Marketplace TTL: env.LOCK_TTL_SECONDS (900). Interno/
+//    nomadas-tour: 600.
 setInterval(async () => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('seats')
-      .update({
-        status: 'available',
-        locked_by: null,
-        locked_at: null,
-        lock_expires_at: null,
-        guest_session_id: null,
-      })
-      .eq('status', 'locked')
-      .lt('lock_expires_at', new Date().toISOString())
-      .select();
-    if (error) {
-      console.error('[LockCleanup] Error:', error.message);
-      captureException(new Error(error.message), {
-        tags: { service: 'api', area: 'lock_cleanup' },
-        fingerprint: fingerprintHttpError(500, 'LOCK_CLEANUP'),
-      });
-    } else if ((data || []).length > 0) {
-      console.log(`[LockCleanup] Released ${data!.length} expired lock(s)`);
-    }
-
+    await runPeriodicCheckoutCleanup();
     await expireStaleGuestSessions();
   } catch (err: any) {
     console.error('[LockCleanup] Error:', err.message);

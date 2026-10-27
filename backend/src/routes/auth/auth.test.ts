@@ -433,12 +433,26 @@ describe('Auth API — schema real de public.users (id, email, password_hash, ro
     expect(body.lock_expires_at).toBeNull();
   });
 
-  it('roles distintos de customer no obtienen autorizacion customer', async () => {
+  it('los roles marketplace inician sesión, un rol desconocido queda en 401 y la API customer exige role customer', async () => {
     givenPasswordGrantSucceeds(AGENCY_ID);
     givenUserRow(AGENCY_ID, 'agency', 'agencia@example.com');
 
-    const deniedLogin = await postJson(port, '/api/auth/login', {
+    const agencyLogin = await postJson(port, '/api/auth/login', {
       email: 'agencia@example.com',
+      password: PASSWORD,
+    });
+    expect(agencyLogin.status).toBe(200);
+    expect(agencyLogin.body.user).toEqual({
+      id: AGENCY_ID,
+      email: 'agencia@example.com',
+      role: 'agency',
+    });
+
+    givenPasswordGrantSucceeds(NEW_USER_ID);
+    givenUserRow(NEW_USER_ID, 'agent', 'agente@example.com');
+
+    const deniedLogin = await postJson(port, '/api/auth/login', {
+      email: 'agente@example.com',
       password: PASSWORD,
     });
     expect(deniedLogin.status).toBe(401);

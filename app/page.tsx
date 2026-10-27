@@ -5,7 +5,7 @@ export default function HomePage() {
     <main className="flex-1">
       {/* Hero */}
       <section className="bg-brand-dark text-white">
-        <div className="mx-auto max-w-7xl px-8 py-24 sm:py-32">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 py-24 sm:py-32">
           <p className="mb-4 text-sm font-semibold uppercase tracking-widest text-brand-cyan">
             Nómadas Marketplace
           </p>
@@ -18,7 +18,7 @@ export default function HomePage() {
           </p>
           <div className="mt-10 flex flex-wrap gap-4">
             <Link
-              href="/viajes"
+              href="/trips"
               className="rounded-[10px] bg-brand-cyan px-6 py-3.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
             >
               Buscar viajes
@@ -34,7 +34,7 @@ export default function HomePage() {
       </section>
 
       {/* Quick steps */}
-      <section className="mx-auto max-w-7xl px-8 py-16">
+      <section className="mx-auto max-w-7xl px-4 sm:px-6 py-16">
         <div className="grid gap-8 sm:grid-cols-3">
           {[
             {

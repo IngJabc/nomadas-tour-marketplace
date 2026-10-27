@@ -92,7 +92,7 @@ describe('Navbar', () => {
 
     expect(
       screen.getByRole('link', { name: 'Mis compras' }),
-    ).toHaveAttribute('href', '/cuenta/compras');
+    ).toHaveAttribute('href', '/account/purchases');
   });
 
   it('no ofrece "Mis compras" sin sesión', () => {

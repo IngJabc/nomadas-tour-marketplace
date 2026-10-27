@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -11,7 +18,9 @@ import {
   Users,
 } from "lucide-react";
 import { publicApi, type PublicTrip } from "@/lib/api";
+import { DatePicker } from "@/components/ui/DatePicker";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
+import { subscribeToTripCatalog } from "@/lib/realtime/subscriptions";
 import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from "@/lib/price";
 import { formatDateTimeShort, isDepartureTimeInFuture, toBusinessDateString } from "@/lib/timezone";
 
@@ -24,6 +33,9 @@ interface Filters {
 const EMPTY_FILTERS: Filters = { origin: "", destination: "", date: "" };
 
 const SKELETON_KEYS = ["sk-1", "sk-2", "sk-3"];
+
+/** Espera tras un evento Realtime antes de re-consultar el catálogo (RT-04A). */
+const REFRESH_DEBOUNCE_MS = 500;
 
 function tripMatches(trip: PublicTrip, filters: Filters): boolean {
   const origin = filters.origin.trim().toLowerCase();
@@ -51,17 +63,32 @@ export default function ViajesPage() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  /** Última secuencia de carga: descarta respuestas viejas (RT-04A). */
+  const seqRef = useRef(0);
+  /** Timer del refresco realtime (RT-04A): un solo disparo por ráfaga. */
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * `silent` = refresco en segundo plano (RT-04A): no reemplaza la
+   * rejilla por skeleton. Con datos ya cargados, un fallo de refresco se
+   * muestra como banner inline (patrón del historial) en lugar de ocultar
+   * los resultados ni silenciar el error.
+   */
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    const seq = ++seqRef.current;
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const response = await publicApi.trips();
       // Un viaje cuya salida ya pasó no es reservable: no se lista, aunque el
       // backend lo devuelva (defensa en profundidad).
+      if (seq !== seqRef.current) return;
       setTrips(
         response.trips.filter((trip) => isDepartureTimeInFuture(trip.departure_time)),
       );
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setError(
         getApiErrorMessage(
           e,
@@ -69,13 +96,61 @@ export default function ViajesPage() {
         ),
       );
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  /**
+   * RT-04A: cualquier evento Realtime del catálogo re-consulta la API en
+   * segundo plano. Colapsa ráfagas en una sola petición; si el usuario ya
+   * no está en la pantalla, el cleanup cancela el timer.
+   */
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void load({ silent: true });
+    }, REFRESH_DEBOUNCE_MS);
+  }, [load]);
+
+  // Claves estables de los ids visibles: evitan re-suscribirse en cada
+  // render y cambian solo cuando cambia el conjunto (nuevos viajes/agencias).
+  const tripIdsKey = useMemo(
+    () => trips.map((trip) => trip.id).sort().join(","),
+    [trips],
+  );
+  const agencyIdsKey = useMemo(
+    () =>
+      [
+        ...new Set(
+          trips.flatMap((trip) => (trip.agencies ?? []).map((agency) => agency.id)),
+        ),
+      ]
+        .sort()
+        .join(","),
+    [trips],
+  );
+
+  // Suscripción realtime del catálogo (RT-04A): trips sin filtro (viajes
+  // nuevos y cancelaciones), trip_agencies/agencias acotadas a lo cargado.
+  useEffect(() => {
+    const tripIds = tripIdsKey ? tripIdsKey.split(",") : [];
+    const agencyIds = agencyIdsKey ? agencyIdsKey.split(",") : [];
+    const cleanup = subscribeToTripCatalog(tripIds, agencyIds, scheduleRefresh);
+    return () => {
+      cleanup();
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [tripIdsKey, agencyIdsKey, scheduleRefresh]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -103,7 +178,7 @@ export default function ViajesPage() {
   const labelClass = "mb-1.5 block text-xs font-medium uppercase text-brand-muted";
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-8 pt-24 pb-16">
+    <main className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
       <div className="border-l-4 border-brand-cyan pl-3">
         <h1 className="text-[28px] font-extrabold">Viajes disponibles</h1>
         <p className="mt-1 text-sm text-brand-muted">
@@ -146,15 +221,12 @@ export default function ViajesPage() {
             />
           </div>
           <div>
-            <label htmlFor="filter-date" className={labelClass}>
-              Fecha
-            </label>
-            <input
-              id="filter-date"
-              type="date"
+            <DatePicker
+              label="Fecha"
               value={filters.date}
-              onChange={(e) => setFilters((f) => ({ ...f, date: e.target.value }))}
-              className={inputClass}
+              onChange={(date) => setFilters((f) => ({ ...f, date }))}
+              placeholder="Elige una fecha"
+              className="w-full"
             />
           </div>
           <button
@@ -189,7 +261,7 @@ export default function ViajesPage() {
           </div>
         )}
 
-        {!loading && error && (
+        {!loading && error && trips.length === 0 && (
           <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-danger-bg)] text-[#ef4444]">
               <AlertTriangle size={24} strokeWidth={1.75} aria-hidden />
@@ -200,8 +272,28 @@ export default function ViajesPage() {
             <p className="mt-2 max-w-md text-sm text-brand-muted">{error}</p>
             <button
               type="button"
-              onClick={load}
-              className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+              onClick={() => load()}
+              className="mt-6 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+            >
+              <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
+              Reintentar
+            </button>
+          </div>
+        )}
+
+        {/* Refresco realtime fallido con datos ya cargados (RT-04A): el
+            fallo queda visible sin ocultar el catálogo. */}
+        {!loading && error && trips.length > 0 && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-[#fef2f2] px-4 py-3"
+          >
+            <p className="text-sm font-semibold text-[#ef4444]">{error}</p>
+            <button
+              type="button"
+              onClick={() => load()}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-[10px] bg-white px-4 py-2 text-xs font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
               Reintentar
@@ -221,7 +313,7 @@ export default function ViajesPage() {
             </p>
             <button
               type="button"
-              onClick={load}
+              onClick={() => load()}
               className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
             >
               <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
@@ -251,7 +343,7 @@ export default function ViajesPage() {
           </div>
         )}
 
-        {!loading && !error && visibleTrips.length > 0 && (
+        {!loading && visibleTrips.length > 0 && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs text-brand-muted">
@@ -380,9 +472,9 @@ export default function ViajesPage() {
                       ) : (
                         <Link
                           // El selector de agencias vive DENTRO del checkout
-                          // (/reservas/nueva?trip=): el catálogo nunca deriva
-                          // a /viajes/[id] para elegir agencia.
-                          href={`/reservas/nueva?trip=${trip.id}`}
+                          // (/reservations/new?trip=): el catálogo nunca deriva
+                          // a /trips/[id] para elegir agencia.
+                          href={`/reservations/new?trip=${trip.id}`}
                           className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                         >
                           Reservar

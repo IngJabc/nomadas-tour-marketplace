@@ -42,6 +42,7 @@ interface SeatRow {
   locked_by: string | null;
   guest_session_id: string | null;
   lock_expires_at: string | null;
+  checkout_attempt_id: string | null;
 }
 
 function seatCodes(rows: SeatRow[]): string {
@@ -142,7 +143,7 @@ export class SeatLockService {
     const { data: seatRows, error: seatsError } = await supabaseAdmin
       .from('seats')
       .select(
-        'id, trip_id, seat_code, status, locked_by, guest_session_id, lock_expires_at',
+        'id, trip_id, seat_code, status, locked_by, guest_session_id, lock_expires_at, checkout_attempt_id',
       )
       .in('id', seatIds);
 
@@ -177,6 +178,23 @@ export class SeatLockService {
     if (heldByOther.length > 0) {
       throw new AppError(
         `Asientos bloqueados por otro usuario: ${seatCodes(heldByOther)}`,
+        409,
+        'SEAT_LOCKED',
+      );
+    }
+
+    // MKT-009: los asientos vinculados a un checkout_attempt en curso
+    // pertenecen a ESA compra (su ventana la fija el servidor). Re-lockearlos
+    // aquí acortaría su TTL al del marketplace (900 s) y, al vencer, el
+    // trigger de 087 borraría el vínculo y destruiría la compra: se rechazan
+    // en lugar de "extender". Solo puede alcanzar este punto el dueño del
+    // intento (el de otro cliente ya cae en heldByOther).
+    const claimedByAttempt = seats.filter(
+      (seat) => seat.checkout_attempt_id != null,
+    );
+    if (claimedByAttempt.length > 0) {
+      throw new AppError(
+        `Asientos de una compra en curso: ${seatCodes(claimedByAttempt)}`,
         409,
         'SEAT_LOCKED',
       );
@@ -362,6 +380,12 @@ export class SeatLockService {
       .eq('trip_id', tripId)
       .eq('status', 'locked');
     query = this.applyOwnerMatch(query, owner);
+    // MKT-009: un unlock (también el whole-trip de otra pestaña o de un
+    // bundle viejo) jamás libera asientos vinculados a un intento de compra:
+    // ponerlos 'available' haría que el trigger de 087 limpiara
+    // checkout_attempt_id y destruiría la compra en revisión. Solo se
+    // liberan locks libres de compra.
+    query = query.is('checkout_attempt_id', null);
 
     if (seatIds && seatIds.length > 0) {
       query = query.in('id', seatIds);

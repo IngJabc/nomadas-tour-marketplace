@@ -47,6 +47,7 @@ const harness = vi.hoisted(() => {
       'eq',
       'neq',
       'in',
+      'is',
       'lt',
       'lte',
       'gt',
@@ -282,6 +283,63 @@ describe('POST /api/public/seats/lock (MKT-004)', () => {
     expect(body.error.code).toBe('SEAT_LOCKED');
   });
 
+  it('rechaza con 409 el lock sobre asientos de la compra en curso del propio cliente y no extiende su TTL (MKT-009)', async () => {
+    const attemptSeat = seatRow({
+      status: 'locked',
+      locked_by: CUSTOMER_ID,
+      lock_expires_at: new Date(Date.now() + 840_000).toISOString(),
+      checkout_attempt_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1',
+    });
+    harness.push('trips', activeTrip);
+    harness.push('seats', { data: [], error: null });
+    harness.push('seats', { data: [attemptSeat], error: null });
+
+    const { status, body } = await postJson(port, '/api/public/seats/lock', {
+      trip_id: TRIP_ID,
+      seat_ids: [SEAT_A1],
+    });
+
+    expect(status).toBe(409);
+    expect(body.error.code).toBe('SEAT_LOCKED');
+    expect(body.error.message).toContain('compra en curso');
+    // Nunca se "extiende" ni se re-adquiere: sin update de extensión ni de
+    // adquisición, el TTL de la compra en curso queda intacto.
+    const updates = harness
+      .chains()
+      .filter((chain) => chain.table === 'seats')
+      .flatMap((chain) => chain.calls)
+      .filter((call) => call.method === 'update');
+    expect(updates).toHaveLength(1); // solo el cleanup de vencidos (fila no alcanzada)
+    expect(
+      updates.every(
+        (call) =>
+          call.args[0]?.status !== 'locked' &&
+          (call.args[0]?.lock_expires_at ?? null) === null,
+      ),
+    ).toBe(true);
+  });
+
+  it('rechaza con 409 el lock sobre asientos de la compra de otro cliente (MKT-009)', async () => {
+    const foreignAttemptSeat = seatRow({
+      status: 'locked',
+      locked_by: OTHER_ID,
+      lock_expires_at: new Date(Date.now() + 840_000).toISOString(),
+      checkout_attempt_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2',
+    });
+    harness.push('trips', activeTrip);
+    harness.push('seats', { data: [], error: null });
+    harness.push('seats', { data: [foreignAttemptSeat], error: null });
+
+    const { status, body } = await postJson(port, '/api/public/seats/lock', {
+      trip_id: TRIP_ID,
+      seat_ids: [SEAT_A1],
+    });
+
+    expect(status).toBe(409);
+    expect(body.error.code).toBe('SEAT_LOCKED');
+    expect(body.error.message).toContain('otro usuario');
+  });
+
   it('es idempotente: un segundo request sobre locks propios responde 200 y extiende el TTL', async () => {
     const mine = seatRow({
       status: 'locked',
@@ -483,6 +541,37 @@ describe('POST /api/public/seats/unlock y GET /api/public/seats/locks (MKT-004)'
       calls.some((c) => c.method === 'update'),
     );
     expect(unlock!.calls.some((c) => c.method === 'in' && c.args[0] === 'id' && c.args[1][0] === SEAT_A2)).toBe(true);
+  });
+
+  it('unlock jamás libera asientos vinculados a una compra en curso (MKT-009)', async () => {
+    // El filtro del servidor excluye los locks con checkout_attempt_id: la
+    // fila devuelta (si la hubiera) dispararía el trigger de 087 y
+    // destruiría la compra en revisión. Sin match → nada liberado.
+    harness.push('seats', { data: [], error: null });
+
+    const { status, body } = await postJson(
+      port,
+      '/api/public/seats/unlock',
+      { trip_id: TRIP_ID },
+      'token',
+    );
+
+    expect(status).toBe(200);
+    expect(body.unlocked).toBe(0);
+
+    const unlock = findChain('seats', (calls) =>
+      calls.some((c) => c.method === 'update' && c.args[0]?.status === 'available'),
+    );
+    expect(unlock).toBeDefined();
+    expect(
+      unlock!.calls.some(
+        (c) =>
+          c.method === 'is' &&
+          c.args[0] === 'checkout_attempt_id' &&
+          c.args[1] === null,
+      ),
+    ).toBe(true);
+    expect(unlock!.calls.some((c) => c.method === 'eq' && c.args[0] === 'locked_by' && c.args[1] === CUSTOMER_ID)).toBe(true);
   });
 
   it('locks devuelve solo los locks vigentes propios con el minimo lock_expires_at', async () => {

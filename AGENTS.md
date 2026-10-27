@@ -144,6 +144,29 @@ Nunca expandir el contenido al ancho completo del monitor.
 
 ---
 
+## 📦 Contenedor de página — margen estándar
+
+TODA página del marketplace usa el mismo contenedor, alineado con el
+Navbar (que usa exactamente este ancho y padding):
+
+```
+mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16
+```
+
+- `max-w-7xl` (1280px) + `px-4 sm:px-6` en todas las páginas internas:
+  `/trips`, `/reservations/new`, `/account/purchases`, el boleto
+  (`.../ticket`) y la corrección de pago (`.../payment`).
+- Las páginas tipo documento (ticket, payment) mantienen el contenedor
+  7xl y acotan su contenido con un wrapper interno
+  (`max-w-2xl` para el boleto, `max-w-3xl` para el pago).
+- `/login` y `/register` se centran (`flex items-center justify-center`)
+  conservando el mismo ritmo vertical y padding `px-4 sm:px-6 pt-24 pb-16`.
+- La landing usa `mx-auto max-w-7xl px-4 sm:px-6`.
+- Nunca usar `px-8` ni anchos `max-w-4xl/5xl/6xl` como contenedor de
+  página: los anchos menores se logran con un wrapper interno.
+
+---
+
 ## 🔤 Tipografía — Reglas complementarias
 
 Mantener Montserrat y Poppins como las únicas fuentes del sistema.
@@ -219,6 +242,24 @@ box-shadow 0 0 0 3px rgba(0,212,255,0.15)
 SIEMPRE incluir label visible encima del campo (no solo placeholder)
 
 Label style: Poppins 500 12px, --color-brand-muted, uppercase
+
+### DatePicker (filtros de fecha)
+
+El estándar de fecha en TODO el marketplace es `components/ui/DatePicker.tsx`
+(el mismo que usa Tours: botón + popover con `DayPickerCalendar`, "Limpiar
+fecha" y locale español). Nunca usar `<input type="date">` nativo.
+
+- Valor y cambio: `value`/`onChange` con string `YYYY-MM-DD` (`''` = vacío).
+- `label` opcional renderiza el label visible con el mismo estilo de los
+  inputs (Poppins 500 12px, uppercase, muted) y lo asocia al botón.
+- **Sin fecha por defecto**: los filtros de fecha nacen vacíos (sin
+  filtrar) y el trigger muestra el placeholder `"Elige una fecha"`.
+  Nunca placeholders ambiguos como "Cualquier fecha" o "Sin límite".
+- El trigger calza con los inputs vecinos: `rounded-[10px]`, `py-3`,
+  `pl-9 pr-9`, `text-sm`, icono de calendario a la izquierda (Lucide 16,
+  stroke 1.75).
+- El popover expone `role="dialog"` (útil en tests: esperar a que
+  desaparezca antes de abrir otro calendario, porque su cierre es animado).
 
 ### Tarjetas (Cards)
 
@@ -328,26 +369,35 @@ Solo usar tablas cuando existan grandes cantidades de registros.
 
 ### Catálogo público
 
-- `/viajes` → Buscador de viajes (origen, destino, fecha); el CTA "Reservar"
-  SIEMPRE enlaza a `/reservas/nueva?trip=<id>`
-- `/viajes/[id]` → **ELIMINADA**: detalle, mapa de asientos y selección de
-  agencia viven en el wizard `/reservas/nueva?trip=<id>`
-- `/agencias` → Agencias conectadas (PENDING)
+- `/trips` → Buscador de viajes (origen, destino, fecha); el CTA "Reservar"
+  SIEMPRE enlaza a `/reservations/new?trip=<id>`
+- `/trips/[id]` → **ELIMINADA**: detalle, mapa de asientos y selección de
+  agencia viven en el wizard `/reservations/new?trip=<id>`
+- `/agencies` → Agencias conectadas (PENDING)
 
 ### Reserva (cliente autenticado)
 
-- `/reservas/nueva` → Wizard de reserva: agencia → asientos → pasajeros → pago (PENDING)
-- `/reservas/[id]` → Detalle de reserva + estado de pago + boleto (PENDING)
-- `/cuenta` → Mi cuenta / perfil (PENDING)
-- `/cuenta/compras` → Historial de compras del cliente: badges de estado,
-  pasajeros y acción "Ver boleto" solo en compras elegibles (RT-01/RT-02)
-- `/cuenta/compras/[attemptId]/boleto` → Boleto QR de una compra
+- `/reservations/new` → Wizard de reserva: agencia → asientos → pasajeros → pago (PENDING)
+- `/reservations/[id]` → Detalle de reserva + estado de pago + boleto (PENDING)
+- `/account` → Mi cuenta / perfil (PENDING)
+- `/account/purchases` → Historial de compras del cliente: badges de estado,
+  pasajeros, acción "Ver boleto" solo en compras elegibles (RT-01/RT-02),
+  reintento de pago (RT-05) y filtros de búsqueda (texto, chips de estado,
+  rango de fecha de salida) sobre el historial completo
+- `/account/purchases/[attemptId]/payment` → Corregir pago y reintentar (RT-05)
+- `/account/purchases/[attemptId]/ticket` → Boleto QR de una compra
   (un QR por reserva, todos los asientos, descarga PNG) (RT-03)
+
+> **Convención de rutas (inglés):** todas las rutas del marketplace siguen el
+> patrón en inglés del repo tours. Las rutas antiguas en español
+> (`/viajes`, `/reservas/nueva`, `/cuenta/compras`, `.../boleto`, `.../pago`)
+> siguen vivas mediante redirects **308** en `next.config.ts` (preservan los
+> query params); nunca crear nuevas rutas en español.
 
 ### Área admin marketplace (PENDING IMPLEMENTATION)
 
 - `/admin` → Panel con sidebar navy izquierdo
-- `/admin/viajes`, `/admin/pagos`, `/admin/comisiones`, `/admin/agencias`
+- `/admin/trips`, `/admin/payments`, `/admin/commissions`, `/admin/agencies`
 - El admin SIEMPRE tiene sidebar, nunca navbar horizontal
 
 ### Navbar global
@@ -684,6 +734,13 @@ El resultado final debe sentirse como un SaaS premium moderno, no como un panel 
     (`next build`). Si el cambio toca `backend/`, ejecutar también
     `npm run build` en `backend/` (`tsc`). `tsc --noEmit` no sustituye
     el script de build. Si el build falla, corregirlo antes de seguir.
+20. Toda página usa el contenedor estándar `max-w-7xl px-4 sm:px-6
+    pt-24 pb-16` (§ Contenedor de página). Nunca `px-8` ni
+    `max-w-4xl/5xl/6xl` como contenedor raíz de una página.
+21. Todo filtro o campo de fecha usa `components/ui/DatePicker.tsx`
+    (el calendario de Tours), nace sin fecha por defecto y su placeholder
+    es `"Elige una fecha"`. Nunca `<input type="date">` nativo ni
+    placeholders como "Cualquier fecha" o "Sin límite".
 
 ---
 

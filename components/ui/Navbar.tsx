@@ -47,14 +47,14 @@ export function Navbar() {
 
         <nav className="flex items-center gap-6">
           <Link
-            href="/viajes"
+            href="/trips"
             className="text-sm text-white/75 transition-opacity hover:opacity-100"
           >
             Viajes
           </Link>
           {signedIn && auth?.user?.role === 'customer' && (
             <Link
-              href="/cuenta/compras"
+              href="/account/purchases"
               className="text-sm text-white/75 transition-opacity hover:opacity-100"
             >
               Mis compras

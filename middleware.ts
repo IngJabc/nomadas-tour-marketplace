@@ -2,8 +2,8 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 // Marketplace: rutas de cliente autenticado
-const protectedPaths = ['/cuenta', '/reservas'];
-const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password', '/viajes', '/agencias', '/'];
+const protectedPaths = ['/account', '/reservations', '/cuenta', '/reservas'];
+const publicPaths = ['/login', '/register', '/forgot-password', '/reset-password', '/trips', '/agencies', '/'];
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -35,12 +35,12 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // `/reservas/nueva` es el wizard de reserva y es PÚBLICO: funciona como
+  // `/reservations/new` es el wizard de reserva y es PÚBLICO: funciona como
   // guest (locks por cookie HttpOnly, claim al volver del login) y exige
   // sesión recién en el paso de pago con el gate dentro de la propia página.
   // Protegerlo aquí cortaba el flujo completo hacia el wizard.
   const isNewReservationWizard =
-    pathname === '/reservas/nueva' || pathname.startsWith('/reservas/nueva/');
+    pathname === '/reservations/new' || pathname.startsWith('/reservations/new/');
   const isProtected =
     protectedPaths.some((path) => pathname.startsWith(path)) &&
     !isNewReservationWizard;

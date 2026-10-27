@@ -4,6 +4,7 @@ import Busboy from 'busboy';
 import { z } from 'zod';
 import { supabaseAdmin } from '../config/database.js';
 import { AppError, ValidationError } from '../errors/index.js';
+import { runCheckoutCleanup } from './checkout-cleanup.service.js';
 
 // ── Constantes ───────────────────────────────────────────────────────────────
 
@@ -526,6 +527,18 @@ function mapRpcError(error: { message: string }): AppError {
         409,
         'PAYMENT_METHOD_REQUIRED',
       );
+    case 'ERR_CHECKOUT_LOCK_EXPIRED':
+      // El RPC 092 (step 6) exige que los asientos del intento sigan
+      // bloqueados POR ESTE intento y con TTL vigente. Aquí se traduce a un
+      // 409 accionable en lugar del 500 genérico: los asientos ya no son de
+      // esta compra, el reintento no puede continuar y el cliente debe
+      // empezar de nuevo (carrera entre el pre-chequeo de pantalla y el
+      // envío, o bloqueo liberado mientras el comprobante se subía).
+      return checkoutError(
+        'Los asientos de esta compra ya no están disponibles. Debes buscar otro viaje para continuar.',
+        409,
+        'CHECKOUT_SEATS_LOST',
+      );
     default:
       return checkoutError(
         'No se pudo procesar la compra. Intenta de nuevo',
@@ -661,15 +674,21 @@ async function verifyAttemptReady(attemptId: string, customerId: string): Promis
   if (['verified', 'rejected_final', 'expired', 'cancelled'].includes(attempt.status)) {
     throw checkoutError('Esta compra ya fue cerrada', 409, 'CHECKOUT_ATTEMPT_CLOSED');
   }
+  // MKT-010: la ventana vencida manda sobre cualquier otro estado abierto.
+  // Un `pending_review` cuya revisión de 24 h venció está expirado, no
+  // "en revisión". La expiración se ESCRIBE en la BD con la misma RPC de
+  // cleanup del loop periódico (idempotente) antes de responder 409: el
+  // servidor es la autoridad del tiempo, nunca el cliente.
+  if (Date.parse(attempt.expires_at) <= Date.now()) {
+    await runCheckoutCleanup();
+    throw checkoutError('El plazo de revisión de tu compra venció', 409, 'CHECKOUT_WINDOW_EXPIRED');
+  }
   if (attempt.status === 'pending_review') {
     throw checkoutError(
       'Ya tienes un comprobante esperando revisión',
       409,
       'CHECKOUT_PROOF_PENDING',
     );
-  }
-  if (Date.parse(attempt.expires_at) <= Date.now()) {
-    throw checkoutError('El plazo de revisión de tu compra venció', 409, 'CHECKOUT_WINDOW_EXPIRED');
   }
   if (attempt.proof_count >= MAX_PROOF_SUBMISSIONS) {
     throw checkoutError(
@@ -984,39 +1003,57 @@ export interface CheckoutAttemptView {
  * y el snapshot de pasajeros (que la propia persona escribió) pero
  * NUNCA la ruta del comprobante: el archivo solo se sirve con URL
  * firmada desde el área de agencia.
+ *
+ * MKT-010: la consulta también valida la ventana. Si el intento está
+ * abierto y `expires_at` ya venció, se ejecuta la RPC de cleanup
+ * (idempotente, la misma del loop periódico) y se relee el estado:
+ * el cliente ve `expired` y los locks quedan liberados sin depender
+ * de que el proceso de limpieza haya corrido en ese instante.
  */
 export async function getCheckoutAttempt(input: {
   attemptId: string;
   customerId: string;
 }): Promise<CheckoutAttemptView> {
-  const { data, error } = await supabaseAdmin
-    .from('checkout_attempts')
-    .select(
-      'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, ' +
-        'proof_count, payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
-        'review_started_at, rejection_reason, rejection_count, history, expires_at, ' +
-        'created_at, closed_at, verified_at',
-    )
-    .eq('id', input.attemptId)
-    .eq('customer_id', input.customerId)
-    .maybeSingle();
+  const fetchRow = async () => {
+    const { data, error } = await supabaseAdmin
+      .from('checkout_attempts')
+      .select(
+        'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, ' +
+          'proof_count, payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
+          'review_started_at, rejection_reason, rejection_count, history, expires_at, ' +
+          'created_at, closed_at, verified_at',
+      )
+      .eq('id', input.attemptId)
+      .eq('customer_id', input.customerId)
+      .maybeSingle();
 
-  if (error) {
-    throw checkoutError(
-      'No se pudo cargar la compra. Intenta de nuevo',
-      500,
-      'CHECKOUT_ERROR',
-    );
-  }
-  if (!data) {
-    throw checkoutError('Compra no encontrada', 404, 'CHECKOUT_ATTEMPT_NOT_FOUND');
-  }
-
-  const row = data as unknown as Record<string, unknown> & {
-    seat_ids: string[];
-    passenger_data: unknown[];
-    proof_count: number;
+    if (error) {
+      throw checkoutError(
+        'No se pudo cargar la compra. Intenta de nuevo',
+        500,
+        'CHECKOUT_ERROR',
+      );
+    }
+    if (!data) {
+      throw checkoutError('Compra no encontrada', 404, 'CHECKOUT_ATTEMPT_NOT_FOUND');
+    }
+    return data as unknown as Record<string, unknown> & {
+      seat_ids: string[];
+      passenger_data: unknown[];
+      proof_count: number;
+    };
   };
+
+  let row = await fetchRow();
+
+  const openStatuses = ['created', 'pending_review', 'rejected'];
+  if (
+    openStatuses.includes(row.status as string) &&
+    Date.parse(row.expires_at as string) <= Date.now()
+  ) {
+    await runCheckoutCleanup();
+    row = await fetchRow();
+  }
 
   const { data: seats, error: seatsError } = await supabaseAdmin
     .from('seats')
@@ -1074,9 +1111,29 @@ export interface CancelCheckoutAttemptResult {
   freed_seats: number;
 }
 
+/** Lee el estado mínimo del intento (dueño acotado) para decidir carreras. */
+async function readAttemptStatus(input: {
+  attemptId: string;
+  customerId: string;
+}): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select('id, status')
+    .eq('id', input.attemptId)
+    .eq('customer_id', input.customerId)
+    .maybeSingle();
+  return (data as { status?: string } | null)?.status ?? null;
+}
+
 /**
  * Cancelación voluntaria del cliente. Libera SOLO los locks propios de
  * este intento; nunca toca asientos de otros compradores.
+ *
+ * MKT-010: si el intento ya fue cerrado como `expired` por el cleanup
+ * (ventana vencida), la cancelación se confirma como cierre logrado —
+ * los asientos ya están libres — en lugar de responder un 409 que
+ * confundiría al cliente. `verified`/`rejected_final` siguen fallando:
+ * no se puede cancelar una compra aprobada ni agotada.
  */
 export async function cancelCheckoutAttempt(input: {
   attemptId: string;
@@ -1087,7 +1144,21 @@ export async function cancelCheckoutAttempt(input: {
     p_customer_id: input.customerId,
   })) as RpcJson;
 
-  if (error) throw mapRpcError(error);
+  if (error) {
+    const mapped = mapRpcError(error);
+    if (mapped.code === 'CHECKOUT_ATTEMPT_CLOSED') {
+      const status = await readAttemptStatus(input);
+      if (status === 'expired') {
+        return {
+          attempt_id: input.attemptId,
+          status: 'expired',
+          already_cancelled: false,
+          freed_seats: 0,
+        };
+      }
+    }
+    throw mapped;
+  }
   if (!data?.attempt_id) {
     throw checkoutError(
       'No se pudo cancelar la compra. Intenta de nuevo',

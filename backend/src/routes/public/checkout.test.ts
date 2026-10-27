@@ -191,12 +191,14 @@ const TRIP_ID = '441559e6-ea35-4453-aae1-5ed0844289b3';
 const AGENCY_ID = '5bf0be5d-c03a-431f-97d5-e2a065e25752';
 const SEAT_A1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
 const SEAT_A2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+const SEAT_A3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
 const ATTEMPT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1';
 const IDEMPOTENCY_KEY = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
 const OTHER_IDEMPOTENCY_KEY = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
 const RPC_CREATE = 'create_checkout_attempt';
 const RPC_PROOF = 'submit_checkout_proof';
 const RPC_CANCEL = 'cancel_checkout_attempt';
+const RPC_CLEANUP = 'cleanup_expired_checkout_attempts';
 const ALLOWED_ORIGIN = 'http://localhost:3002';
 
 function pngBytes(payload = 48): Buffer {
@@ -530,6 +532,49 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(lastRpcCall().args.p_idempotency_key).toBe(IDEMPOTENCY_KEY);
     });
 
+    it('permite una segunda compra en paralelo: no consulta checkout_attempts antes del RPC (MKT-009)', async () => {
+      // Cliente con una compra ya existente inicia OTRA con asientos
+      // distintos y otra Idempotency-Key: el servicio no debe castigar una
+      // compra legítima con un pre-chequeo Node sobre intentos previos.
+      // La autoridad sobre asientos reclamados es el RPC
+      // (ERR_CHECKOUT_SEAT_CLAIMED), nunca una lectura previa.
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts',
+        {
+          method: 'POST',
+          body: validPayload({
+            seat_ids: [SEAT_A2, SEAT_A3],
+            passengers: [
+              {
+                seat_id: SEAT_A2,
+                first_name: 'Ana',
+                last_name: 'Perez',
+                document: '12345678',
+                phone: '04241234567',
+              },
+              {
+                seat_id: SEAT_A3,
+                first_name: 'Luis',
+                last_name: 'Gomez',
+                document: '87654321',
+                phone: '04141234567',
+              },
+            ],
+          }),
+          idempotencyKey: OTHER_IDEMPOTENCY_KEY,
+        },
+      );
+
+      expect(status).toBe(201);
+      expect(body.attempt_id).toBe(ATTEMPT_ID);
+      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(1);
+      expect(lastRpcCall().args.p_idempotency_key).toBe(OTHER_IDEMPOTENCY_KEY);
+      expect(lastRpcCall().args.p_seat_ids).toEqual([SEAT_A2, SEAT_A3]);
+      const tablesQueried = harness.chains().map((c) => c.table);
+      expect(tablesQueried).not.toContain('checkout_attempts');
+    });
+
     it('exige autenticación y rol customer', async () => {
       const anonymous = await requestJson(
         port,
@@ -783,6 +828,78 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(status).toBe(400);
       expect(body.error.code).toBe('VALIDATION_ERROR');
     });
+
+    it('MKT-010: cierra perezosamente un intento abierto con la ventana vencida', async () => {
+      harness.push('checkout_attempts', {
+        data: attemptViewRow({
+          status: 'created',
+          proof_count: 0,
+          expires_at: '2020-01-01T00:00:00.000Z',
+        }),
+        error: null,
+      });
+      harness.pushRpc(RPC_CLEANUP, {
+        data: { expired: 1, freed_seats: 2, attempt_ids: [ATTEMPT_ID] },
+        error: null,
+      });
+      harness.push('checkout_attempts', {
+        data: attemptViewRow({
+          status: 'expired',
+          closed_at: '2020-01-01T00:15:00.000Z',
+          expires_at: '2020-01-01T00:00:00.000Z',
+        }),
+        error: null,
+      });
+      harness.push('seats', {
+        data: [
+          { id: SEAT_A1, seat_code: 'A1' },
+          { id: SEAT_A2, seat_code: 'A2' },
+        ],
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.status).toBe('expired');
+      expect(rpcCallsFor(RPC_CLEANUP)).toHaveLength(1);
+    });
+
+    it('MKT-010: la limpieza perezosa tolera fallos del cleanup sin romper la lectura', async () => {
+      harness.push('checkout_attempts', {
+        data: attemptViewRow({
+          status: 'created',
+          proof_count: 0,
+          expires_at: '2020-01-01T00:00:00.000Z',
+        }),
+        error: null,
+      });
+      harness.pushRpc(RPC_CLEANUP, {
+        data: null,
+        error: { message: 'cleanup offline' },
+      });
+      harness.push('checkout_attempts', {
+        data: attemptViewRow({
+          status: 'created',
+          proof_count: 0,
+          expires_at: '2020-01-01T00:00:00.000Z',
+        }),
+        error: null,
+      });
+      harness.push('seats', { data: [], error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.status).toBe('created');
+      expect(rpcCallsFor(RPC_CLEANUP)).toHaveLength(1);
+    });
   });
 
   // ── POST /attempts/:attemptId/proof ───────────────────────────────────────
@@ -863,6 +980,29 @@ describe('API pública de checkout (MKT-007)', () => {
 
       expect(status).toBe(409);
       expect(body.error.code).toBe('CHECKOUT_WINDOW_EXPIRED');
+      expect(harness.uploads()).toHaveLength(0);
+      // MKT-010: el rechazo además ESCRIBE la expiración en la BD (la
+      // misma RPC del loop periódico; idempotente).
+      expect(rpcCallsFor(RPC_CLEANUP)).toHaveLength(1);
+    });
+
+    it('MKT-010: una revisión cuya ventana de 24 h venció expira, no "sigue en revisión"', async () => {
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow({
+          status: 'pending_review',
+          proof_count: 1,
+          expires_at: '2020-01-01T00:00:00.000Z',
+        }),
+        error: null,
+      });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_WINDOW_EXPIRED');
+      expect(rpcCallsFor(RPC_CLEANUP)).toHaveLength(1);
       expect(harness.uploads()).toHaveLength(0);
     });
 
@@ -1123,6 +1263,42 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(harness.removes()).toHaveLength(0);
     });
 
+    it('traduce asientos perdidos del RPC a un 409 accionable y limpia el objeto', async () => {
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow(),
+        error: null,
+      });
+      harness.pushRpc(RPC_PROOF, {
+        data: null,
+        error: {
+          message:
+            'ERR_CHECKOUT_LOCK_EXPIRED: Seat A1 is no longer locked by this checkout attempt',
+        },
+      });
+      // Chequeos de cleanup: ningún pago ni intento referencia el objeto.
+      harness.push('payments', { data: null, error: null });
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      // Carrera (pantalla → RPC): el reintento se impide con un estado
+      // accionable, no con el 500 genérico, y con copy de cliente.
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_SEATS_LOST');
+      expect(body.error.message).toBe(
+        'Los asientos de esta compra ya no están disponibles. ' +
+          'Debes buscar otro viaje para continuar.',
+      );
+      // El mensaje SQL/RAISE jamás llega al cliente.
+      expect(JSON.stringify(body)).not.toContain('ERR_CHECKOUT_LOCK_EXPIRED');
+      expect(JSON.stringify(body)).not.toContain('no longer locked');
+      expect(harness.uploads()).toHaveLength(1);
+      expect(harness.removes()).toHaveLength(1);
+      expect(harness.removes()[0][0]).toBe(harness.uploads()[0].path);
+    });
+
     it('mapea el fallo del storage a error de infraestructura', async () => {
       harness.push('checkout_attempts', {
         data: readyAttemptRow(),
@@ -1243,6 +1419,48 @@ describe('API pública de checkout (MKT-007)', () => {
       );
       expect(superadmin.status).toBe(403);
       expect(rpcCallsFor(RPC_CANCEL)).toHaveLength(0);
+    });
+
+    it('MKT-010: cancelar sobre un intento ya expirado confirma el cierre (sin 409)', async () => {
+      harness.pushRpc(RPC_CANCEL, {
+        data: null,
+        error: { message: 'ERR_CHECKOUT_ATTEMPT_CLOSED: Checkout attempt is in status expired' },
+      });
+      harness.push('checkout_attempts', {
+        data: { id: ATTEMPT_ID, status: 'expired' },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/cancel`,
+        { method: 'POST' },
+      );
+
+      expect(status).toBe(200);
+      expect(body.status).toBe('expired');
+      expect(body.already_cancelled).toBe(false);
+      expect(body.freed_seats).toBe(0);
+    });
+
+    it('MKT-010: un cierre que no es expiración (rejected_final) sigue siendo 409', async () => {
+      harness.pushRpc(RPC_CANCEL, {
+        data: null,
+        error: { message: 'ERR_CHECKOUT_ATTEMPT_CLOSED: Checkout attempt is in status rejected_final' },
+      });
+      harness.push('checkout_attempts', {
+        data: { id: ATTEMPT_ID, status: 'rejected_final' },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/cancel`,
+        { method: 'POST' },
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_ATTEMPT_CLOSED');
     });
   });
 

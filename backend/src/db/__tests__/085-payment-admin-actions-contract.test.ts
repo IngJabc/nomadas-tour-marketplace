@@ -409,7 +409,7 @@ describe('085/086 payment admin actions contract (MKT-006 Phase 6.2B)', () => {
     it('cancels the reservation atomically for an initial payment: passengers, seats, reservation', () => {
       const start = code.indexOf('v_other_verified_count = 0');
       const passengerLockIndex = code.indexOf(
-        'FOR rec IN',
+        'FOR v_rec IN',
         start,
       );
       const passengerCancelIndex = code.indexOf(
