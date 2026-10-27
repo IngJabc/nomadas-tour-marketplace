@@ -15,7 +15,7 @@ export function ToastProvider() {
     <Toaster
       position="bottom-right"
       toastOptions={{
-        duration: 4000,
+        duration: 2500,
         removeDelay: 200,
         success: {
           iconTheme: {

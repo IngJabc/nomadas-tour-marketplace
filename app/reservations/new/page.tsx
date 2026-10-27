@@ -1137,7 +1137,7 @@ function NewReservationContent() {
 
   if (phase === 'loading') {
     return (
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+      <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="animate-pulse" aria-hidden="true">
           <div className="h-4 w-56 rounded-full bg-black/[0.06]" />
           <div className="mt-6 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -1156,7 +1156,7 @@ function NewReservationContent() {
 
   if (phase === 'missing') {
     return (
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+      <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#f1f5f9]">
             <Ticket size={24} strokeWidth={1.75} className="text-brand-navy" aria-hidden="true" />
@@ -1182,7 +1182,7 @@ function NewReservationContent() {
 
   if (phase === 'expired') {
     return (
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+      <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
             <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
@@ -1220,7 +1220,7 @@ function NewReservationContent() {
 
   if (phase === 'error' || !trip || !lock) {
     return (
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+      <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
             <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
@@ -1279,7 +1279,7 @@ function NewReservationContent() {
   );
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
       <header className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -2290,7 +2290,7 @@ export default function NewReservationPage() {
   return (
     <Suspense
       fallback={
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+        <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
           <div className="animate-pulse" aria-hidden="true">
             <div className="h-4 w-56 rounded-full bg-black/[0.06]" />
             <div className="mt-6 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">

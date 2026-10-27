@@ -3,6 +3,7 @@ import { Poppins, Montserrat } from "next/font/google";
 import { Navbar } from "@/components/ui/Navbar";
 import { ToastProvider } from "@/components/ui/ToastProvider";
 import { RootProviders } from "@/components/auth/RootProviders";
+import { MotionConfig } from "framer-motion";
 import "./globals.css";
 import "./design-tokens.css";
 
@@ -39,10 +40,18 @@ export default function RootLayout({
       className={`${poppins.variable} ${montserrat.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-brand-surface text-brand-navy">
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-[10px] focus:bg-brand-cyan focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+        >
+          Saltar al contenido
+        </a>
         <RootProviders>
-          <Navbar />
-          {children}
-          <ToastProvider />
+          <MotionConfig reducedMotion="user">
+            <Navbar />
+            {children}
+            <ToastProvider />
+          </MotionConfig>
         </RootProviders>
       </body>
     </html>

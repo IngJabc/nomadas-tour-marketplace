@@ -523,7 +523,7 @@ export default function MisComprasPage() {
     'rounded-[10px] bg-[#f1f5f9] px-6 py-3 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:opacity-40';
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
+    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
       <div className="border-l-4 border-brand-cyan pl-3">
         <h1 className="text-[28px] font-extrabold">Mis compras</h1>
         <p className="mt-1 text-sm text-brand-muted">
