@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function HomePage() {
   return (
-    <main className="flex-1">
+    <main id="main" className="flex-1">
       {/* Hero */}
       <section className="bg-brand-dark text-white">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-24 sm:py-32">

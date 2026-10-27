@@ -178,7 +178,7 @@ export default function ViajesPage() {
   const labelClass = "mb-1.5 block text-xs font-medium uppercase text-brand-muted";
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
+    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
       <div className="border-l-4 border-brand-cyan pl-3">
         <h1 className="text-[28px] font-extrabold">Viajes disponibles</h1>
         <p className="mt-1 text-sm text-brand-muted">

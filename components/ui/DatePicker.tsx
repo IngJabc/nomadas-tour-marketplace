@@ -38,7 +38,7 @@ export function DatePicker({
   value,
   onChange,
   label,
-  placeholder = 'Fecha',
+  placeholder = 'Elige una fecha',
   disabled = false,
   className,
 }: DatePickerProps) {

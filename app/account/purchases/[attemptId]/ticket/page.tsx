@@ -214,7 +214,7 @@ export default function BoletoPage() {
   );
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
+    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
       <div className="mx-auto w-full max-w-2xl">
         <div className="border-l-4 border-brand-cyan pl-3">
           <h1 className="text-[28px] font-extrabold">Tu boleto</h1>
