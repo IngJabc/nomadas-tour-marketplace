@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { subscribeToTripSeats, subscribeToTrips } from '../subscriptions';
+import {
+  subscribeToPurchaseHistory,
+  subscribeToPurchaseTicket,
+  subscribeToTripCatalog,
+  subscribeToTripSeats,
+  subscribeToTrips,
+} from '../subscriptions';
 
 const { handlers, removeChannel, createClientMock, channel } = vi.hoisted(() => {
   const handlers: Array<{
@@ -134,5 +140,141 @@ describe('subscribeToTrips', () => {
 
     expect(createClientMock).not.toHaveBeenCalled();
     expect(handlers).toHaveLength(0);
+  });
+});
+
+describe('subscribeToPurchaseHistory (RT-04A)', () => {
+  it('sin customerId no crea cliente ni suscribe', () => {
+    const cleanup = subscribeToPurchaseHistory('', () => {});
+
+    expect(createClientMock).not.toHaveBeenCalled();
+    expect(() => cleanup()).not.toThrow();
+  });
+
+  it('suscribe checkout_attempts, reservations y payments filtrados por el cliente', () => {
+    const cleanup = subscribeToPurchaseHistory('user-1', () => {});
+
+    expect(createClientMock).toHaveBeenCalledTimes(1);
+    expect(handlers).toHaveLength(3);
+    expect(handlers[0].config).toMatchObject({
+      event: '*',
+      schema: 'public',
+      table: 'checkout_attempts',
+      filter: 'customer_id=eq.user-1',
+    });
+    expect(handlers[1].config).toMatchObject({
+      table: 'reservations',
+      filter: 'customer_id=eq.user-1',
+    });
+    expect(handlers[2].config).toMatchObject({
+      table: 'payments',
+      filter: 'customer_id=eq.user-1',
+    });
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(3);
+  });
+
+  it('invoca onChange en cada evento sin consumir el payload', () => {
+    const onChange = vi.fn();
+    subscribeToPurchaseHistory('user-1', onChange);
+
+    handlers[0].callback({ eventType: 'UPDATE', new: { id: 'att-1', status: 'verified' } });
+    handlers[2].callback({ eventType: 'INSERT', new: { id: 'pay-1' } });
+
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('subscribeToPurchaseTicket (RT-04A)', () => {
+  it('sin customerId o attemptId no crea cliente', () => {
+    subscribeToPurchaseTicket('', 'att-1', () => {});
+    subscribeToPurchaseTicket('user-1', '', () => {});
+
+    expect(createClientMock).not.toHaveBeenCalled();
+    expect(handlers).toHaveLength(0);
+  });
+
+  it('filtra el intento por id + cliente y agrega reservas y pagos propios', () => {
+    const cleanup = subscribeToPurchaseTicket('user-1', 'att-9', () => {});
+
+    expect(handlers).toHaveLength(3);
+    expect(handlers[0].config).toMatchObject({
+      table: 'checkout_attempts',
+      filter: 'id=eq.att-9&customer_id=eq.user-1',
+    });
+    expect(handlers[1].config).toMatchObject({
+      table: 'reservations',
+      filter: 'customer_id=eq.user-1',
+    });
+    expect(handlers[2].config).toMatchObject({
+      table: 'payments',
+      filter: 'customer_id=eq.user-1',
+    });
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(3);
+  });
+
+  it('dispara onChange ante eventos de compra y limpia los 3 canales', () => {
+    const onChange = vi.fn();
+    const cleanup = subscribeToPurchaseTicket('user-1', 'att-9', onChange);
+
+    handlers[1].callback({ eventType: 'INSERT', new: { id: 'res-1' } });
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('subscribeToTripCatalog (RT-04A)', () => {
+  it('siempre suscribe trips, y sin ids no crea trip_agencies ni agencies', () => {
+    const cleanup = subscribeToTripCatalog([], [], () => {});
+
+    expect(handlers).toHaveLength(1);
+    expect(handlers[0].config).toMatchObject({
+      event: '*',
+      schema: 'public',
+      table: 'trips',
+    });
+    expect(handlers[0].config.filter).toBeUndefined();
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it('acota trip_agencies y agencies a los ids cargados', () => {
+    subscribeToTripCatalog(['trip-a', 'trip-b'], ['ag-1'], () => {});
+
+    expect(handlers).toHaveLength(3);
+    expect(handlers[1].config).toMatchObject({
+      table: 'trip_agencies',
+      filter: 'trip_id=in.(trip-a,trip-b)',
+    });
+    expect(handlers[2].config).toMatchObject({
+      table: 'agencies',
+      filter: 'id=in.(ag-1)',
+    });
+  });
+
+  it('con ids de viaje pero sin agencias solo agrega trip_agencies', () => {
+    const cleanup = subscribeToTripCatalog(['trip-a'], [], () => {});
+
+    expect(handlers).toHaveLength(2);
+    expect(handlers[1].config).toMatchObject({ table: 'trip_agencies' });
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it('dispara onChange ante eventos del catálogo', () => {
+    const onChange = vi.fn();
+    subscribeToTripCatalog(['trip-a'], ['ag-1'], onChange);
+
+    handlers[0].callback({ eventType: 'UPDATE', new: { id: 'trip-a', status: 'cancelled' } });
+    handlers[2].callback({ eventType: 'UPDATE', new: { id: 'ag-1', status: 'inactive' } });
+
+    expect(onChange).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
 import { publicApi, type PublicTrip } from '@/lib/api';
+import { subscribeToTripCatalog } from '@/lib/realtime/subscriptions';
 import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort, toBusinessDateString } from '@/lib/timezone';
 import ViajesPage from '../page';
@@ -12,6 +15,16 @@ vi.mock('@/lib/api', () => ({
     agencies: vi.fn(),
   },
 }));
+
+const realtime = vi.hoisted(() => {
+  const cleanupRealtime = vi.fn();
+  return {
+    cleanupRealtime,
+    subscribeToTripCatalog: vi.fn(() => cleanupRealtime),
+  };
+});
+
+vi.mock('@/lib/realtime/subscriptions', () => realtime);
 
 // Salida a las 11:00 UTC = 07:00 America/Caracas → siempre "futuro" relativo
 // a hoy, para que el filtro de salidas pasadas no tumbe la fixture.
@@ -48,6 +61,62 @@ const pastTrip: PublicTrip = {
 };
 
 const mockedTrips = vi.mocked(publicApi.trips);
+
+/** Nombre accesible exacto de un botón de día en el calendario (RDP + es). */
+function dayButtonName(date: Date, { selected = false } = {}): string {
+  let name = format(date, 'PPPP', { locale: es });
+  const now = new Date();
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    name = `Today, ${name}`;
+  }
+  if (selected) name = `${name}, selected`;
+  return name;
+}
+
+/**
+ * Fija una fecha con el DatePicker (calendario), como en Tours: abre el
+ * popover, navega hasta el mes del día elegido y lo pulsa. El popover abre
+ * siempre en el mes en curso (sin fecha, o con la fecha ya elegida en ese
+ * mismo campo), así que la navegación es relativa a hoy.
+ */
+async function pickDate(label: string, target: Date) {
+  // El popover puede seguir en el DOM durante su animación de cierre; esperar
+  // a que desaparezca evita calendarios duplicados.
+  await waitFor(() =>
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0),
+  );
+
+  fireEvent.click(screen.getByLabelText(label));
+
+  const now = new Date();
+  const monthsDiff =
+    (target.getFullYear() - now.getFullYear()) * 12 +
+    (target.getMonth() - now.getMonth());
+  for (let i = 0; i < Math.abs(monthsDiff); i += 1) {
+    fireEvent.click(
+      screen.getByLabelText(
+        monthsDiff > 0 ? 'Go to the Next Month' : 'Go to the Previous Month',
+      ),
+    );
+  }
+
+  const names = [dayButtonName(target), dayButtonName(target, { selected: true })];
+  const dayButton = await waitFor(
+    () => {
+      const button = Array.from(document.querySelectorAll('button')).find(
+        (b) => names.includes(b.getAttribute('aria-label') ?? ''),
+      );
+      if (!button) throw new Error(`Día no visible: ${names[0]}`);
+      return button;
+    },
+    { timeout: 3000 },
+  );
+  fireEvent.click(dayButton);
+}
 
 describe('ViajesPage (MKT-002)', () => {
   beforeEach(() => {
@@ -104,7 +173,7 @@ describe('ViajesPage (MKT-002)', () => {
     const reservar = screen.getByRole('link', { name: 'Reservar' });
     expect(reservar).toHaveAttribute(
       'href',
-      `/reservas/nueva?trip=${trip.id}`,
+      `/reservations/new?trip=${trip.id}`,
     );
   });
 
@@ -143,7 +212,7 @@ describe('ViajesPage (MKT-002)', () => {
     const reservar = screen.getByRole('link', { name: 'Reservar' });
     expect(reservar).toHaveAttribute(
       'href',
-      `/reservas/nueva?trip=${trip.id}`,
+      `/reservations/new?trip=${trip.id}`,
     );
   });
 
@@ -165,10 +234,10 @@ describe('ViajesPage (MKT-002)', () => {
 
     expect(screen.getByText('Alfa Tours')).toBeInTheDocument();
     expect(screen.getByText('+1')).toBeInTheDocument();
-    // El selector de agencias vive DENTRO de /reservas/nueva: el CTA jamás
-    // fija una agencia en silencio ni deriva a /viajes/[id] (flujo anterior).
+    // El selector de agencias vive DENTRO de /reservations/new: el CTA jamás
+    // fija una agencia en silencio ni deriva a /trips/[id] (flujo anterior).
     const reservar = screen.getByRole('link', { name: 'Reservar' });
-    expect(reservar).toHaveAttribute('href', `/reservas/nueva?trip=${trip.id}`);
+    expect(reservar).toHaveAttribute('href', `/reservations/new?trip=${trip.id}`);
   });
 
   it('con tres agencias el indicador cuenta las que no se muestran', async () => {
@@ -191,9 +260,9 @@ describe('ViajesPage (MKT-002)', () => {
     expect(screen.getByText('Alfa Tours')).toBeInTheDocument();
     expect(screen.getByText('+2')).toBeInTheDocument();
     // Con3 agencias el CTA también va directo al checkout: el selector de
-    // agencia es parte del wizard, nunca /viajes/[id].
+    // agencia es parte del wizard, nunca /trips/[id].
     const reservar = screen.getByRole('link', { name: 'Reservar' });
-    expect(reservar).toHaveAttribute('href', `/reservas/nueva?trip=${trip.id}`);
+    expect(reservar).toHaveAttribute('href', `/reservations/new?trip=${trip.id}`);
   });
 
   it('sin agencias activas deshabilita el CTA y explica el motivo', async () => {
@@ -241,10 +310,11 @@ describe('ViajesPage (MKT-002)', () => {
     render(<ViajesPage />);
     await screen.findByText('Barquisimeto → Ruta de prueba');
 
-    // Un día distinto al de la salida no coincide.
-    fireEvent.change(screen.getByLabelText('Fecha'), {
-      target: { value: '2000-01-01' },
-    });
+    // Sin fecha elegida el campo pide "Elige una fecha" y no filtra nada.
+    expect(screen.getByLabelText('Fecha')).toHaveTextContent('Elige una fecha');
+
+    // Un día distinto al de la salida no coincide (hoy, sin navegar de mes).
+    await pickDate('Fecha', new Date());
     fireEvent.click(screen.getByRole('button', { name: /Buscar/ }));
 
     expect(
@@ -254,9 +324,8 @@ describe('ViajesPage (MKT-002)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Limpiar filtros' }));
 
     // Salida 11:00 UTC = 07:00 America/Caracas → mismo día de negocio.
-    fireEvent.change(screen.getByLabelText('Fecha'), {
-      target: { value: toBusinessDateString(DEPARTURE) },
-    });
+    const salida = new Date(`${toBusinessDateString(DEPARTURE)}T12:00`);
+    await pickDate('Fecha', salida);
     fireEvent.click(screen.getByRole('button', { name: /Buscar/ }));
 
     expect(
@@ -293,5 +362,115 @@ describe('ViajesPage (MKT-002)', () => {
     expect(
       await screen.findByText('Barquisimeto → Ruta de prueba'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('ViajesPage realtime (RT-04A)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('suscribe trips + trip_agencies + agencies con los ids cargados', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+
+    render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    // Dos pasadas del efecto: ids vacíos al montar y ids reales tras cargar.
+    expect(subscribeToTripCatalog).toHaveBeenCalledTimes(2);
+    const [tripIds, agencyIds] = vi.mocked(subscribeToTripCatalog).mock.calls[1];
+    expect(tripIds).toEqual([trip.id]);
+    expect(agencyIds).toEqual(['ag-1']);
+  });
+
+  it('desuscribe el catálogo al desmontar', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+
+    const { unmount } = render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    unmount();
+    // Limpieza de cada pasada del efecto + la del desmontaje.
+    expect(realtime.cleanupRealtime).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ViajesPage realtime refrescos (RT-04A)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('un evento re-consulta el catálogo en segundo plano tras el debounce', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+
+    render(<ViajesPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mockedTrips).toHaveBeenCalledTimes(1);
+
+    const onChange = vi.mocked(subscribeToTripCatalog).mock.calls[0][2] as () => void;
+    // Ráfaga de eventos colapsada en UNA recarga.
+    act(() => {
+      onChange();
+      onChange();
+    });
+    // Refresco silencioso: el catálogo permanece visible (sin skeleton).
+    expect(screen.getByText('Barquisimeto → Ruta de prueba')).toBeInTheDocument();
+    expect(mockedTrips).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(mockedTrips).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancela el refresco pendiente al desmontar', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+
+    const { unmount } = render(<ViajesPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const onChange = vi.mocked(subscribeToTripCatalog).mock.calls[0][2] as () => void;
+    act(() => {
+      onChange();
+    });
+    unmount();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(mockedTrips).toHaveBeenCalledTimes(1);
+  });
+
+  it('muestra banner inline cuando el refresco en segundo plano falla, sin ocultar el catálogo', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+    mockedTrips.mockResolvedValueOnce({ trips: [trip] }).mockRejectedValueOnce(
+      new Error('fallo de red'),
+    );
+
+    render(<ViajesPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const onChange = vi.mocked(subscribeToTripCatalog).mock.calls[0][2] as () => void;
+    act(() => {
+      onChange();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('fallo de red')).toBeInTheDocument();
+    expect(screen.getByText('Barquisimeto → Ruta de prueba')).toBeInTheDocument();
   });
 });

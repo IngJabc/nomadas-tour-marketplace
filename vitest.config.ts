@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import path from 'path';
 
 export default defineConfig({
@@ -18,6 +18,10 @@ export default defineConfig({
       'components/**/__tests__/**/*.test.{ts,tsx}',
       'tests/**/*.test.{ts,tsx}',
     ],
+    // El harness de staging vive en tests/staging/** y corre solo con
+    // `npm run test:staging` (config vitest.staging.config.ts). Nunca en
+    // `npm test`, build ni CI.
+    exclude: [...configDefaults.exclude, 'tests/staging/**'],
     env: {
       TZ: 'UTC',
     },

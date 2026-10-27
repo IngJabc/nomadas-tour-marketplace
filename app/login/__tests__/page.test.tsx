@@ -64,7 +64,7 @@ describe('LoginPage — conexión con auth existente (Fase 4)', () => {
   });
 
   it('loguea, establece la sesión Supabase y navega al redirect interno', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
     type LoginResult = Awaited<ReturnType<typeof authApi.login>>;
     let resolveLogin!: (value: LoginResult) => void;
     mockedLogin.mockReturnValue(
@@ -94,11 +94,11 @@ describe('LoginPage — conexión con auth existente (Fase 4)', () => {
     expect(establishMock).toHaveBeenCalledWith('access-token', 'refresh-token');
     expect(refreshMock).toHaveBeenCalledTimes(1);
     await waitFor(() =>
-      expect(pushMock).toHaveBeenCalledWith('/reservas/nueva'),
+      expect(pushMock).toHaveBeenCalledWith('/reservations/new'),
     );
   });
 
-  it('sin redirect seguro cae a /viajes (bloquea open redirect)', async () => {
+  it('sin redirect seguro cae a /trips (bloquea open redirect)', async () => {
     searchParamsState.redirect = 'https://evil.com/robar';
     mockedLogin.mockResolvedValue({
       token: 'access-token',
@@ -109,23 +109,23 @@ describe('LoginPage — conexión con auth existente (Fase 4)', () => {
     render(<LoginPage />);
     await submitLogin();
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/viajes'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/trips'));
     expect(pushMock).not.toHaveBeenCalledWith('https://evil.com/robar');
   });
 
   it('conserva el redirect seguro en el link de registro', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
 
     render(<LoginPage />);
 
     expect(screen.getByRole('link', { name: 'Regístrate' })).toHaveAttribute(
       'href',
-      '/register?redirect=%2Freservas%2Fnueva',
+      '/register?redirect=%2Freservations%2Fnew',
     );
   });
 
   it('muestra el error del backend sin navegar ni crear sesión', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
     mockedLogin.mockRejectedValue(
       new ApiError('Credenciales inválidas', 'INVALID_CREDENTIALS', 401),
     );

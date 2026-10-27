@@ -373,7 +373,9 @@ export interface SubmitCheckoutProofResult {
 
 export interface CancelCheckoutAttemptResult {
   attempt_id: string;
-  status: 'cancelled';
+  // MKT-010: 'expired' cuando la ventana ya había vencido y el cleanup
+  // liberó los asientos — la cancelación se confirma como cierre logrado.
+  status: 'cancelled' | 'expired';
   already_cancelled: boolean;
   freed_seats: number;
 }
@@ -509,6 +511,12 @@ export interface CheckoutAttemptView {
   seat_ids: string[];
   seat_codes: string[];
   passenger_count: number;
+  /**
+   * Pasajeros declarados en la creación del intento (jsonb del backend).
+   * Opaco aquí: el consumidor valida forma en runtime y nunca debe
+   * renderizar `phone` (dato sensible sin necesidad en pantalla).
+   */
+  passenger_data: unknown;
   unit_price: number;
   amount_cents: number;
   proof_count: number;

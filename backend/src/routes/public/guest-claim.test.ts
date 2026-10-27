@@ -47,6 +47,7 @@ const harness = vi.hoisted(() => {
       'eq',
       'neq',
       'in',
+      'is',
       'lt',
       'lte',
       'gt',

@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { format } from 'date-fns';
+import { es } from 'date-fns/locale';
 import toast from 'react-hot-toast';
 import {
   checkoutApi,
@@ -14,6 +16,7 @@ import {
   type SubmitCheckoutProofResult,
 } from '@/lib/api';
 import { ApiError } from '@/lib/errors/api-error';
+import { subscribeToPurchaseTicket } from '@/lib/realtime/subscriptions';
 import NewReservationPage from '../page';
 
 const { pushMock, realtime, search } = vi.hoisted(() => ({
@@ -22,9 +25,11 @@ const { pushMock, realtime, search } = vi.hoisted(() => ({
   realtime: {
     seatHandlers: [] as Array<(payload: unknown) => void>,
     tripHandlers: [] as Array<(payload: unknown) => void>,
+    attemptHandlers: [] as Array<() => void>,
     cleanup: vi.fn(),
     subscribeToTripSeats: vi.fn(),
     subscribeToTrips: vi.fn(),
+    subscribeToPurchaseTicket: vi.fn(),
   },
 }));
 
@@ -37,6 +42,12 @@ realtime.subscribeToTripSeats.mockImplementation(
 realtime.subscribeToTrips.mockImplementation(
   (_tripIds: string[], callback: (payload: unknown) => void) => {
     realtime.tripHandlers.push(callback);
+    return realtime.cleanup;
+  },
+);
+realtime.subscribeToPurchaseTicket.mockImplementation(
+  (_userId: string, _attemptId: string, callback: () => void) => {
+    realtime.attemptHandlers.push(callback);
     return realtime.cleanup;
   },
 );
@@ -74,10 +85,16 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/lib/realtime/subscriptions', () => ({
   subscribeToTripSeats: realtime.subscribeToTripSeats,
   subscribeToTrips: realtime.subscribeToTrips,
+  subscribeToPurchaseTicket: realtime.subscribeToPurchaseTicket,
 }));
 
+// react-hot-toast no expone variantes .info/.warning: el default es la
+// función callable que emite el toast neutro (Info).
 vi.mock('react-hot-toast', () => ({
-  default: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+  default: Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+  }),
 }));
 
 // Estado de sesión mutable: los tests de gate cambian `user` a null (guest)
@@ -292,6 +309,7 @@ function attemptView(
     seat_ids: ['seat-1', 'seat-2'],
     seat_codes: ['A1', 'A2'],
     passenger_count: 2,
+    passenger_data: null,
     unit_price: 2020,
     amount_cents: 4040,
     proof_count: 0,
@@ -419,6 +437,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     sessionStorage.clear();
     realtime.seatHandlers.length = 0;
     realtime.tripHandlers.length = 0;
+    realtime.attemptHandlers.length = 0;
     // Por defecto: sin cookie guest (401) → el probe no dispara claim.
     mockedGetGuestLocks.mockReset();
     mockedGetGuestLocks.mockRejectedValue(
@@ -439,7 +458,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('link', { name: /Ver viajes disponibles/ }),
-    ).toHaveAttribute('href', '/viajes');
+    ).toHaveAttribute('href', '/trips');
     expect(mockedTripDetail).not.toHaveBeenCalled();
     expect(mockedLocks).not.toHaveBeenCalled();
   });
@@ -501,7 +520,7 @@ describe('Wizard de reserva (MKT-004)', () => {
       screen.getByRole('button', { name: /Elegir asientos de nuevo/ }),
     );
 
-    expect(pushMock).toHaveBeenCalledWith('/reservas/nueva?trip=trip-1');
+    expect(pushMock).toHaveBeenCalledWith('/reservations/new?trip=trip-1');
     expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
   });
 
@@ -684,7 +703,7 @@ describe('Wizard de reserva (MKT-004)', () => {
     });
 
     expect(mockedUnlock).toHaveBeenCalledWith('trip-1');
-    // /viajes/[id] ya no forma parte del flujo: la selección se reinicia
+    // /trips/[id] ya no forma parte del flujo: la selección se reinicia
     // en la misma pantalla (?trip= conserva el viaje).
     expect(pushMock).not.toHaveBeenCalled();
     expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
@@ -794,6 +813,7 @@ describe('Wizard de reserva — realtime (MKT-004)', () => {
     sessionStorage.clear();
     realtime.seatHandlers.length = 0;
     realtime.tripHandlers.length = 0;
+    realtime.attemptHandlers.length = 0;
     mockedGetGuestLocks.mockReset();
     mockedGetGuestLocks.mockRejectedValue(
       new ApiError('Sesión guest requerida', 'UNAUTHORIZED', 401),
@@ -891,7 +911,7 @@ describe('Wizard de reserva — realtime (MKT-004)', () => {
       'Este viaje fue cancelado. Tu reserva no puede continuar.',
     );
     expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
-    expect(pushMock).toHaveBeenCalledWith('/viajes');
+    expect(pushMock).toHaveBeenCalledWith('/trips');
   });
 
   it('refresca el mapa con debounce tras cambios de asientos', async () => {
@@ -943,6 +963,7 @@ function resetCheckoutTest() {
   sessionStorage.clear();
   realtime.seatHandlers.length = 0;
   realtime.tripHandlers.length = 0;
+  realtime.attemptHandlers.length = 0;
   mockedGetGuestLocks.mockReset();
   mockedGetGuestLocks.mockRejectedValue(
     new ApiError('Sesión guest requerida', 'UNAUTHORIZED', 401),
@@ -979,10 +1000,10 @@ describe('Authentication gate (MKT-004 Fase B)', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('link', { name: /Iniciar sesión/ }),
-    ).toHaveAttribute('href', '/login?redirect=%2Freservas%2Fnueva');
+    ).toHaveAttribute('href', '/login?redirect=%2Freservations%2Fnew');
     expect(
       screen.getByRole('link', { name: /Registrarse/ }),
-    ).toHaveAttribute('href', '/register?redirect=%2Freservas%2Fnueva');
+    ).toHaveAttribute('href', '/register?redirect=%2Freservations%2Fnew');
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(screen.queryByText('Compra iniciada')).not.toBeInTheDocument();
   });
@@ -1531,7 +1552,7 @@ describe('Errores de creación de reserva (MKT-004 Fase B)', () => {
 // normal (ver "POSTea trip, oferta, asientos y pasajeros"), (2) agencia
 // fuera de offers[] → recuperación sin POST y sin reasignación, (6) intento
 // existente fuera de la rama, (7) pasajeros intactos y (8) recuperación con
-// el selector integrado en /reservas/nueva (sin derivar a /viajes/[id]).
+// el selector integrado en /reservations/new (sin derivar a /trips/[id]).
 describe('Reconciliación de agencia (Bug 3)', () => {
   beforeEach(() => {
     resetCheckoutTest();
@@ -1575,12 +1596,12 @@ describe('Reconciliación de agencia (Bug 3)', () => {
       screen.queryByRole('button', { name: /Reintentar/ }),
     ).not.toBeInTheDocument();
 
-    // (8) la recuperación ocurre DENTRO de /reservas/nueva: el selector de
-    // las ofertas vigentes está integrado y jamás se deriva a /viajes/[id].
+    // (8) la recuperación ocurre DENTRO de /reservations/new: el selector de
+    // las ofertas vigentes está integrado y jamás se deriva a /trips/[id].
     expect(
       screen.queryByRole('link', { name: 'Elegir otra agencia' }),
     ).not.toBeInTheDocument();
-    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    expect(view.container.querySelector('a[href="/trips/trip-1"]')).toBeNull();
     expect(screen.getAllByRole('radio')).toHaveLength(2);
     // Ninguna opción se marca sola: la agencia obsoleta (ag-1) no existe aquí.
     expect(screen.getByRole('radio', { name: /Beta Tours/ })).not.toBeChecked();
@@ -1640,10 +1661,10 @@ describe('Reconciliación de agencia (Bug 3)', () => {
 });
 
 // Corrección de Fase 1: la selección de agencia es un paso VISIBLE dentro
-// de /reservas/nueva (antes se derivaba a /viajes/[id], flujo anterior que ya
+// de /reservations/new (antes se derivaba a /trips/[id], flujo anterior que ya
 // no es requisito de compra). Cobertura: (1) oferta única directa, (2)/(3)
 // selector con 2 y 3 ofertas, (4) elección explícita de2ª/3ª agencia,
-// (6) ningún flujo normal deriva a /viajes/[slug-or-id], (7) viaje sin
+// (6) ningún flujo normal deriva a /trips/[slug-or-id], (7) viaje sin
 // agencias, (8) error de carga ≠ ausencia confirmada, (10) cambiar selección
 // no libera asientos ni cancela intentos.
 describe('Selector de agencia integrado (Fase 1-corregida)', () => {
@@ -1662,7 +1683,7 @@ describe('Selector de agencia integrado (Fase 1-corregida)', () => {
     expect(seccion).toHaveTextContent('Única agencia disponible');
     // Sin radios: no hay paso de elección que supere al flujo directo.
     expect(screen.queryAllByRole('radio')).toHaveLength(0);
-    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    expect(view.container.querySelector('a[href="/trips/trip-1"]')).toBeNull();
   });
 
   it('tres agencias: las tres opciones están disponibles para elegir', async () => {
@@ -1765,7 +1786,7 @@ describe('Selector de agencia integrado (Fase 1-corregida)', () => {
     const stored = JSON.parse(sessionStorage.getItem(LOCK_KEY) ?? '{}');
     expect(stored.agency_id).toBe('ag-3');
     expect(stored.seats).toHaveLength(2);
-    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    expect(view.container.querySelector('a[href="/trips/trip-1"]')).toBeNull();
   });
 
   it('un viaje sin agencias activas muestra el estado informativo y no permite comprar', async () => {
@@ -1779,12 +1800,12 @@ describe('Selector de agencia integrado (Fase 1-corregida)', () => {
     );
     expect(
       screen.getByRole('link', { name: /Ver otros viajes/ }),
-    ).toHaveAttribute('href', '/viajes');
+    ).toHaveAttribute('href', '/trips');
     expect(screen.queryAllByRole('radio')).toHaveLength(0);
     expect(
       screen.queryByRole('button', { name: 'Continuar al pago' }),
     ).not.toBeInTheDocument();
-    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    expect(view.container.querySelector('a[href="/trips/trip-1"]')).toBeNull();
   });
 
   it('un error al cargar el viaje no se interpreta como ausencia confirmada de agencias', async () => {
@@ -1931,6 +1952,63 @@ describe('Persistencia del intento de compra (MKT-007)', () => {
     ).toBeInTheDocument();
   });
 
+  it('MKT-010: la ventana restaurada es la del servidor y no se re-estampa en el cliente', async () => {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    const serverWindow = '2099-06-01T10:00:00.000Z';
+    mockedGetAttempt.mockResolvedValue(attemptView({ expires_at: serverWindow }));
+
+    await renderWizard();
+
+    // El countdown y la ventana del checkout salen del backend: navegar o
+    // refrescar jamás reinicia los 900 s ni los +24 h de revisión.
+    const stored = storedLock();
+    expect(stored.lock_expires_at).toBe(serverWindow);
+    expect((stored.checkout as Record<string, unknown>).expires_at).toBe(
+      serverWindow,
+    );
+    expect(mockedGetAttempt).toHaveBeenCalledWith('att-1');
+  });
+
+  it('MKT-010: un evento realtime del intento revalida y pinta la expiración del servidor', async () => {
+    vi.useFakeTimers();
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(attemptView({ status: 'created' }));
+
+    await renderWizard();
+
+    expect(subscribeToPurchaseTicket).toHaveBeenCalledTimes(1);
+    const [userId, attemptId] = vi.mocked(subscribeToPurchaseTicket).mock
+      .calls[0];
+    expect(userId).toBe('user-me');
+    expect(attemptId).toBe('att-1');
+    expect(mockedGetAttempt).toHaveBeenCalledTimes(1);
+
+    // El cleanup del backend cierra el intento y el canal avisa; la
+    // revalidación (debounce 500 ms) es la única que pinta el cierre.
+    mockedGetAttempt.mockResolvedValue(
+      attemptView({ status: 'expired', closed_at: '2026-10-04T12:00:00.000Z' }),
+    );
+    const onChange = vi.mocked(subscribeToPurchaseTicket).mock.calls[0][2] as (
+      payload?: unknown,
+    ) => void;
+
+    await act(async () => {
+      onChange({ type: 'checkout_attempts' });
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(mockedGetAttempt).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
+  });
+
   it('un intento inexistente o ajeno reinicia la selección sin inventar nada', async () => {
     seedAttemptLock();
     mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
@@ -1979,10 +2057,10 @@ describe('Persistencia del intento de compra (MKT-007)', () => {
   });
 });
 
-// Flujo nuevo: /viajes → "Reservar" → /reservas/nueva?trip=<id> SIEMPRE
+// Flujo nuevo: /trips → "Reservar" → /reservations/new?trip=<id> SIEMPRE
 // (con1, 2 o 3 agencias): el selector de agencias vive dentro del checkout.
 // El checkout jamás fija offers[0] en silencio con varias ofertas y nunca
-// deriva a /viajes/[id] para elegir agencia. La carga directa con 0 asientos
+// deriva a /trips/[id] para elegir agencia. La carga directa con 0 asientos
 // (sin LockState previa) se mantiene.
 describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
   beforeEach(() => {
@@ -1990,6 +2068,7 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
     sessionStorage.clear();
     realtime.seatHandlers.length = 0;
     realtime.tripHandlers.length = 0;
+    realtime.attemptHandlers.length = 0;
     // Por defecto: sin cookie guest (401) → el probe no dispara claim.
     mockedGetGuestLocks.mockReset();
     mockedGetGuestLocks.mockRejectedValue(
@@ -2039,12 +2118,12 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
 
     expect(mockedTripDetail).toHaveBeenCalledWith('trip-1');
     // Estado claro en lugar de offers[0] silencioso: el selector de agencias
-    // vive DENTRO de /reservas/nueva con sus opciones y ninguna marcada.
+    // vive DENTRO de /reservations/new con sus opciones y ninguna marcada.
     expect(screen.getAllByRole('radio')).toHaveLength(2);
     expect(screen.getByRole('radio', { name: /Alfa Tours/ })).not.toBeChecked();
     expect(screen.getByRole('radio', { name: /Beta Rutas/ })).not.toBeChecked();
-    // El flujo de compra jamás deriva a /viajes/[id] para elegir agencia.
-    expect(view.container.querySelector('a[href="/viajes/trip-1"]')).toBeNull();
+    // El flujo de compra jamás deriva a /trips/[id] para elegir agencia.
+    expect(view.container.querySelector('a[href="/trips/trip-1"]')).toBeNull();
     // La rama de agencia intercepta ANTES que la de asientos: no hay
     // agencia fijada, así que no se ofrece continuar al pago.
     expect(
@@ -2128,7 +2207,7 @@ describe('Entrada directa al checkout (?trip desde el catálogo)', () => {
     // El gate de pago conserva el ?trip= para volver al checkout.
     expect(screen.getByRole('link', { name: /Iniciar sesión/ })).toHaveAttribute(
       'href',
-      '/login?redirect=%2Freservas%2Fnueva%3Ftrip%3Dtrip-1',
+      '/login?redirect=%2Freservations%2Fnew%3Ftrip%3Dtrip-1',
     );
 
     // Liberar asientos también libera por la vía guest.
@@ -2563,8 +2642,34 @@ function selectProofFile(view: ReturnType<typeof render>, file: File) {
 
 /**
  * Conciliación: los tres campos son obligatorios y viajan junto al archivo.
- * Un valor de fecha en el pasado evita el rechazo `PAYMENT_IN_FUTURE`.
+ * La fecha/hora vive en el DateTimePicker (calendario + hora): se fija con el
+ * día 1 del mes en curso a las 00:00 — en el pasado, salvo el caso límite de
+ * la tolerancia de 5 min — sin navegar de mes.
  */
+function paymentDatetimeTarget(): { local: string; iso: string } {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return {
+    local: `${now.getFullYear()}-${month}-01T00:00`,
+    iso: new Date(now.getFullYear(), now.getMonth(), 1, 0, 0).toISOString(),
+  };
+}
+
+/** Nombre accesible exacto de un botón de día en el calendario (RDP + es). */
+function dayButtonName(date: Date, { selected = false } = {}): string {
+  let name = format(date, 'PPPP', { locale: es });
+  const now = new Date();
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    name = `Today, ${name}`;
+  }
+  if (selected) name = `${name}, selected`;
+  return name;
+}
+
 function fillReconciliation(view: ReturnType<typeof render>) {
   const fill = (selector: string, value: string) => {
     const input = view.container.querySelector(selector) as HTMLInputElement;
@@ -2572,7 +2677,23 @@ function fillReconciliation(view: ReturnType<typeof render>) {
   };
   fill('#proof-reference', '00123456789');
   fill('#proof-bank', 'Banco de Venezuela');
-  fill('#proof-datetime', '2020-01-01T10:00');
+
+  const { local } = paymentDatetimeTarget();
+  const [datePart, time] = local.split('T');
+  const [year, month, day] = datePart.split('-').map(Number);
+  const target = new Date(year, month - 1, day);
+  const names = [dayButtonName(target), dayButtonName(target, { selected: true })];
+  const dayButton = Array.from(view.container.querySelectorAll('button')).find(
+    (button) => names.includes(button.getAttribute('aria-label') ?? ''),
+  );
+  if (!dayButton) {
+    throw new Error(`No se encontró el día del calendario: ${names[0]}`);
+  }
+  fireEvent.click(dayButton);
+  fireEvent.change(
+    view.container.querySelector('input[type="time"]') as HTMLInputElement,
+    { target: { value: time } },
+  );
 }
 
 async function submitProofViaUi(
@@ -2636,12 +2757,17 @@ describe('Comprobante de pago (MKT-007)', () => {
     expect(
       await screen.findByRole('button', { name: 'Enviar comprobante' }),
     ).toBeInTheDocument();
-    // MKT-007.1: tras crear el intento no hay countdown de revisión, solo
-    // el mensaje por estado (aún no hay comprobante: copy de `created`).
-    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    // MKT-010/UX: tras crear el intento (created, sin comprobante) la
+    // cabecera muestra la VENTANA de la compra (heredada del lock), no el
+    // banner de salida — ese aparece recién en pending_review/rejected.
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      /reservada durante 1[45]:\d{2}/,
+    );
     expect(
-      screen.getByText('Tus asientos quedan retenidos mientras envías el comprobante.'),
-    ).toBeInTheDocument();
+      screen.queryByText(
+        'Tus asientos quedan retenidos mientras envías el comprobante.',
+      ),
+    ).not.toBeInTheDocument();
 
     const lockBefore = storedLock();
     await submitProofViaUi(view);
@@ -2655,8 +2781,8 @@ describe('Comprobante de pago (MKT-007)', () => {
     expect(reconciliation).toEqual({
       payment_reference: '00123456789',
       bank_origin: 'Banco de Venezuela',
-      // El `datetime-local` se normaliza a ISO-8601 antes de salir del cliente.
-      payment_datetime: '2020-01-01T10:00:00.000Z',
+      // El valor del calendario se normaliza a ISO-8601 antes de salir del cliente.
+      payment_datetime: paymentDatetimeTarget().iso,
     });
     expect(key).toMatch(UUID_RE);
 
@@ -2939,10 +3065,8 @@ describe('Comprobante de pago (MKT-007)', () => {
 
     const view = await renderWizard();
 
-    expect(
-      screen.getByText('Referencia de la transferencia'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Banco de origen')).toBeInTheDocument();
+    expect(screen.getByText('Referencia')).toBeInTheDocument();
+    expect(screen.getByText('Banco')).toBeInTheDocument();
     expect(screen.getByText('Fecha y hora del pago')).toBeInTheDocument();
 
     await submitProofViaUi(view, proofFile(), { fill: false });
@@ -2952,7 +3076,9 @@ describe('Comprobante de pago (MKT-007)', () => {
       screen.getByText('Escribe la referencia de la transferencia.'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Escribe el banco desde el que hiciste la transferencia.'),
+      screen.getByText(
+        'Selecciona el banco desde el que hiciste la transferencia.',
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText('Indica la fecha y hora del pago.'),
@@ -3287,6 +3413,37 @@ describe('Cancelación de la compra (MKT-007)', () => {
       'Esta compra ya estaba cancelada. Tus asientos quedaron libres.',
     );
     expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+  });
+
+  it('MKT-010: cancelar sobre un intento ya expirado confirma el cierre sin error', async () => {
+    mockedCancelAttempt.mockResolvedValue({
+      attempt_id: 'att-1',
+      status: 'expired',
+      already_cancelled: false,
+      freed_seats: 0,
+    });
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    await renderWizard();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar compra' }));
+    });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sí, cancelar compra' }),
+      );
+    });
+
+    expect(mockedCancelAttempt).toHaveBeenCalledWith('att-1');
+    expect(toast.success).toHaveBeenCalledWith(
+      'Esta compra ya expiró. Tus asientos quedaron libres.',
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
   });
 
   it('un fallo al cancelar conserva la compra y el modal sigue abierto', async () => {
@@ -4058,7 +4215,7 @@ describe('Nueva compra tras checkout verificado (Fase 3)', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('link', { name: 'Volver al catálogo' }),
-    ).toHaveAttribute('href', '/viajes');
+    ).toHaveAttribute('href', '/trips');
     // Sin compra automática ni acciones destructivas sobre la verificada.
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedCancelAttempt).not.toHaveBeenCalled();
@@ -4371,5 +4528,157 @@ describe('Orden de asientos (RT-02)', () => {
     expect(
       screen.queryByText('2 pasajeros · asientos A10, A2'),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// MKT-009 — Compras independientes en paralelo: la pantalla del intento
+// ofrece salidas que NO destruyen la compra (ni cancela ni libera locks) y
+// la entrada a OTRO viaje jamás libera los locks de una compra en curso.
+// ══════════════════════════════════════════════════════════════════════
+
+describe('Compras independientes en paralelo (MKT-009)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+    search.value = '?trip=trip-1';
+    mockedUnlock.mockResolvedValue({ unlocked: 2 });
+    mockedUnlockGuest.mockResolvedValue({ unlocked: 2, remaining: 0 });
+  });
+
+  async function renderWithAttempt(
+    overrides: Partial<CheckoutAttemptView> = {},
+  ) {
+    seedAttemptLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    mockedGetAttempt.mockResolvedValue(attemptView(overrides));
+    return renderWizard();
+  }
+
+  it('entrar a OTRO viaje con una compra en curso no libera sus locks ni la cancela', async () => {
+    seedAttemptLock();
+    search.value = '?trip=trip-2';
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip({ id: 'trip-2' }) });
+
+    await renderWizard();
+
+    expect(mockedTripDetail).toHaveBeenCalledWith('trip-2');
+    // La compra en curso conserva sus locks en el servidor: ni unlock del
+    // borrador anterior ni cancelación encubierta.
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedUnlockGuest).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    // La compra ni se restaura en esta entrada: su estado vive en el
+    // servidor (Mis compras), no en este borrador local.
+    expect(mockedGetAttempt).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      'Tu compra en curso sigue activa. Síguela en Mis compras.',
+    );
+    expect(screen.getByText('0 seleccionados')).toBeInTheDocument();
+  });
+
+  it('MKT-010: mientras se paga (created) la cabecera muestra la ventana, no las salidas', async () => {
+    await renderWithAttempt();
+
+    // El usuario aún no envió el comprobante: NO hay banner de salida
+    // ("Nueva compra" / "Ver mis compras"); la ventana de la compra
+    // (heredada del lock, corriendo en el servidor) sí es visible.
+    expect(screen.getByRole('timer')).toHaveTextContent(
+      /reservada durante 1[45]:\d{2}/,
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Nueva compra' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: 'Ver mis compras' }),
+    ).not.toBeInTheDocument();
+    // La salida de esta etapa es cancelar el intento (bloque de comprobante),
+    // no el abandono del banner.
+    expect(
+      screen.getByRole('button', { name: 'Cancelar compra' }),
+    ).toBeInTheDocument();
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedUnlock).not.toHaveBeenCalled();
+  });
+
+  it('con el comprobante enviado (pending_review) la cabecera ofrece salir sin cancelar', async () => {
+    await renderWithAttempt({
+      status: 'pending_review',
+      proof_count: 1,
+      remaining_submissions: 2,
+      proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      expires_at: '2099-01-01T00:00:00.000Z',
+    });
+
+    expect(
+      screen.getByText(
+        'Tu comprobante está en revisión. Dentro de 24 horas recibirás respuesta.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Nueva compra' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Ver mis compras' })).toHaveAttribute(
+      'href',
+      '/account/purchases',
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+
+    // La salida paralela jamás se resuelve cancelando ni liberando.
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(LOCK_KEY)).toBeNull();
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
+  });
+
+  it('una compra rechazada conserva el reintento de comprobante (RT-05) junto a las salidas paralelas', async () => {
+    await renderWithAttempt({
+      status: 'rejected',
+      proof_count: 1,
+      remaining_submissions: 2,
+      rejection_count: 1,
+      proof_submitted_at: '2026-10-04T11:00:00.000Z',
+      rejection_reason: 'Comprobante ilegible',
+    });
+
+    // Banner de estado y uploader de reenvío (RT-05) conviven con las
+    // salidas de compra paralela.
+    expect(
+      screen.getByText(
+        'Comprobante rechazado. Puedes enviar un comprobante válido.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Enviar comprobante' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Nueva compra' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Ver mis compras' }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva compra' }));
+    });
+
+    // La salida paralela jamás se resuelve cancelando ni liberando.
+    expect(mockedCancelAttempt).not.toHaveBeenCalled();
+    expect(mockedUnlock).not.toHaveBeenCalled();
+    expect(mockedUnlockGuest).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('button', { name: 'Enviar comprobante' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Elige tus asientos' }),
+    ).toBeInTheDocument();
   });
 });

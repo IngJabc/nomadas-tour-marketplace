@@ -60,7 +60,11 @@ import { compareSeatCodes, sortSeatCodes } from '@/lib/booking/seat-code';
 import { reviewMessage } from '@/lib/booking/review-message';
 import { claimPendingGuestLocks } from '@/lib/booking/guest-claim';
 import { useSeatLocking } from '@/lib/booking/useSeatLocking';
-import type { RealtimeSeatRow, SeatEventType } from '@/lib/realtime/subscriptions';
+import {
+  subscribeToPurchaseTicket,
+  type RealtimeSeatRow,
+  type SeatEventType,
+} from '@/lib/realtime/subscriptions';
 
 type Phase = 'loading' | 'missing' | 'expired' | 'error' | 'ready';
 
@@ -120,7 +124,7 @@ async function verifySeatLocks(tripId: string) {
 function NewReservationContent() {
   const router = useRouter();
   const auth = useOptionalAuthUser();
-  // Entrada directa del catálogo: `/reservas/nueva?trip=<id>` carga el viaje
+  // Entrada directa del catálogo: `/reservations/new?trip=<id>` carga el viaje
   // y arranca el checkout con 0 asientos (el mapa está en la propia pantalla).
   const searchParams = useSearchParams();
   const tripParam = searchParams.get('trip');
@@ -128,7 +132,7 @@ function NewReservationContent() {
   // Destino de vuelta tras login/registro: conserva `?trip=` para no perder
   // la entrada directa desde el catálogo.
   const authRedirect = encodeURIComponent(
-    tripParam ? `/reservas/nueva?trip=${tripParam}` : '/reservas/nueva',
+    tripParam ? `/reservations/new?trip=${tripParam}` : '/reservations/new',
   );
   const authRef = useRef(auth);
   authRef.current = auth;
@@ -251,8 +255,8 @@ function NewReservationContent() {
           // única agencia válida, no una elección arbitraria. Con varias
           // ofertas (o ninguna) NO se pincha offers[0] en silencio: el usuario
           // elige en el selector integrado en ESTA pantalla (la ruta de
-          // detalle /viajes/[id] fue eliminada; el catálogo siempre enlaza
-          // a /reservas/nueva?trip=).
+          // detalle /trips/[id] fue eliminada; el catálogo siempre enlaza
+          // a /reservations/new?trip=).
           agency_id:
             response.trip.offers.length === 1
               ? response.trip.offers[0].agency_id
@@ -294,9 +298,21 @@ function NewReservationContent() {
       }
 
       if (tripParam && stored.trip_id !== tripParam) {
-        // El usuario eligió OTRO viaje desde el catálogo: la selección
-        // anterior se libera (best effort; el TTL del backend también la
-        // libera) y se arranca de cero con el viaje del enlace.
+        // MKT-009: con un intento de compra en curso los locks pertenecen a
+        // la compra (seats.checkout_attempt_id), no a este borrador: un
+        // unlock dispararía el trigger de 087 y destruiría la compra en
+        // revisión. La selección local se retira (el usuario navegó
+        // voluntariamente a otro viaje), la compra sigue viva en el
+        // servidor y se avisa por dónde seguirla. Solo se libera la
+        // selección libre, sin intento.
+        if (stored.attempt_id) {
+          toast(
+            'Tu compra en curso sigue activa. Síguela en Mis compras.',
+          );
+          clearLockState();
+          await startFresh(tripParam);
+          return;
+        }
         const user = authRef.current?.user;
         const asGuest = !user || user.role !== 'customer';
         void (asGuest
@@ -308,7 +324,10 @@ function NewReservationContent() {
         return;
       }
 
-      setPhase('loading');
+      // MKT-010: el skeleton solo en la primera entrada. Una revalidación
+      // (Realtime del intento o countdown) conserva la pantalla lista y
+      // repinta los datos del servidor sin interrumpir al usuario.
+      if (!stored.attempt_id) setPhase('loading');
       setError(null);
 
       // MKT-007: con un intento de compra existente la pantalla se restaura
@@ -725,11 +744,13 @@ function NewReservationContent() {
       setCoordinatedPayment(false);
       setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
       toast.success(
-        result.already_cancelled
-          ? 'Esta compra ya estaba cancelada. Tus asientos quedaron libres.'
-          : `Compra cancelada. Liberamos ${result.freed_seats} asiento${
-              result.freed_seats === 1 ? '' : 's'
-            }.`,
+        result.status === 'expired'
+          ? 'Esta compra ya expiró. Tus asientos quedaron libres.'
+          : result.already_cancelled
+            ? 'Esta compra ya estaba cancelada. Tus asientos quedaron libres.'
+            : `Compra cancelada. Liberamos ${result.freed_seats} asiento${
+                result.freed_seats === 1 ? '' : 's'
+              }.`,
       );
       // La realtime (`useSeatLocking`) propaga locked → available a los mapas.
     } catch (e) {
@@ -849,7 +870,7 @@ function NewReservationContent() {
     tripEndedHandledRef.current = true;
     toast.error('Este viaje fue cancelado. Tu reserva no puede continuar.');
     clearLockState();
-    router.push('/viajes');
+    router.push('/trips');
   }, [router]);
 
   const handleTripCompleted = useCallback(() => {
@@ -857,7 +878,7 @@ function NewReservationContent() {
     tripEndedHandledRef.current = true;
     toast.error('Este viaje ya fue completado. Tu reserva no puede continuar.');
     clearLockState();
-    router.push('/viajes');
+    router.push('/trips');
   }, [router]);
 
   useSeatLocking({
@@ -870,6 +891,30 @@ function NewReservationContent() {
     onTripCompleted: handleTripCompleted,
     onRefresh: refreshTrip,
   });
+
+  // MKT-010: la compra en curso también se sigue en vivo. Cuando el
+  // servidor la cierra (expiración por cleanup, verificación o rechazo),
+  // el evento de Realtime SOLO dispara una revalidación contra
+  // `getAttempt`; la autoridad del estado sigue siendo el backend. Así
+  // una sesión abierta pinta la expiración sin esperar a un refresh del
+  // navegador. Debounce 500 ms, igual que el resto de las suscripciones.
+  useEffect(() => {
+    const attemptId = lock?.attempt_id;
+    const userId = auth?.user?.id ?? null;
+    if (!attemptId || !userId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = subscribeToPurchaseTicket(userId, attemptId, () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        setVerifyAttempt((current) => current + 1);
+      }, 500);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      cleanup();
+    };
+  }, [lock?.attempt_id, auth?.user?.id]);
 
   // Si la realtime vació la selección, la compra queda expirada.
   // `lock_expires_at` distingue el estado inicial (0 asientos, sin lock real,
@@ -1022,7 +1067,7 @@ function NewReservationContent() {
 
   /**
    * "Liberar asientos": libera TODO y reinicia la selección en esta misma
-   * pantalla (el viaje y la URL `?trip=` no cambian; /viajes/[id] ya no forma
+   * pantalla (el viaje y la URL `?trip=` no cambian; /trips/[id] ya no forma
    * parte del flujo). Si no hay asientos no hay nada que liberar.
    */
   const changeSeats = useCallback(async () => {
@@ -1092,7 +1137,7 @@ function NewReservationContent() {
 
   if (phase === 'loading') {
     return (
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="animate-pulse" aria-hidden="true">
           <div className="h-4 w-56 rounded-full bg-black/[0.06]" />
           <div className="mt-6 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -1111,7 +1156,7 @@ function NewReservationContent() {
 
   if (phase === 'missing') {
     return (
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#f1f5f9]">
             <Ticket size={24} strokeWidth={1.75} className="text-brand-navy" aria-hidden="true" />
@@ -1124,7 +1169,7 @@ function NewReservationContent() {
             minutos mientras completas tus datos.
           </p>
           <Link
-            href="/viajes"
+            href="/trips"
             className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
           >
             <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -1137,7 +1182,7 @@ function NewReservationContent() {
 
   if (phase === 'expired') {
     return (
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
             <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
@@ -1157,10 +1202,10 @@ function NewReservationContent() {
                 // Vuelve al checkout con el viaje: el mapa queda limpio para
                 // elegir de nuevo (el efecto se re-ejecuta aunque la URL ya
                 // tuviera el mismo ?trip=).
-                router.push(`/reservas/nueva?trip=${lock.trip_id}`);
+                router.push(`/reservations/new?trip=${lock.trip_id}`);
                 setVerifyAttempt((attempt) => attempt + 1);
               } else {
-                router.push('/viajes');
+                router.push('/trips');
               }
             }}
             className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
@@ -1175,7 +1220,7 @@ function NewReservationContent() {
 
   if (phase === 'error' || !trip || !lock) {
     return (
-      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
             <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
@@ -1203,8 +1248,38 @@ function NewReservationContent() {
   const formLocked = busy || attemptCreated;
   const attemptId = lock.attempt_id;
 
+  // «Cancelar compra» viaja DENTRO del uploader cuando éste está en pantalla,
+  // compartiendo fila con «Enviar comprobante» (en mobile se apila); si no hay
+  // uploader, queda en su propia fila. `proofVisible` es espejo de las ramas
+  // del ternario del comprobante más abajo: true ⇔ se renderiza <ProofUploader/>.
+  const proofVisible =
+    !verifiedAt &&
+    !awaitingReview &&
+    !checkoutFinal &&
+    !!(selectedMethodId || coordinatedPayment) &&
+    (!checkoutRejected || (checkoutMarker?.remaining_submissions ?? 0) > 0);
+
+  const cancelCompraButton = (
+    <button
+      type="button"
+      onClick={() => setConfirmCancel(true)}
+      disabled={cancelling}
+      className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-[#fef2f2] px-4 py-2.5 text-sm font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {cancelling ? (
+        <LoaderCircle
+          size={16}
+          strokeWidth={1.75}
+          className="animate-spin"
+          aria-hidden="true"
+        />
+      ) : null}
+      {cancelling ? 'Cancelando compra…' : 'Cancelar compra'}
+    </button>
+  );
+
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+    <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
       <header className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
@@ -1264,19 +1339,45 @@ function NewReservationContent() {
               Nueva compra
             </button>
             <Link
-              href="/viajes"
+              href="/trips"
               className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-[#f1f5f9] px-5 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
             >
               Volver al catálogo
             </Link>
           </div>
         </div>
-      ) : attemptCreated ? (
-        // MKT-007.1: mensaje simple por estado, SIN countdown de revisión.
-        // `checkoutStatus` es el estado crudo de `getAttempt` (ver su
-        // declaración); el fallback lo decide `reviewMessage`.
-        <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
-          <span>{reviewMessage(checkoutStatus)}</span>
+      ) : attemptCreated && (awaitingReview || checkoutRejected) ? (
+        // MKT-007.1 + ajuste UX: las salidas de la compra en curso solo
+        // aparecen cuando la parte del usuario del flujo TERMINÓ —
+        // comprobante enviado (pending_review) o rechazado (rejected y
+        // rejected_final vía marcador). Mientras se paga (created) no hay
+        // banner de salida: la cabecera cae al LockCountdown de abajo para
+        // que la ventana de la compra (heredada del lock, corriendo en el
+        // servidor) siempre sea visible; al vencer, handleExpired
+        // revalida contra getAttempt.
+        // "Nueva compra" retira solo el estado local (sin cancelar el
+        // intento ni liberar asientos) y "Ver mis compras" lleva al
+        // seguimiento. Cancelar sigue siendo acción propia del bloque de
+        // comprobante, nunca de este banner.
+        <div className="mt-6 rounded-[10px] bg-[#fffbeb] px-4 py-4 text-sm text-[#92400e]">
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {reviewMessage(checkoutStatus)}
+          </span>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleNewPurchase}
+              className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-[#f1f5f9] px-4 py-2 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
+            >
+              Nueva compra
+            </button>
+            <Link
+              href="/account/purchases"
+              className="inline-flex items-center justify-center gap-2 rounded-[10px] px-2 py-2 text-sm font-semibold text-brand-navy underline-offset-2 transition-colors duration-200 hover:underline"
+            >
+              Ver mis compras
+            </Link>
+          </div>
         </div>
       ) : lock.lock_expires_at ? (
         <div className="mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
@@ -1328,7 +1429,7 @@ function NewReservationContent() {
                     que no puedes iniciar una compra.
                   </p>
                   <Link
-                    href="/viajes"
+                    href="/trips"
                     className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#f1f5f9] px-5 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
                   >
                     <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -1598,7 +1699,7 @@ function NewReservationContent() {
                   </p>
                 </div>
                 <Link
-                  href="/viajes"
+                  href="/trips"
                   className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#f1f5f9] px-6 py-3 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
                 >
                   <ArrowLeft size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -1658,7 +1759,7 @@ function NewReservationContent() {
             ) : !lock.agency_id ? (
               trip && trip.offers.length > 1 ? (
                 // Varias ofertas sin elección aún: NUNCA se fija una en
-                // silencio y NUNCA se deriva a /viajes/[id]. El selector vive
+                // silencio y NUNCA se deriva a /trips/[id]. El selector vive
                 // en esta misma pantalla (sección "Elige la agencia").
                 <div className="mt-5">
                   <p className="text-sm text-brand-muted">
@@ -1693,7 +1794,7 @@ function NewReservationContent() {
               // toca LockState: asientos, pasajeros y agencia persistida se
               // conservan hasta que el usuario confirme con un refetch
               // exitoso o elige otra agencia en el selector de ESTA pantalla
-              // (nunca se deriva a /viajes/[id]).
+              // (nunca se deriva a /trips/[id]).
               <div className="mt-5" role="alert">
                 <div className="rounded-[10px] bg-[#fffbeb] px-4 py-3">
                   <p className="text-sm font-semibold text-[#92400e]">
@@ -2021,6 +2122,7 @@ function NewReservationContent() {
                         }
                         onSubmitted={handleProofSubmitted}
                         onAlreadySubmitted={handleAlreadySubmitted}
+                        secondaryAction={cancelCompraButton}
                       />
                     ) : (
                       // MKT-007.4: sin canal elegido no hay datos de pago
@@ -2045,6 +2147,7 @@ function NewReservationContent() {
                   }
                   onSubmitted={handleProofSubmitted}
                   onAlreadySubmitted={handleAlreadySubmitted}
+                  secondaryAction={cancelCompraButton}
                 />
               ) : (
                 <p className="mt-5 text-sm text-brand-muted">
@@ -2052,23 +2155,8 @@ function NewReservationContent() {
                 </p>
               )}
 
-              {!verifiedAt && !awaitingReview ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmCancel(true)}
-                  disabled={cancelling}
-                  className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#fef2f2] px-4 py-2.5 text-sm font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {cancelling ? (
-                    <LoaderCircle
-                      size={16}
-                      strokeWidth={1.75}
-                      className="animate-spin"
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                  {cancelling ? 'Cancelando compra…' : 'Cancelar compra'}
-                </button>
+              {!verifiedAt && !awaitingReview && !proofVisible ? (
+                <div className="mt-4">{cancelCompraButton}</div>
               ) : null}
             </section>
           ) : null}
@@ -2202,7 +2290,7 @@ export default function NewReservationPage() {
   return (
     <Suspense
       fallback={
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-16 pt-24 sm:px-8">
+        <main className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
           <div className="animate-pulse" aria-hidden="true">
             <div className="h-4 w-56 rounded-full bg-black/[0.06]" />
             <div className="mt-6 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">

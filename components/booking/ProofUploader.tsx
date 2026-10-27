@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, LoaderCircle, Upload } from 'lucide-react';
 import {
   checkoutApi,
@@ -8,6 +8,7 @@ import {
   type SubmitCheckoutProofResult,
 } from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
+import { DateTimePicker } from '@/components/ui/DateTimePicker';
 
 /** 5 MiB: el mismo límite del bucket y del parser multipart del backend. */
 export const MAX_PROOF_BYTES = 5 * 1024 * 1024;
@@ -130,6 +131,36 @@ const MAX_BANK_LENGTH = 120;
 /** Tolerancia de reloj admisible (espejo del CHECK del RPC 087). */
 const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
 
+/**
+ * Catálogo cerrado de bancos venezolanos para el select "Banco". El orden
+ * agrupa primero los más usados. Un valor precargado de un reintento que no
+ * esté en la lista se conserva como opción extra para no perder datos.
+ */
+export const BANK_OPTIONS = [
+  'Provincial',
+  'Banco de Venezuela',
+  'Mercantil',
+  'Banesco',
+  'BNC',
+  'Bancamiga',
+  'Bicentenario',
+  '100% Banco',
+  'Banco Activo',
+  'Banco Caroní',
+  'Banco del Tesoro',
+  'Banco Fondo Común (BFC)',
+  'Banco Plaza',
+  'Banplus',
+  'BOD',
+  'Bancaribe',
+  'Mi Banco',
+] as const;
+
+/** La referencia de la transferencia es SOLO números: lo demás se descarta. */
+export function sanitizeReference(value: string): string {
+  return value.replace(/\D+/g, '').slice(0, MAX_REFERENCE_LENGTH);
+}
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -144,6 +175,24 @@ export function toIsoDatetime(localValue: string): string | null {
   return parsed.toISOString();
 }
 
+/**
+ * ISO 8601 guardado → valor `datetime-local` en la zona del NAVEGADOR.
+ *
+ * Es el inverso exacto de `toIsoDatetime` (que interpreta el input en la
+ * zona del navegador): un reintento sin correcciones reenvía la MISMA
+ * fecha-hora declarada originalmente, sin corrimientos por zona horaria.
+ * Devuelve '' cuando el valor guardado no es parseable.
+ */
+export function fromIsoToLocalInput(isoValue: string): string {
+  const parsed = new Date(isoValue);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return (
+    `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}` +
+    `T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
+  );
+}
+
 export function validateReconciliation(input: {
   payment_reference: string;
   bank_origin: string;
@@ -154,13 +203,15 @@ export function validateReconciliation(input: {
   const reference = normalizeWhitespace(input.payment_reference);
   if (!reference) {
     errors.payment_reference = 'Escribe la referencia de la transferencia.';
+  } else if (!/^\d+$/.test(reference)) {
+    errors.payment_reference = 'La referencia debe contener solo números.';
   } else if (reference.length > MAX_REFERENCE_LENGTH) {
     errors.payment_reference = `Máximo ${MAX_REFERENCE_LENGTH} caracteres.`;
   }
 
   const bank = normalizeWhitespace(input.bank_origin);
   if (!bank) {
-    errors.bank_origin = 'Escribe el banco desde el que hiciste la transferencia.';
+    errors.bank_origin = 'Selecciona el banco desde el que hiciste la transferencia.';
   } else if (bank.length > MAX_BANK_LENGTH) {
     errors.bank_origin = `Máximo ${MAX_BANK_LENGTH} caracteres.`;
   }
@@ -181,6 +232,18 @@ export function validateReconciliation(input: {
 
 // ── Componente ───────────────────────────────────────────────────────────────
 
+/**
+ * Datos de conciliación declarados en un envío anterior (reintento de una
+ * compra rechazada). Se precargan editables para que el cliente corrija lo
+ * que la agencia rechazó sin reescribir todo desde cero. `payment_datetime`
+ * llega en ISO 8601 (formato de la API), no como `datetime-local`.
+ */
+export interface ProofUploaderInitialValues {
+  payment_reference?: string | null;
+  bank_origin?: string | null;
+  payment_datetime?: string | null;
+}
+
 export interface ProofUploaderProps {
   attemptId: string;
   /**
@@ -193,6 +256,25 @@ export interface ProofUploaderProps {
   onSubmitted: (result: SubmitCheckoutProofResult) => void;
   /** El servidor ya tenía un comprobante en revisión (409). */
   onAlreadySubmitted?: () => void;
+  /**
+   * Reintento: valores del envío anterior, precargados y corregibles.
+   * Ausente (flujo del wizard) = campos vacíos, como hasta ahora.
+   */
+  initialValues?: ProofUploaderInitialValues;
+  /**
+   * Se invoca con CADA error de envío, antes de que la UI decida cómo
+   * mostrarlo. La pantalla de reintento lo usa para revalidar contra el
+   * backend estados que vuelven imposible el envío (p. ej. asientos
+   * liberados: `CHECKOUT_SEATS_LOST`) y mostrar el bloqueo, sin alterar
+   * el manejo existente del wizard (prop opcional).
+   */
+  onSubmitError?: (error: unknown) => void;
+  /**
+   * Acción secundaria que comparte fila con «Enviar comprobante» (p. ej.
+   * «Cancelar compra» del wizard). En pantallas angostas se apila debajo
+   * del CTA, a ancho completo.
+   */
+  secondaryAction?: React.ReactNode;
 }
 
 interface IdempotencySlot {
@@ -223,11 +305,44 @@ export function ProofUploader({
   attemptId,
   onSubmitted,
   onAlreadySubmitted,
+  initialValues,
+  onSubmitError,
+  secondaryAction,
 }: ProofUploaderProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [reference, setReference] = useState('');
-  const [bank, setBank] = useState('');
-  const [paidAt, setPaidAt] = useState('');
+  // Miniatura del comprobante seleccionado (solo imágenes). El object URL se
+  // crea/destruye con el archivo; entornos sin createObjectURL (jsdom) usan
+  // el icono de respaldo sin romper el render.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const isImage =
+      file !== null &&
+      (file.type.startsWith('image/') ||
+        /\.(png|jpe?g|webp)$/i.test(file.name));
+    if (!file || !isImage || typeof URL.createObjectURL !== 'function') {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => {
+      if (typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [file]);
+  // Reintento: valores del intento anterior, precargados y corregibles
+  // (solo toman efecto en el montaje; un reload posterior no pisa lo que
+  // el usuario esté escribiendo).
+  const [reference, setReference] = useState(() =>
+    sanitizeReference(initialValues?.payment_reference ?? ''),
+  );
+  const [bank, setBank] = useState(initialValues?.bank_origin ?? '');
+  const [paidAt, setPaidAt] = useState(
+    initialValues?.payment_datetime
+      ? fromIsoToLocalInput(initialValues.payment_datetime)
+      : '',
+  );
   const [fieldErrors, setFieldErrors] = useState<
     Partial<Record<keyof SubmitCheckoutProofPayload, string>>
   >({});
@@ -307,6 +422,9 @@ export function ProofUploader({
       );
       onSubmitted(result);
     } catch (err) {
+      // Cada fallo se notifica ANTES de decidir el copy: la pantalla de
+      // reintento lo usa para revalidar estados autoritativos del backend.
+      onSubmitError?.(err);
       if (
         err instanceof ApiError &&
         (err.code === 'CHECKOUT_PROOF_PENDING' ||
@@ -349,19 +467,21 @@ export function ProofUploader({
           uploader mientras queden envíos disponibles. */}
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        <div className="sm:col-span-2">
+        <div>
           <label className={LABEL_CLASSES} htmlFor="proof-reference">
-            Referencia de la transferencia
+            Referencia
           </label>
           <input
             id="proof-reference"
             type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
             value={reference}
             maxLength={MAX_REFERENCE_LENGTH}
             disabled={pending}
             autoComplete="off"
             placeholder="Ej. 00123456789"
-            onChange={(event) => setReference(event.target.value)}
+            onChange={(event) => setReference(sanitizeReference(event.target.value))}
             className={FIELD_CLASSES}
             aria-invalid={!!fieldErrors.payment_reference}
           />
@@ -374,20 +494,26 @@ export function ProofUploader({
 
         <div>
           <label className={LABEL_CLASSES} htmlFor="proof-bank">
-            Banco de origen
+            Banco
           </label>
-          <input
+          <select
             id="proof-bank"
-            type="text"
             value={bank}
-            maxLength={MAX_BANK_LENGTH}
             disabled={pending}
-            autoComplete="organization"
-            placeholder="Ej. Banco de Venezuela"
             onChange={(event) => setBank(event.target.value)}
             className={FIELD_CLASSES}
             aria-invalid={!!fieldErrors.bank_origin}
-          />
+          >
+            <option value="">Selecciona un banco</option>
+            {BANK_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+            {bank && !(BANK_OPTIONS as readonly string[]).includes(bank) ? (
+              <option value={bank}>{bank}</option>
+            ) : null}
+          </select>
           {fieldErrors.bank_origin ? (
             <p role="alert" className="mt-1.5 text-xs text-[#ef4444]">
               {fieldErrors.bank_origin}
@@ -395,24 +521,14 @@ export function ProofUploader({
           ) : null}
         </div>
 
-        <div>
-          <label className={LABEL_CLASSES} htmlFor="proof-datetime">
-            Fecha y hora del pago
-          </label>
-          <input
-            id="proof-datetime"
-            type="datetime-local"
+        <div className="sm:col-span-2">
+          <DateTimePicker
+            label="Fecha y hora del pago"
             value={paidAt}
+            onChange={setPaidAt}
             disabled={pending}
-            onChange={(event) => setPaidAt(event.target.value)}
-            className={FIELD_CLASSES}
-            aria-invalid={!!fieldErrors.payment_datetime}
+            error={fieldErrors.payment_datetime}
           />
-          {fieldErrors.payment_datetime ? (
-            <p role="alert" className="mt-1.5 text-xs text-[#ef4444]">
-              {fieldErrors.payment_datetime}
-            </p>
-          ) : null}
         </div>
       </div>
 
@@ -435,13 +551,30 @@ export function ProofUploader({
       </label>
 
       {file ? (
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
-          <span className="flex min-w-0 items-center gap-2">
-            <FileText size={16} strokeWidth={1.75} className="shrink-0 text-brand-navy" aria-hidden="true" />
-            <span className="truncate text-sm font-medium text-brand-navy">{file.name}</span>
-          </span>
-          <span className="shrink-0 text-xs text-brand-muted">
-            {formatProofSize(file.size)}
+        <div className="mt-3 flex items-center gap-3 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
+          {previewUrl ? (
+            <img
+              src={previewUrl}
+              alt="Vista previa del comprobante"
+              className="h-14 w-14 shrink-0 rounded-lg border border-black/[0.06] bg-white object-cover"
+            />
+          ) : (
+            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border border-black/[0.06] bg-white">
+              <FileText
+                size={20}
+                strokeWidth={1.75}
+                className="text-brand-muted"
+                aria-hidden="true"
+              />
+            </span>
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-brand-navy">
+              {file.name}
+            </span>
+            <span className="mt-0.5 block text-xs text-brand-muted">
+              {formatProofSize(file.size)}
+            </span>
           </span>
         </div>
       ) : null}
@@ -455,19 +588,25 @@ export function ProofUploader({
         </p>
       ) : null}
 
-      <button
-        type="button"
-        onClick={() => void handleSubmit()}
-        disabled={!file || pending}
-        className="mt-4 inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        {pending ? (
-          <LoaderCircle size={16} strokeWidth={1.75} className="animate-spin" aria-hidden="true" />
-        ) : (
-          <Upload size={16} strokeWidth={1.75} aria-hidden="true" />
-        )}
-        {pending ? 'Enviando comprobante…' : 'Enviar comprobante'}
-      </button>
+      {/* Fila de acciones: CTA primario + acción secundaria del padre
+          (p. ej. «Cancelar compra»). En mobile se apilan a ancho completo;
+          desde sm quedan en una sola línea (primario a la izquierda). */}
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          type="button"
+          onClick={() => void handleSubmit()}
+          disabled={!file || pending}
+          className="inline-flex items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {pending ? (
+            <LoaderCircle size={16} strokeWidth={1.75} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Upload size={16} strokeWidth={1.75} aria-hidden="true" />
+          )}
+          {pending ? 'Enviando comprobante…' : 'Enviar comprobante'}
+        </button>
+        {secondaryAction}
+      </div>
     </div>
   );
 }

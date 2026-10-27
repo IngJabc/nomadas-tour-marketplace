@@ -1,7 +1,7 @@
 # TASKS
 
 > Documento **operativo del sprint**. Una tarea activa a la vez; marcar `[x]` al completar.
-> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras) y RT-03 (boleto QR)** completados. Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
+> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras), RT-03 (boleto QR)** completados + **RT-05 (reintento de pago)** y **MKT-009 (compras en paralelo)** implementados y validados localmente (pendiente staging). **Rutas en inglés (patrón tours) + filtros de Mis compras** completados (2026-10-26). Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
 > **Visión de producto:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 > **Contexto del proyecto:** [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md)
 > **Contrato con nomadas-tour:** [`docs/NOMADAS_TOUR_INTEGRATION.md`](docs/NOMADAS_TOUR_INTEGRATION.md)
@@ -389,13 +389,349 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 ---
 
+## RT-05 — Reintento de pago de compra rechazada (2026-10-22)
+
+- [x] **RT-05** — Reintento de pago limitado a la etapa de checkout del intento original
+  - **CTA en Mis compras**: `esReintentoDisponible` en
+    `app/cuenta/compras/page.tsx` — la acción **«Corregir pago y
+    reintentar»** (`RefreshCw`, primaria cyan) solo aparece en compras con
+    `estado === 'rechazado'` y `puede_reenviar_comprobante`; enlaza a
+    `/cuenta/compras/[attemptId]/pago`. Ningún otro estado ofrece la acción.
+  - **Nueva ruta** `/cuenta/compras/[attemptId]/pago`
+    (`app/cuenta/compras/[attemptId]/pago/page.tsx`): recupera el checkout
+    original **solo en su etapa de pago** — nunca repite selección de
+    asientos ni registro de pasajeros (los reutiliza del intento).
+  - **Resumen y formulario**: resumen de compra (ruta, salida, agencia,
+    asientos en orden natural, pasajeros con documento — sin teléfono —,
+    importe y motivo del rechazo) + `PaymentMethodSection` (métodos de la
+    agencia, `frozen` en `agency_direct`) + `ProofUploader` con **precarga
+    editable** de la conciliación anterior (`initialValues`;
+    `fromIsoToLocalInput` invierte `toIsoDatetime` sin tocar el wizard) y
+    **envío de un comprobante nuevo** vía la misma `submitProof`.
+  - **Validaciones de apertura**: el formulario solo se muestra si el
+    intento es `rejected`, la ventana de checkout (`expires_at`) sigue
+    abierta, quedan envíos disponibles (`remaining > 0`) y **sus** asientos
+    siguen bloqueados en `mySeatLocks` (fail closed: sin verificar locks no
+    hay envío). El resto de estados → bloqueo con copy neutro y CTA
+    (`/viajes` o Mis compras); `pending_review`/aprobado → vista de revisión
+    sin QR ni boleto.
+  - **Manejo de errores**: 404 uniforme (inexistente o ajena, sin
+    distinguir), 401 → sesión, `tripDetail` no crítico (fallbacks
+    neutrales); backend `mapRpcError` traduce `ERR_CHECKOUT_LOCK_EXPIRED`
+    (RPC 092) a **409 `CHECKOUT_SEATS_LOST`** en lugar de 500 genérico (sin
+    pre-chequeo Node — TOCTOU); `onSubmitError` revalida contra el backend
+    ante `CHECKOUT_SEATS_LOST`/`CHECKOUT_WINDOW_EXPIRED`.
+  - **Realtime**: reutiliza la suscripción existente
+    `subscribeToPurchaseTicket` con debounce 500 ms y guardas de secuencia;
+    la revisión se muestra solo con confirmación del servidor (201 o 409
+    `CHECKOUT_PROOF_PENDING`), sin QR antes de la verificación de la agencia.
+  - **Tests (+27)**: `app/cuenta/compras/[attemptId]/pago/__tests__/page.test.tsx`
+    (21), `components/booking/__tests__/ProofUploader.test.tsx` (+5),
+    `app/cuenta/compras/__tests__/page.test.tsx` (+1 gate) y fixture
+    `passenger_data` ajustado en el wizard.
+- Validación local (2026-10-22): frontend **322/322** (20 archivos, suite de
+  staging excluida) · `npx tsc --noEmit` ✓ · `next build` ✓ (ruta
+  `ƒ /cuenta/compras/[attemptId]/pago`) · backend `npm run build` (tsc) ✓
+  con `checkout.test.ts` **54/54** · `git diff --check` ✓ en ambos repos.
+- **Estado**: implementado y validado localmente; **pendiente de validación
+  funcional en staging**. Sin despliegue ni integración final. RT-05 no
+  requiere migraciones: ninguna migración remota se aplicó ni se marca como
+  aplicada.
+
+---
+
+## MKT-009 — Compras independientes en paralelo (2026-10-22)
+
+- [x] **MKT-009** — iniciar una segunda compra sin destruir la compra en curso
+  - **Sin migración**: el RPC `create_checkout_attempt` (087) ya rechaza con
+    `ERR_CHECKOUT_SEAT_CLAIMED` los asientos reclamados por otro intento con
+    set distinto — las compras en paralelo con asientos distintos ya eran
+    válidas en servidor. El bloqueo era de UX y de aislamiento de locks.
+  - **Banner de intento** (`app/reservas/nueva/page.tsx`): la compra en curso
+    (created / pending_review / rejected) ofrece el botón **«Nueva compra»**
+    (solo limpia estado local: sin `unlockSeats`/`unlockGuestSeats`, sin
+    `cancelAttempt`, sin reintentos automáticos) y el link **«Ver mis
+    compras»** → `/cuenta/compras`. Copy conservado íntegro del contrato
+    RT-05: mensaje como hijo de texto del div `#fffbeb text-[#92400e]` sin
+    svg; el uploader RT-05 sigue coexistiendo en `rejected`.
+  - **Entrada a otro viaje**: si el borrador guardado tiene `attempt_id`, la
+    rama cross-trip **no hace unlock** (evita el trigger de 087, que
+    destruiría la compra), retira la selección local con `clearLockState()`,
+    arranca el viaje nuevo y avisa con toast neutro «Tu compra en curso
+    sigue activa. Síguela en Mis compras.» (react-hot-toast no expone
+    `.info`: se usa el toast callable default).
+  - **Aislamiento de locks** (`backend/src/services/seat-lock.service.ts`):
+    `unlockSeatsForOwner` añade `.is('checkout_attempt_id', null)` — nunca
+    libera locks con compra viva; `lockSeatsForOwner` responde **409
+    `SEAT_LOCKED`** («Asientos de una compra en curso…») cuando el asiento
+    tiene `checkout_attempt_id` (propia o ajena) **antes** de cualquier
+    extensión de TTL: extender acortaría la ventana 900 s / 24 h y el
+    trigger de 087 liberaría la compra.
+  - **Tests (+9)**: wizard `page.test.tsx` +4 (describe «Compras
+    independientes en paralelo»: cross-trip sin unlock ni cancelación,
+    banner con ambas salidas sin crear nada, banner `pending_review`,
+    banner `rejected` con RT-05 intacto); `seats.test.ts` +3 (filtro `.is`
+    del unlock con `unlocked: 0`, 409 sobre asiento de compra propia con
+    TTL intacto, 409 sobre asiento de compra ajena); `checkout.test.ts` +1
+    (segunda compra paralela: 201 sin consultar `checkout_attempts` antes
+    del RPC); `compras/__tests__/page.test.tsx` +1 (evento realtime: una
+    compra avanza, la otra conserva estado, ruta e importe). Harnesses
+    `seats` / `guest-seats` / `guest-claim` con `'is'` en `buildChain`.
+- **Correcciones de tests obsoletos preexistentes** (rotos antes de MKT-009,
+  sin relación con él): `085-payment-admin-actions-contract.test.ts` esperaba
+  `FOR rec IN` tras el rename a `FOR v_rec IN` del compañero (ff3da77,
+  MKT-007) y `auth.test.ts` esperaba 401 en login `agency` desde que 14aecc4
+  (MKT-006) permitió ese rol — actualizado a 200 y el branch 401 ahora se
+  cubre con un rol fuera del allowlist (`agent`).
+- Validación local (2026-10-22): frontend **327/327** (20 archivos) ·
+  `npx tsc --noEmit` ✓ · `next build` ✓ · backend **279/279** (17 archivos)
+  · `npm run build` (tsc) ✓ · `git diff --check` ✓ en ambos repos · smoke
+  dev: wizard y Mis compras 200 (:3002), `api/public/trips` 200 (:3003).
+- **Estado**: implementado y validado localmente. **Sin migraciones nuevas
+  (087 ya desplegada), sin variables de entorno nuevas ni cambios en Render**
+  — nada que encender. Sin despliegue.
+
+---
+
+## Ajustes de conciliación del pago (2026-10-22)
+
+- [x] **Campos del comprobante en `/reservas/nueva?trip=id`** (y por
+  extensión en el reintento `/cuenta/compras/[attemptId]/pago`, que reutiliza
+  `ProofUploader`):
+  - **Referencia**: label «Referencia de la transferencia» → **«Referencia»**
+    y solo números. `inputMode="numeric"` + `pattern="[0-9]*"` y
+    `sanitizeReference()` aplicado al escribir y al hidratar `initialValues`;
+    `validateReconciliation` añade el guard `La referencia debe contener solo
+    números.` (defensa para llamadas directas).
+  - **Banco**: label «Banco de origen» → **«Banco»**, de input libre a
+    **select cerrado** con el catálogo `BANK_OPTIONS` exportado (los 7
+    pedidos — Provincial, Banco de Venezuela, Mercantil, Banesco, BNC,
+    Bancamiga, Bicentenario — más 100% Banco, Activo, Caroní, del Tesoro,
+    Fondo Común (BFC), Plaza, Banplus, BOD, Bancaribe y Mi Banco). Opción
+    vacía «Selecciona un banco»; un banco legado fuera del catálogo se
+    conserva como opción extra en el reintento (sin pérdida de datos). Error
+    de validación: «Selecciona el banco desde el que hiciste la
+    transferencia.»
+  - **Fecha y hora**: el input `datetime-local` se reemplaza por el
+    **`DateTimePicker` de Tours** (el mismo del «Posponer viaje»), portado a
+    este repo: `components/ui/DateTimePicker.tsx` +
+    `components/ui/day-picker-calendar.tsx` (react-day-picker + date-fns/es,
+    ya presentes en `package.json`; sin dependencias nuevas). El valor sigue
+    siendo naive `YYYY-MM-DDTHH:mm`: `toIsoDatetime` /
+    `fromIsoToLocalInput` y la tolerancia de futuro no cambian.
+  - **Tests**: `ProofUploader.test.tsx` 35 (+5: dígitos al escribir,
+    normalización de referencia legada, catálogo del select, ausencia de
+    `datetime-local`, guard de `validateReconciliation`); el helper
+    `fillReconciliation` de los 3 archivos fija la fecha con el día 1 del mes
+    en curso vía el botón accesible del calendario y la hora en el input
+    `time`, con payloads ISO calculados dinámicamente; fixtures de referencia
+    pasan a ser numéricas.
+- Validación local (2026-10-22): frontend **332/332** (20 archivos) ·
+  `npx tsc --noEmit` ✓ · `next build` ✓ · `git diff --check` ✓ · smoke dev:
+  `/reservas/nueva?trip=…` y `/cuenta/compras/att-1/pago` 200 (:3002).
+- **Estado**: implementado y validado localmente. **Sin migraciones, sin
+  variables de entorno nuevas, sin cambios de backend ni de Render**. Sin
+  despliegue.
+
+---
+
+## MKT-010 — Expiración integral del checkout y liberación de asientos abandonados (2026-10-23)
+
+> Nota de naming: el roadmap reservaba MKT-010 para el flujo de
+> refunds/abonos (sigue pendiente en Fase 3; ver línea del "flujo de
+> abonos" más arriba). La ejecución usó el identificador MKT-010 para esta
+> tarea de expiración; refunds conserva su pendiente.
+
+- **Causa raíz**: `cleanup_expired_checkout_attempts` (087 §10) existe y es
+  correcta (SKIP LOCKED, idempotente, libera SOLO locks propios, cierra
+  `created/pending_review/rejected` con `expires_at<=NOW()`) pero **nadie
+  la invocaba** (la cabecera de 090 lo reconocía). El loop de 60 s de ambos
+  backends y la edge function liberaban asientos con UPDATE blanket que el
+  trigger de 087 convertía en `checkout_attempt_id = NULL`, dejando
+  intentos huérfanos abiertos; `getAttempt` no validaba la ventana (un
+  refresh a las +2 h seguía pintando "Compra iniciada"); el wizard no se
+  suscribía a `checkout_attempts`.
+- **Sin migración** (determinación documentada): el esquema y los RPCs
+  087-094 son suficientes; la corrección es solo código de aplicación. No
+  se creó, editó ni aplicó ninguna migración (ni en remoto ni local).
+- **Backend marketplace**:
+  - Nuevo `backend/src/services/checkout-cleanup.service.ts`:
+    `runCheckoutCleanup()` (rpc `cleanup_expired_checkout_attempts`, nunca
+    lanza, log+Sentry), `releaseExpiredSeatLocks()` (UPDATE blanket + guard
+    `.is('checkout_attempt_id', null)`) y `runPeriodicCheckoutCleanup()`
+    (cleanup **primero**, luego release protegido).
+  - `backend/src/index.ts`: el loop de 60 s llama a
+    `runPeriodicCheckoutCleanup` + `expireStaleGuestSessions` (antes el
+    blanket era directo en el índice).
+  - `checkout.service.ts` — `verifyAttemptReady`: orden terminal →
+    ventana (si vencida: `runCheckoutCleanup()` + 409
+    `CHECKOUT_WINDOW_EXPIRED`) → `pending_review` → proof_count: una
+    revisión con +24 h vencidos ahora expira en lugar de "sigue en
+    revisión". `getCheckoutAttempt`: expiración **perezosa** (si el intento
+    está abierto y vencido, limpia y re-lee). `cancelCheckoutAttempt`: si
+    el RPC responde `CHECKOUT_ATTEMPT_CLOSED` y la relectura da `expired`,
+    devuelve éxito `{status:'expired', freed_seats:0}` (la cancelación
+    sobre una compra ya expirada no es un error para el usuario).
+- **Frontend marketplace**:
+  - `app/reservas/nueva/page.tsx`: efecto realtime nuevo
+    (`subscribeToPurchaseTicket` con debounce 500 ms) que solo dispara
+    revalidación contra `getAttempt` — la autoridad del estado sigue en el
+    backend; verify() sin flash de skeleton en revalidación; toast de
+    cancelación con rama `expired` («Esta compra ya expiró…»).
+  - `lib/api.ts`: `CancelCheckoutAttemptResult.status` →
+    `'cancelled' | 'expired'`.
+- **nomadas-tour** (partner operativo): el loop de 60 s de
+  `backend/src/index.ts` y la edge function `release-expired-locks` llaman
+  a `cleanup_expired_checkout_attempts` **antes** del UPDATE blanket y
+  añaden el mismo guard `.is('checkout_attempt_id', null)` — la ventana
+  600 s de Tour no se tocó.
+- **Tests**: backend `checkout.test.ts` 60 (+6: GET perezoso expira y
+  re-lee, GET tolera fallo del cleanup, ventana vencida dispara cleanup,
+  `pending_review` vencido → `CHECKOUT_WINDOW_EXPIRED`, cancel `expired`
+  → 200 con forma de éxito, cancel `rejected_final` → 409); nuevo
+  `checkout-cleanup.service.test.ts` (7: RPC exacta, orden
+  cleanup→release, guard de intentos, tolerancia a fallos); wizard
+  `page.test.tsx` 113 (+3: ventana del servidor no se re-estampa,
+  evento realtime revalida y pinta la expiración, cancel sobre intento
+  expirado); contract test Tour `tests/security/checkout-expiry-cleanup.test.ts`
+  (12 sobre el texto de 087: cierre acotado, locks propios, SKIP LOCKED,
+  ventana del submit, herencia de TTL, sin pg_cron).
+- **Ajuste UX posterior (2026-10-23)**: el banner de salidas («Nueva
+  compra» / «Ver mis compras») ya NO aparece en estado `created` (mitad
+  del pago, sin comprobante): solo en `pending_review`/`rejected` — es
+  decir, cuando la parte del usuario del flujo terminó. En `created` la
+  cabecera muestra el `LockCountdown` de la ventana de la compra
+  (heredada del lock, corriendo en el servidor) y `handleExpired`
+  revalida contra `getAttempt` al vencer (el cableado ya existía pero no
+  se disparaba). Tests: wizard 113 (+1 creado con contador, −1 obsoleto
+  del banner en `created`).
+- Validación local (2026-10-23): marketplace frontend **337/337** (20
+  archivos) · backend **291/291** (18 archivos) · Tour security
+  **133/133** y suite completa **664 pass / 4 skip** ·
+  `npx tsc --noEmit` ✓ y `npm run build` (tsc) en ambos backends ·
+  `next build` ✓ en ambos fronts · `git diff --check` ✓ en ambos repos.
+- **Estado**: implementado y validado localmente. **Sin migraciones
+  nuevas, sin variables de entorno nuevas, sin cambios en Render** — nada
+  que encender. Sin despliegue.
+
+---
+
+## Rutas en inglés + filtros de Mis compras (2026-10-26)
+
+- [x] **Rutas del marketplace en inglés** (patrón del repo tours; renombrado
+  de `app/` con `git mv`):
+  - `/viajes` → `/trips`
+  - `/reservas/nueva` → `/reservations/new`
+  - `/cuenta/compras` → `/account/purchases`
+  - `/cuenta/compras/[attemptId]/boleto` → `/account/purchases/[attemptId]/ticket`
+  - `/cuenta/compras/[attemptId]/pago` → `/account/purchases/[attemptId]/payment`
+  - `middleware.ts`: `protectedPaths` con las rutas nuevas (las viejas
+    quedan como defensa) y públicas `/trips`, `/agencies`.
+  - `next.config.ts`: redirects **308** de cada ruta vieja a la nueva
+    (se evalúan antes que el middleware y conservan query params como
+    `?trip=...`). Los enlaces viejos ya circulando siguen funcionando.
+  - Reemplazo de referencias en todo el frontend (links, `router.push`,
+    `?redirect=%2F...`, comentarios y tests). `routes.d.ts`/`validator.ts`
+    son artefactos generados en `.next/` (gitignored) y se regeneran solos.
+  - `AGENTS.md` § Estructura de pantallas actualizado con la convención
+    (nunca crear rutas nuevas en español).
+- [x] **Filtros en `/account/purchases`**:
+  - El historial ahora se trae **completo** (páginas de 50 hasta agotar
+    `has_more`; tope 20 × 50 = 1000 compras) para que los filtros busquen
+    en TODO el historial, no solo en la pantalla visible.
+  - Búsqueda de texto libre insensible a acentos y mayúsculas (ruta,
+    agencia, asiento, pasajero, documento, boleto, referencia del
+    comprobante y etiqueta de estado) contra un índice pre-normalizado por
+    compra (un `Map`, sin re-normalizar en cada tecla).
+  - Chips de estado en pill con contadores sobre todo el historial +
+    chip "Todas (N)"; el activo se pinta en cyan (estado activo).
+  - Rango de fecha de salida `desde`/`hasta` (día en la zona de negocio
+    `America/Caracas` vía `toBusinessDateString`, inclusivos; una compra
+    sin `departure_time` no pasa un filtro de fechas).
+  - Contador de resultados ("Mostrando X de Y compras · N en total"),
+    botón "Limpiar filtros" y empty state propio ("Ninguna compra
+    coincide con tus filtros") con CTA que restaura el historial.
+  - Paginación local de 5 tarjetas sobre el subconjunto filtrado: cambiar
+    un filtro vuelve a la página 1, la página nunca queda fuera de rango y
+    paginar jamás vuelve a llamar al backend. Un refresco realtime
+    conserva los filtros activos; cambiar de identidad los limpia.
+  - Ante un error nunca se limpia lo visible: un refresco fallido
+    conserva la lista anterior y una carga parcial muestra lo traído más
+    el banner de reintento (RT: regla de no limpiar selección del usuario).
+- Tests: **346/346** (20 archivos): +9 de filtros y 3 reescritos de la
+  paginación server-side a local (expectations `(5,0)` → `(50,0)`).
+- Validación local (2026-10-26): `npm test` **346/346** ✓ ·
+  `npx tsc --noEmit` ✓ · `npm run build` (`next build`) ✓ ·
+  `git diff --check` ✓. **Sin commits.**
+- **Estado**: implementado y validado localmente. **Sin migraciones ni
+  variables de entorno nuevas; sin cambios en Render** — nada que
+  encender. Sin despliegue.
+
+---
+
+## Margen de página consistente + DatePicker como estándar de filtros (2026-10-26)
+
+- [x] **Contenedor unificado en todo el marketplace** (el mismo que usa el
+  Navbar, `max-w-7xl mx-auto px-4 sm:px-6`):
+  - Todas las páginas internas pasan a
+    `mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16`:
+    `/trips` (era `px-8`), `/reservations/new` (6 estados de carga, era
+    `max-w-6xl sm:px-8`) y `/account/purchases` (era `max-w-4xl
+    sm:px-8`).
+  - Boleto y corrección de pago mantienen el 7xl y acotan su contenido
+    con un wrapper interno (`max-w-2xl` el boleto, `max-w-3xl` el pago)
+    para no estirar el documento.
+  - `/login` y `/register` conservan el centrado pero con el mismo
+    padding (`px-4 sm:px-6 pt-24 pb-16`, era `px-8`); la landing pasa de
+    `px-8` a `px-4 sm:px-6`.
+- [x] **`DatePicker` portado de Tours** como componente estándar
+  (`components/ui/DatePicker.tsx`): botón + popover con el
+  `DayPickerCalendar` del marketplace (locale español, "Limpiar fecha"),
+  trigger calzado con los inputs vecinos (`rounded-[10px] py-3 pl-9
+  pr-9 text-sm`, icono Lucide 16/1.75), prop `label` opcional con el
+  label visible del patrón marketplace (asociado al botón) y
+  `role="dialog"` en el popover (su cierre es animado: en tests hay que
+  esperar a que desaparezca antes de abrir otro calendario).
+- [x] **Los filtros de fecha nacen vacíos, sin fecha por defecto** (por
+  decisión del producto: nada de "Cualquier fecha" / "Sin límite" ni
+  prefill con hoy). El trigger muestra el placeholder `"Elige una fecha"`
+  hasta que el usuario elige un día en el calendario; elegir una fecha
+  aplica el filtro y la X / `Limpiar filtros` la vacía y muestra todo
+  (catálogo completo / historial completo).
+- [x] **`<input type="date">` nativos eliminados**:
+  - `/trips`: el filtro "Fecha" ahora es el DatePicker (sin fecha por
+    defecto, placeholder "Elige una fecha").
+  - `/account/purchases`: "Salida desde" / "Salida hasta" ahora son dos
+    DatePickers (ambos sin fecha por defecto y con el mismo placeholder).
+    La lógica de filtrado no cambia: sigue comparando
+    `toBusinessDateString` (día de negocio `America/Caracas`, inclusivo).
+- Tests: los de fecha fijan días con clicks reales en el calendario
+  (helpers `pickDate` + `dayButtonName`, navegación de mes por "Go to the
+  Next Month") y verifican el placeholder "Elige una fecha" en su estado
+  inicial; las fixtures de salidas pasaron a ser relativas a hoy
+  (`isoAt(±n)` / `daysFromNow(n)`) para que envejezcan bien con el paso
+  del tiempo.
+- Documentación: `AGENTS.md` con la sección "Contenedor de página —
+  margen estándar", la subsección "DatePicker (filtros de fecha)" y las
+  reglas 20 (contenedor) y 21 (nunca `<input type="date">`).
+- Validación local (2026-10-26): `npm test` **346/346** ✓ ·
+  `npx tsc --noEmit` ✓ · `npm run build` (`next build`) ✓ ·
+  `git diff --check` ✓ · smoke en dev (:3002): calendario abre en
+  `/trips` con días en español, 0 errores de consola, `main` en
+  1280px/24px de padding en `/trips`, `/` y `/login`.
+- **Estado**: implementado y validado localmente. **Sin migraciones ni
+  variables de entorno nuevas; sin cambios en Render** — nada que
+  encender. Sin despliegue.
+
+---
+
 ## Después
 
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
 | — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
-| — | Fase 4 — Panel admin + /cuenta | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
+| — | Fase 4 — Panel admin + `/account` | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
 | — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
 | — | Migrar `middleware.ts` → `proxy` (deprecación Next 16; evaluar en ambos repos) | Deuda técnica |

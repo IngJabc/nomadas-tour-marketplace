@@ -9,6 +9,7 @@
     "dev:all": "concurrently -n frontend,backend -c cyan,yellow \"npm run dev\" \"npm run dev --prefix backend\"",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:staging": "vitest run --config vitest.staging.config.ts",
     "audit:deps": "npm audit --audit-level=high && npm audit --prefix backend --audit-level=high"
   },
   "dependencies": {

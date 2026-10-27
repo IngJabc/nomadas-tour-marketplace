@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/errors/api-error';
 import { checkoutApi, type CheckoutTicketView } from '@/lib/api';
+import { subscribeToPurchaseTicket } from '@/lib/realtime/subscriptions';
 import BoletoPage from '../page';
 
 const authState = vi.hoisted(() => ({
@@ -14,6 +15,14 @@ const authState = vi.hoisted(() => ({
 }));
 
 const paramsState = vi.hoisted(() => ({ attemptId: 'att-1' }));
+
+const realtime = vi.hoisted(() => {
+  const cleanupRealtime = vi.fn();
+  return {
+    cleanupRealtime,
+    subscribeToPurchaseTicket: vi.fn(() => cleanupRealtime),
+  };
+});
 
 // Captura del boleto con html-to-image (mismo mecanismo que useCapture de Tour).
 const captureMock = vi.hoisted(() => ({
@@ -31,6 +40,8 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api', () => ({
   checkoutApi: { getTicket: vi.fn() },
 }));
+
+vi.mock('@/lib/realtime/subscriptions', () => realtime);
 
 // QR con react-qr-code (mismo componente que ReservationTicket de Tour);
 // se mockea para poder asertar el valor codificado exacto en jsdom.
@@ -188,7 +199,7 @@ describe('BoletoPage (RT-03)', () => {
 
     expect(await screen.findByText('Boleto no disponible')).toBeInTheDocument();
     const back = screen.getByRole('link', { name: /Volver a mis compras/ });
-    expect(back).toHaveAttribute('href', '/cuenta/compras');
+    expect(back).toHaveAttribute('href', '/account/purchases');
     // Un 404 (pendiente, rechazado, ajeno) NUNCA muestra un boleto ni QR.
     expect(screen.queryByTestId('purchase-ticket')).not.toBeInTheDocument();
     expect(screen.queryByTestId('qr-code')).not.toBeInTheDocument();
@@ -222,7 +233,7 @@ describe('BoletoPage (RT-03)', () => {
     ).toBeInTheDocument();
     expect(getTicket).not.toHaveBeenCalled();
     const back = screen.getByRole('link', { name: /Volver a mis compras/ });
-    expect(back).toHaveAttribute('href', '/cuenta/compras');
+    expect(back).toHaveAttribute('href', '/account/purchases');
   });
 
   it('muestra la sesión expirada sin llamar al endpoint cuando no hay usuario', async () => {
@@ -256,5 +267,88 @@ describe('BoletoPage (RT-03)', () => {
 
     expect(screen.getByText('Importe pagado')).toBeInTheDocument();
     expect(screen.getByText(/Reserva del/)).toBeInTheDocument();
+  });
+});
+
+describe('BoletoPage realtime (RT-04A)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('suscribe el intento del cliente al montar', async () => {
+    getTicket.mockResolvedValue(makeTicket());
+
+    render(<BoletoPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(subscribeToPurchaseTicket).toHaveBeenCalledTimes(1);
+    const [customerId, attemptId] = vi.mocked(subscribeToPurchaseTicket).mock.calls[0];
+    expect(customerId).toBe('user-1');
+    expect(attemptId).toBe('att-1');
+  });
+
+  it('re-valida el boleto contra el backend tras un evento Realtime', async () => {
+    getTicket.mockResolvedValue(makeTicket());
+
+    render(<BoletoPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getTicket).toHaveBeenCalledTimes(1);
+
+    const onChange = vi.mocked(subscribeToPurchaseTicket).mock.calls[0][2] as () => void;
+    act(() => {
+      onChange();
+    });
+    // El evento no re-consulta de inmediato: espera el debounce.
+    expect(getTicket).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(getTicket).toHaveBeenCalledTimes(2);
+    expect(getTicket).toHaveBeenLastCalledWith('att-1');
+  });
+
+  it('desuscribe y cancela el refresco pendiente al desmontar', async () => {
+    getTicket.mockResolvedValue(makeTicket());
+
+    const { unmount } = render(<BoletoPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const onChange = vi.mocked(subscribeToPurchaseTicket).mock.calls[0][2] as () => void;
+    act(() => {
+      onChange();
+    });
+    unmount();
+
+    expect(realtime.cleanupRealtime).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(getTicket).toHaveBeenCalledTimes(1);
+  });
+
+  it('no suscribe nada con un rol distinto de customer', async () => {
+    authState.value = {
+      ...CUSTOMER,
+      user: { id: 'user-2', email: 'agencia@test.com', role: 'agency' },
+    };
+
+    render(<BoletoPage />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(subscribeToPurchaseTicket).not.toHaveBeenCalled();
+    expect(getTicket).not.toHaveBeenCalled();
   });
 });

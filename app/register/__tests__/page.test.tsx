@@ -67,7 +67,7 @@ describe('RegisterPage — conexión con auth existente (Fase 4)', () => {
   });
 
   it('registra, establece la sesión Supabase y navega al redirect interno', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
     mockedRegister.mockResolvedValue({
       token: 'access-token',
       refresh_token: 'refresh-token',
@@ -84,12 +84,12 @@ describe('RegisterPage — conexión con auth existente (Fase 4)', () => {
     expect(establishMock).toHaveBeenCalledWith('access-token', 'refresh-token');
     expect(refreshMock).toHaveBeenCalledTimes(1);
     await waitFor(() =>
-      expect(pushMock).toHaveBeenCalledWith('/reservas/nueva'),
+      expect(pushMock).toHaveBeenCalledWith('/reservations/new'),
     );
   });
 
   it('sin token (confirmación de correo) muestra aviso y no navega', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
     mockedRegister.mockResolvedValue({
       token: null,
       refresh_token: null,
@@ -110,7 +110,7 @@ describe('RegisterPage — conexión con auth existente (Fase 4)', () => {
     ).toBeEnabled();
   });
 
-  it('sin redirect seguro cae a /viajes (bloquea open redirect)', async () => {
+  it('sin redirect seguro cae a /trips (bloquea open redirect)', async () => {
     searchParamsState.redirect = '//evil.com';
     mockedRegister.mockResolvedValue({
       token: 'access-token',
@@ -121,22 +121,22 @@ describe('RegisterPage — conexión con auth existente (Fase 4)', () => {
     render(<RegisterPage />);
     await submitRegister();
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/viajes'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/trips'));
   });
 
   it('conserva el redirect seguro en el link de login', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
 
     render(<RegisterPage />);
 
     expect(screen.getByRole('link', { name: 'Inicia sesión' })).toHaveAttribute(
       'href',
-      '/login?redirect=%2Freservas%2Fnueva',
+      '/login?redirect=%2Freservations%2Fnew',
     );
   });
 
   it('muestra el error del backend sin navegar ni crear sesión', async () => {
-    searchParamsState.redirect = '/reservas/nueva';
+    searchParamsState.redirect = '/reservations/new';
     mockedRegister.mockRejectedValue(
       new ApiError('El correo ya está registrado', 'EMAIL_TAKEN', 409),
     );
