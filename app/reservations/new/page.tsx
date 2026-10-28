@@ -4,11 +4,14 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
   ArrowLeft,
   Building2,
   CalendarDays,
+  Check,
+  Circle,
   LoaderCircle,
   LogIn,
   MessageCircle,
@@ -39,6 +42,7 @@ import { PaymentMethodSection } from '@/components/booking/PaymentMethodSection'
 import { AgencyContactLinks } from '@/components/booking/AgencyContactLinks';
 import { whatsappHref, copyToClipboard } from '@/lib/booking/whatsapp';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { StateIcon } from '@/components/ui/StateIcon';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
 import {
   clearLockState,
@@ -1158,9 +1162,9 @@ function NewReservationContent() {
     return (
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#f1f5f9]">
-            <Ticket size={24} strokeWidth={1.75} className="text-brand-navy" aria-hidden="true" />
-          </div>
+          <StateIcon tone="neutral">
+            <Ticket size={24} strokeWidth={1.75} aria-hidden="true" />
+          </StateIcon>
           <h1 className="mt-4 text-[24px] font-bold text-brand-navy">
             No tienes una selección activa
           </h1>
@@ -1184,9 +1188,9 @@ function NewReservationContent() {
     return (
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
-            <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
-          </div>
+          <StateIcon tone="error">
+            <AlertTriangle size={24} strokeWidth={1.75} aria-hidden="true" />
+          </StateIcon>
           <h1 className="mt-4 text-[24px] font-bold text-brand-navy">
             Tu selección expiró
           </h1>
@@ -1222,9 +1226,9 @@ function NewReservationContent() {
     return (
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
         <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#fef2f2]">
-            <AlertTriangle size={24} strokeWidth={1.75} className="text-[#ef4444]" aria-hidden="true" />
-          </div>
+          <StateIcon tone="error">
+            <AlertTriangle size={24} strokeWidth={1.75} aria-hidden="true" />
+          </StateIcon>
           <h1 className="mt-4 text-[24px] font-bold text-brand-navy">
             No pudimos cargar tu selección
           </h1>
@@ -1258,6 +1262,28 @@ function NewReservationContent() {
     !checkoutFinal &&
     !!(selectedMethodId || coordinatedPayment) &&
     (!checkoutRejected || (checkoutMarker?.remaining_submissions ?? 0) > 0);
+
+  // Checklist de progreso del checkout (solo UI): refleja el estado
+  // existente del wizard sin alterar su lógica. "Pasajeros" se marca
+  // solo con los datos COMPLETOS — la misma validación que exige
+  // "Continuar al pago" para mostrar los métodos de pago (los drafts se
+  // crean vacíos al elegir asientos, eso no cuenta como completado).
+  const progressoPasos = [
+    { label: 'Agencia', done: !!lock.agency_id },
+    { label: 'Asientos', done: lock.seats.length > 0 },
+    {
+      label: 'Pasajeros',
+      done:
+        lock.seats.length > 0 &&
+        passengers.length === lock.seats.length &&
+        validatePassengers(passengers).length === 0,
+    },
+    {
+      label: 'Comprobante',
+      done:
+        !!verifiedAt || awaitingReview || (lock.checkout?.proof_count ?? 0) > 0,
+    },
+  ];
 
   const cancelCompraButton = (
     <button
@@ -1317,7 +1343,12 @@ function NewReservationContent() {
         // que se habla de pago aprobado (MKT-007 §7). El bloque de cierre
         // vive en la cabecera para ser lo primero que vea el cliente; dentro
         // de "Comprobante de pago" ya no se repite.
-        <div className="mt-6 rounded-[10px] bg-[#ecfdf5] px-4 py-4">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.97, y: -6 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 380, damping: 26 }}
+          className="mt-6 rounded-[10px] bg-[#ecfdf5] px-4 py-4"
+        >
           <p className="text-sm font-semibold text-[#059669]">
             Tu pago fue aprobado.
           </p>
@@ -1345,7 +1376,7 @@ function NewReservationContent() {
               Volver al catálogo
             </Link>
           </div>
-        </div>
+        </motion.div>
       ) : attemptCreated && (awaitingReview || checkoutRejected) ? (
         // MKT-007.1 + ajuste UX: las salidas de la compra en curso solo
         // aparecen cuando la parte del usuario del flujo TERMINÓ —
@@ -1467,8 +1498,8 @@ function NewReservationContent() {
                           key={offer.agency_id}
                           className={`flex cursor-pointer items-start gap-3 rounded-[10px] border bg-white px-4 py-3 transition-shadow duration-200 ${
                             selected
-                              ? 'border-brand-cyan shadow-[0_0_0_3px_rgba(0,212,255,0.15)]'
-                              : 'border-[#e5e7eb] hover:shadow-[0_6px_24px_rgba(0,212,255,0.12)]'
+                              ? 'border-brand-cyan shadow-[0_0_0_3px_rgba(212,98,43,0.15)]'
+                              : 'border-[#e5e7eb] hover:shadow-[0_6px_24px_rgba(212,98,43,0.12)]'
                           }`}
                         >
                           <input
@@ -1517,10 +1548,16 @@ function NewReservationContent() {
               <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
                 Elige tus asientos
               </h2>
-              <span className="rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted">
+              <motion.span
+                key={lock.seats.length}
+                initial={{ scale: 0.7, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ type: 'spring', stiffness: 500, damping: 28 }}
+                className="rounded-full bg-[#f1f5f9] px-3 py-1 text-[11px] font-semibold text-brand-muted"
+              >
                 {lock.seats.length} seleccionado
                 {lock.seats.length === 1 ? '' : 's'}
-              </span>
+              </motion.span>
             </div>
 
             <div className="mt-6">
@@ -1562,14 +1599,9 @@ function NewReservationContent() {
 
             {passengers.length === 0 ? (
               <div className="mt-5 flex flex-col items-center rounded-2xl border border-dashed border-black/[0.08] bg-[#f8fafc] px-6 py-10 text-center">
-                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#f1f5f9]">
-                  <Users
-                    size={24}
-                    strokeWidth={1.75}
-                    className="text-brand-navy"
-                    aria-hidden="true"
-                  />
-                </div>
+                <StateIcon tone="neutral">
+                  <Users size={24} strokeWidth={1.75} aria-hidden="true" />
+                </StateIcon>
                 {lock.seats.length === 0 ? (
                   <>
                     <p className="mt-4 text-[17px] font-semibold text-brand-navy">
@@ -2051,11 +2083,11 @@ function NewReservationContent() {
                   ))}
               </ul>
 
-              <div className="mt-5 flex items-center justify-between rounded-[10px] bg-[#f1f5f9] px-4 py-3">
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
                 <span className="text-sm font-semibold text-brand-navy">
                   Importe
                 </span>
-                <span className="text-[17px] font-extrabold leading-none text-brand-navy">
+                <span className="text-[17px] font-extrabold leading-tight text-brand-navy sm:leading-none">
                   {totalCents !== null
                     ? `${formatSeatPrice(totalCents)} por ${passengers.length} asientos`
                     : 'Precio no disponible'}
@@ -2163,6 +2195,55 @@ function NewReservationContent() {
         </div>
 
         <aside className="flex flex-col gap-6 lg:sticky lg:top-24">
+          {/* Checklist de progreso (solo UI): refleja el estado actual del
+              wizard sin alterar su lógica. */}
+          <section
+            aria-label="Tu progreso"
+            className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+          >
+            <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
+              Tu progreso
+            </h2>
+            <ol className="mt-4 space-y-3">
+              {progressoPasos.map((paso) => (
+                <li key={paso.label} className="flex items-center gap-3 text-sm">
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+                      paso.done
+                        ? 'bg-[#ecfdf5] text-[#176B62]'
+                        : 'bg-[#F5F1EC] text-brand-muted'
+                    }`}
+                  >
+                    {paso.done ? (
+                      <AnimatePresence mode="wait" initial={false}>
+                        <motion.span
+                          key="done"
+                          initial={{ scale: 0.3, opacity: 0, rotate: -90 }}
+                          animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                          transition={{ type: 'spring', stiffness: 500, damping: 24 }}
+                          className="inline-flex"
+                        >
+                          <Check size={14} strokeWidth={2} aria-hidden="true" />
+                        </motion.span>
+                      </AnimatePresence>
+                    ) : (
+                      <Circle size={14} strokeWidth={1.75} aria-hidden="true" />
+                    )}
+                  </span>
+                  <span
+                    className={
+                      paso.done
+                        ? 'font-medium text-brand-navy'
+                        : 'text-brand-muted'
+                    }
+                  >
+                    {paso.label}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </section>
+
           <section className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
             <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
               Resumen de tu reserva
@@ -2253,7 +2334,7 @@ function NewReservationContent() {
               <ShieldCheck
                 size={16}
                 strokeWidth={1.75}
-                className="text-[#10b981]"
+                className="text-[#176B62]"
                 aria-hidden="true"
               />
               Pago seguro y trazable

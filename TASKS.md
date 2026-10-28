@@ -725,6 +725,123 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 ---
 
+## Rediseño visual del marketplace (2026-10-27)
+
+- [x] **Nuevo sistema de diseño** (basado en Figma, lenguaje visual propio):
+  - **Paleta cálida de viaje:** terracota `#D4622B` (CTA/acción), hover
+    `#B84E1F`, tinta `#1F232F` (texto), oscuro `#14181F`, lienzo cálido
+    `#F5F1EC` (fondo de página), superficie `#FFFFFF` (cards), confianza
+    teal `#176B62` (success).
+  - **Tipografía:** El Messiri (headings, 600–700) + DM Sans (body,
+    400/500/600/700). Reemplaza Montserrat + Poppins.
+  - **Navbar** clara (blanca) con logo oscuro y links en
+    `--color-brand-navy/75`. CTA "Iniciar sesión" en terracota pill.
+- [x] **Design tokens actualizados** (`app/design-tokens.css`):
+  nuevas variables `--color-canvas`, `--color-trust`, `--color-trust-bg`,
+  `--color-focus-ring`. `--background` apunta al lienzo cálido.
+- [x] **globals.css** actualizado: fallbacks legacy, selección de texto,
+  scrollbar, referencias a los nuevos colores.
+- [x] **layout.tsx** carga El Messiri + DM Sans vía `next/font/google`.
+- [x] **Todas las páginas** actualizadas (focus rings, hover shadows,
+  backgrounds): `/`, `/trips`, `/login`, `/register`,
+  `/reservations/new`, `/account/purchases`, boleto y pago.
+- [x] **Componentes actualizados:** Navbar, DatePicker, DateTimePicker,
+  BusLayout (asientos), PurchaseTicket, PassengerCard, ProofUploader,
+  day-picker-calendar.
+- [x] **AGENTS.md** actualizado: colores, tipografía, escala, reglas de
+  navbar, mapa de asientos, reglas que nunca se rompen (5, 9, 17).
+- [x] **Reconstrucción de layout** (2026-10-28, según los mockups de
+  Figma, mapeo: imagen 1 → `/`, imagen 2 → `/trips`, imagen 3 →
+  `/reservations/new` solo adiciones):
+  - **`/` landing** reconstruida: `HeroSection` (hero oscuro con motivo
+    de ruta + slot), `BuscadorViajes` (client: origen/destino/fecha/
+    pasajeros → navega a `/trips?…`), `SeccionConfianza` (4
+    compromisos), `SeccionDestinos` + `TarjetaDestino` (Mérida,
+    Choroní, Canaima, Morrocoy con miniatura de gradiente e icono Lucide),
+    `SeccionHistoria` ("Viajar nos conecta") y `CTAFinal` (banda
+    oscura). Sin fotos externas ni datos inventados: los CTAs de
+    destino llevan a `/trips?destination=…`.
+  - **`/trips`** reconstruida (layout final = mockup): banda de
+    búsqueda arriba (**NO sticky**, nunca tapa contenido) + filtros de
+    refinación en sidebar `FiltrosLateral`, grid de 3 columnas en xl
+    (sidebar + resultados + `RailLateral`), tarjetas `TarjetaViaje`
+    (precio destacado, salida prominente). **Filtros nuevos 100%
+    client-side:** horario de salida (zona America/Caracas), vehículo,
+    agencia (con conteo de viajes) y precio máximo (slider, viajes sin
+    precio nunca se descartan). Búsqueda pre-llenada desde query string
+    del landing (`?origin=&destination=&date=&pax=`) vía efecto de
+    montaje (sin `useSearchParams`, para no romper SSR/tests).
+  - **`/reservations/new`** solo adiciones: card **"Tu progreso"**
+    en el aside (checklist Agencia/Asientos/Pasajeros/Comprobante
+    derivado del estado existente del wizard; "Pasajeros" se marca
+    solo con datos COMPLETOS — la misma validación que exige
+    "Continuar al pago" para mostrar métodos de pago —, no al elegir
+    asientos) y shield de confianza al teal `#176B62`. Lógica intacta.
+- [x] **Navbar según mockup** (2026-10-28): links Explorar `/trips`,
+  Mis reservas `/account/purchases` (solo clientes autenticados,
+  renombrado de "Mis compras"), Ayuda `/help`; sin sesión:
+  "Iniciar sesión" (link) + "Crear cuenta" (pill); con sesión:
+  "Cerrar sesión" (pill). Tests actualizados + 2 nuevos.
+- [x] **`/help` creada** (2026-10-28): FAQ con acordeones nativos
+  `<details>` (6 preguntas) + sección de contacto con solo canales
+  reales (agencia en la reserva, Mis reservas); sin datos inventados.
+- [x] **Consistencia de márgenes + offset del navbar** (2026-10-28):
+  TODAS las páginas usan el contenedor estándar
+  `max-w-7xl px-4 sm:px-6 pt-24 pb-16` (regla reforzada en AGENTS.md
+  "Contenedor de página"); `/help` sin wrapper interno, mismos
+  márgenes que `/trips` (verificado: left/right idénticos). Compensación
+  `pt-24` bajo el navbar fijo (64px) en todas las páginas; 
+  `scroll-padding-top: 80px` en `globals.css` para el skip link.
+- [x] **Páginas documento (boleto/pago): encabezado en 7xl**
+  (2026-10-28): el `h1` + subtítulo salieron del wrapper interno
+  centrado y ahora son hijos directos del contenedor 7xl (mismo
+  `border-left` cyan que el resto): el título arranca en el mismo
+  margen izquierdo de todas las páginas; el documento (boleto
+  `max-w-2xl`, formulario pago `max-w-3xl`) sigue centrado debajo.
+- **Contratos de tests preservados en `/trips`:** textos exactos
+  (`Reservar`, `Disponible`, `Precio por asiento`, `Limpiar filtros`,
+  labels `Origen/Destino/Fecha`, estados vacíos/error, rol `alert`);
+  el label del filtro de agencia lleva conteo (`Nombre (N)`) para no
+  duplicar el nombre exacto de la tarjeta.
+- **NO se tocó:** backend, lógica de negocio, fixtures de tests de
+  agencias (branding de agencias es dato, no UI), ni funcionalidad.
+- [x] **Mobile responsive + animaciones Framer Motion** (2026-10-28):
+  - **Navbar hamburguesa** (`< sm`): panel desplegable animado
+    (altura + opacidad), links con entrada escalonada, icono Menu↔X
+    con crossfade, subrayado elástico (`layoutId`) en links de
+    escritorio, CTA con micro-escala. Cierra al navegar, con Escape
+    y con clic fuera; `inert` + `aria-hidden` cuando está cerrado.
+    Tests Navbar reescritos (13) scoping por `navigation` label.
+  - **Fixes responsive:** skeletons de compras y `/trips` con barras
+    adaptables (`w-24 sm:w-40`, etc.), fila "Importe" del checkout
+    con `flex-wrap`, `LockCountdown` con `flex-wrap` y `max-w-full`.
+  - **Componentes reutilizables de animación nuevos:**
+    `components/ui/Reveal.tsx` (entrada `whileInView` fade-up +
+    `hoverLift`), `PillBadge.tsx` (pop-in elástico) y
+    `StateIcon.tsx` (pop-in circular de empty states, tonos
+    info/neutral/success/warning/error).
+  - **Animaciones añadidas:** Navbar, `BaseToast` (spring),
+    `HeroSection` (stagger + trazado `pathLength` de las líneas de
+    ruta + pop de nodos), secciones del landing (`Reveal`),
+    `TarjetaViaje` (entrada escalonada + `whileHover`), página
+    `/trips` (header + sidebar + empty states), `/help` (FAQ +
+    tarjetas de contacto), `/login` y `/register` (entrada de card),
+    wizard `/reservations/new` (banner de éxito, "Tu progreso",
+    badge "N seleccionados").
+  - **Nota:** los empty states de `/account/purchases` mantienen sus
+    iconos estáticos (sin `StateIcon`) para no interferir con el
+    flujo de rangos de fecha del `DatePicker` en jsdom.
+  - `test-setup.ts` añade stub de `IntersectionObserver` (jsdom no lo
+    implementa; lo usa `Reveal` vía `whileInView`).
+- Validación (2026-10-28): `npm test` **353/353** ✓ · `npx tsc
+  --noEmit` ✓ · `npm run build` ✓ · smoke en dev (:3002): landing,
+  `/trips`, `/help`, `/login`, `/reservations/new` con márgenes
+  consistentes y navbar sin tapar contenido, 0 errores de consola.
+- **Estado**: implementado y validado localmente. Sin migraciones ni
+  variables de entorno nuevas; sin cambios en Render.
+
+---
+
 ## Después
 
 | Orden | Tema | Estado |

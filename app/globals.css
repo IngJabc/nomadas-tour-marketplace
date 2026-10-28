@@ -7,19 +7,25 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   /* Deprecated local tokens: use design-tokens.css instead */
-  --color-brand-navy: var(--color-brand-navy, #000024);
-  --color-brand-dark: var(--color-brand-dark, #00000C);
-  --color-brand-mid: var(--color-brand-mid, #0a0a2e);
-  --color-brand-cyan: var(--color-brand-cyan, #00D4FF);
-  --color-brand-blue: var(--color-brand-blue, #0080FF);
-  --color-brand-surface: var(--color-brand-surface, #fdfdfd);
-  --color-brand-muted: var(--color-brand-muted, #6b7280);
+  --color-brand-navy: var(--color-brand-navy, #1F232F);
+  --color-brand-dark: var(--color-brand-dark, #14181F);
+  --color-brand-mid: var(--color-brand-mid, #2A2F3A);
+  --color-brand-cyan: var(--color-brand-cyan, #D4622B);
+  --color-brand-blue: var(--color-brand-blue, #B84E1F);
+  --color-brand-surface: var(--color-brand-surface, #FFFFFF);
+  --color-brand-muted: var(--color-brand-muted, #6B7280);
 }
 
 :root {
   /* keep legacy fallbacks but prefer design tokens */
-  --background: var(--background, #f8fafc);
-  --foreground: var(--foreground, var(--color-brand-navy, #0c142d));
+  --background: var(--background, #F5F1EC);
+  --foreground: var(--foreground, var(--color-brand-navy, #1F232F));
+}
+
+/* El navbar es fixed de 64px: el scroll (incluido el skip link #main)
+   debe dejar el contenido visible por debajo de la barra. */
+html {
+  scroll-padding-top: 80px;
 }
 
 body {
@@ -39,8 +45,8 @@ body.no-scroll {
 }
 
 ::selection {
-  background-color: rgba(0, 212, 255, 0.2);
-  color: #000024;
+  background-color: rgba(212, 98, 43, 0.2);
+  color: #1F232F;
 }
 
 h1, h2, h3, h4, h5 {
@@ -75,12 +81,12 @@ input, textarea, select {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 36, 0.1);
+  background-color: rgba(31, 35, 47, 0.1);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(0, 0, 36, 0.25);
+  background-color: rgba(31, 35, 47, 0.25);
 }
 
 @media (max-width: 640px) {

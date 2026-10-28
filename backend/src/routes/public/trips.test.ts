@@ -693,6 +693,52 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(supabaseMock.from).toHaveBeenCalledTimes(1);
   });
 
+  it('devuelve available_seats con la disponibilidad REAL (solo status=available)', async () => {
+    const listChain = queryChain({
+      data: [
+        {
+          id: TRIP_ID,
+          departure_time: '2026-10-04T11:00:00+00:00',
+          capacity: 31,
+          vehicle_type: 'bus',
+          status: 'active',
+          seat_price: 2020,
+          routes: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
+          seats: [
+            { status: 'available' },
+            { status: 'available' },
+            { status: 'reserved' },
+            { status: 'reserved' },
+            { status: 'locked' },
+            { status: 'blocked' },
+            { status: 'guide' },
+          ],
+        },
+      ],
+      error: null,
+    });
+    supabaseMock.from.mockReturnValueOnce(listChain);
+
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+    const port = (server.address() as AddressInfo).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/public/trips`);
+    const body = (await res.json()) as Record<string, any>;
+
+    expect(res.status).toBe(200);
+    // Solo los asientos 'available' cuentan como libres.
+    expect(body.trips[0].available_seats).toBe(2);
+    expect(body.trips[0].capacity).toBe(31);
+    // El embed viaja en el MISMO query del catálogo: sin N+1.
+    expect(listChain.select).toHaveBeenCalledWith(
+      expect.stringContaining('seats(status)'),
+    );
+    expect(supabaseMock.from).toHaveBeenCalledTimes(1);
+  });
+
   it('lista un viaje cuyas agencias están inactivas con agencies vacio', async () => {
     const listChain = queryChain({
       data: [

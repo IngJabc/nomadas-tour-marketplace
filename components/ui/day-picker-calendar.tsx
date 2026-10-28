@@ -139,7 +139,7 @@ function getDayPickerClassNames(size: DayPickerCalendarSize) {
     day_button: cn(
       'mx-auto rounded-lg font-[family-name:var(--font-body)] text-[var(--color-brand-navy)]',
       daySize,
-      'hover:bg-[rgba(0,212,255,0.1)] transition-colors duration-150',
+      'hover:bg-[rgba(212,98,43,0.1)] transition-colors duration-150',
       'focus-visible:outline-2 focus-visible:outline-[var(--color-brand-cyan)] focus-visible:outline-offset-1',
       'disabled:opacity-30 disabled:cursor-not-allowed',
     ),

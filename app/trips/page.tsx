@@ -8,21 +8,28 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import Link from "next/link";
 import {
   AlertTriangle,
-  Building2,
-  CalendarDays,
   RefreshCw,
   Search,
   Users,
 } from "lucide-react";
 import { publicApi, type PublicTrip } from "@/lib/api";
+import { motion } from "framer-motion";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
 import { subscribeToTripCatalog } from "@/lib/realtime/subscriptions";
-import { formatSeatPrice, TRIP_PRICE_PENDING_LABEL } from "@/lib/price";
-import { formatDateTimeShort, isDepartureTimeInFuture, toBusinessDateString } from "@/lib/timezone";
+import { isDepartureTimeInFuture, toBusinessDateString, BUSINESS_TIMEZONE } from "@/lib/timezone";
+import { TarjetaViaje } from "@/components/trips/TarjetaViaje";
+import { StateIcon } from "@/components/ui/StateIcon";
+import {
+  FiltrosLateral,
+  FILTROS_VIAJE_TODOS,
+  type FiltrosViaje,
+  type FranjaHoraria,
+} from "@/components/trips/FiltrosLateral";
+import { RailLateral } from "@/components/trips/RailLateral";
+import { Reveal } from "@/components/ui/Reveal";
 
 interface Filters {
   origin: string;
@@ -50,10 +57,60 @@ function tripMatches(trip: PublicTrip, filters: Filters): boolean {
   return true;
 }
 
-function vehicleLabel(vehicleType: string): string {
-  if (vehicleType === "bus") return "Autobús";
-  if (vehicleType === "kia") return "Kia";
-  return vehicleType;
+/** Franja horario de salida en la zona de negocio (America/Caracas). */
+function franjaDe(iso: string): FranjaHoraria {
+  const hora = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: BUSINESS_TIMEZONE,
+      hour: "numeric",
+      hour12: false,
+    }).format(new Date(iso)),
+  ) % 24;
+  if (hora >= 12 && hora < 18) return "afternoon";
+  if (hora >= 18) return "night";
+  return "morning";
+}
+
+/**
+ * Filtros laterales (horario, vehículo, agencia, precio). Listas vacías =
+ * sin filtro; los viajes sin precio publicado nunca se descartan por precio.
+ */
+function viajePasaFiltros(trip: PublicTrip, f: FiltrosViaje): boolean {
+  if (f.horarios.length > 0 && !f.horarios.includes(franjaDe(trip.departure_time))) {
+    return false;
+  }
+  if (f.vehiculos.length > 0 && !f.vehiculos.includes(trip.vehicle_type)) {
+    return false;
+  }
+  if (f.precioMax !== null && trip.seat_price !== null && trip.seat_price > f.precioMax) {
+    return false;
+  }
+  if (f.agencias.length > 0) {
+    const nombres = (trip.agencies ?? []).map((agency) => agency.name);
+    if (!nombres.some((nombre) => f.agencias.includes(nombre))) return false;
+  }
+  return true;
+}
+
+/**
+ * Filtros iniciales desde la query string (?origin=&destination=&date=)
+ * que envía el buscador del landing. Fuera del navegador (SSR/tests) no
+ * hay query string y se usan los filtros vacíos.
+ */
+function readFiltersFromUrl(): Filters {
+  if (typeof window === "undefined") return EMPTY_FILTERS;
+  const params = new URLSearchParams(window.location.search);
+  return {
+    origin: params.get("origin") ?? "",
+    destination: params.get("destination") ?? "",
+    date: params.get("date") ?? "",
+  };
+}
+
+function readPaxFromUrl(): number | null {
+  if (typeof window === "undefined") return null;
+  const pax = Number(new URLSearchParams(window.location.search).get("pax"));
+  return Number.isInteger(pax) && pax >= 1 && pax <= 5 ? pax : null;
 }
 
 export default function ViajesPage() {
@@ -62,11 +119,25 @@ export default function ViajesPage() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
+  const [viajeFilters, setViajeFilters] = useState<FiltrosViaje>(FILTROS_VIAJE_TODOS);
+  const [pax, setPax] = useState<number | null>(null);
 
   /** Última secuencia de carga: descarta respuestas viejas (RT-04A). */
   const seqRef = useRef(0);
   /** Timer del refresco realtime (RT-04A): un solo disparo por ráfaga. */
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Búsqueda pre-llenada desde el landing (?origin=&destination=&date=&pax=).
+  // Se aplica en un efecto (no en el estado inicial) para no desincronizar
+  // el hidratado SSR.
+  useEffect(() => {
+    const fromUrl = readFiltersFromUrl();
+    if (fromUrl.origin || fromUrl.destination || fromUrl.date) {
+      setFilters(fromUrl);
+      setApplied(fromUrl);
+    }
+    setPax(readPaxFromUrl());
+  }, []);
 
   /**
    * `silent` = refresco en segundo plano (RT-04A): no reemplaza la
@@ -160,332 +231,289 @@ export default function ViajesPage() {
   const handleClear = () => {
     setFilters(EMPTY_FILTERS);
     setApplied(EMPTY_FILTERS);
+    setViajeFilters(FILTROS_VIAJE_TODOS);
   };
 
   const hasActiveFilters =
     applied.origin.trim() !== "" ||
     applied.destination.trim() !== "" ||
-    applied.date !== "";
+    applied.date !== "" ||
+    viajeFilters.horarios.length > 0 ||
+    viajeFilters.vehiculos.length > 0 ||
+    viajeFilters.agencias.length > 0 ||
+    viajeFilters.precioMax !== null;
 
   const visibleTrips = useMemo(
-    () => trips.filter((trip) => tripMatches(trip, applied)),
-    [trips, applied],
+    () =>
+      trips.filter(
+        (trip) => tripMatches(trip, applied) && viajePasaFiltros(trip, viajeFilters),
+      ),
+    [trips, applied, viajeFilters],
   );
 
+  // Datos derivados para el sidebar de filtros: agencias únicas con su
+  // conteo de viajes (se muestra en el label para desambiguar).
+  const agenciasDisponibles = useMemo(() => {
+    const conteo = new Map<string, number>();
+    for (const trip of trips) {
+      for (const agency of trip.agencies ?? []) {
+        conteo.set(agency.name, (conteo.get(agency.name) ?? 0) + 1);
+      }
+    }
+    return [...conteo.entries()]
+      .map(([nombre, viajes]) => ({ nombre, viajes }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [trips]);
+  const precioDisponible = useMemo(() => {
+    const precios = trips
+      .map((trip) => trip.seat_price)
+      .filter((price): price is number => typeof price === "number");
+    return precios.length > 0 ? Math.max(...precios) : null;
+  }, [trips]);
+
   const inputClass =
-    "w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm font-normal text-brand-navy outline-none transition-shadow placeholder:text-brand-muted focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]";
+    "w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm font-normal text-brand-navy outline-none transition-shadow placeholder:text-brand-muted focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)]";
 
   const labelClass = "mb-1.5 block text-xs font-medium uppercase text-brand-muted";
 
+  const showSidebar = !loading && trips.length > 0;
+
   return (
-    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
-      <div className="border-l-4 border-brand-cyan pl-3">
-        <h1 className="text-[28px] font-extrabold">Viajes disponibles</h1>
-        <p className="mt-1 text-sm text-brand-muted">
-          Busca por origen, destino y fecha. El catálogo se conecta a la API pública.
-        </p>
-      </div>
-
-      {/* Buscador */}
-      <form
-        onSubmit={handleSubmit}
-        className="mt-8 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
-      >
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
-          <div>
-            <label htmlFor="filter-origin" className={labelClass}>
-              Origen
-            </label>
-            <input
-              id="filter-origin"
-              type="text"
-              value={filters.origin}
-              onChange={(e) => setFilters((f) => ({ ...f, origin: e.target.value }))}
-              placeholder="Ej. Barquisimeto"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <label htmlFor="filter-destination" className={labelClass}>
-              Destino
-            </label>
-            <input
-              id="filter-destination"
-              type="text"
-              value={filters.destination}
-              onChange={(e) =>
-                setFilters((f) => ({ ...f, destination: e.target.value }))
-              }
-              placeholder="Ej. Caracas"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <DatePicker
-              label="Fecha"
-              value={filters.date}
-              onChange={(date) => setFilters((f) => ({ ...f, date }))}
-              placeholder="Elige una fecha"
-              className="w-full"
-            />
-          </div>
-          <button
-            type="submit"
-            className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-5 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue sm:w-auto"
+    <main id="main" className="flex-1 pb-16">
+      {/* Búsqueda arriba (banda NO sticky: nada tapa el contenido al scroll) */}
+      <section className="border-b border-black/[0.06] bg-brand-surface">
+        <div className="mx-auto max-w-7xl px-4 pt-24 pb-6 sm:px-6">
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, ease: "easeOut" }}
+            className="border-l-4 border-brand-cyan pl-3"
           >
-            <Search size={16} strokeWidth={1.75} aria-hidden />
-            Buscar
-          </button>
-        </div>
-      </form>
+            <h1 className="text-[28px] font-bold">Viajes disponibles</h1>
+            <p className="mt-1 text-sm text-brand-muted">
+              Busca por origen, destino y fecha. El catálogo se conecta a la API pública.
+            </p>
+          </motion.div>
 
-      {/* Resultados */}
-      <div className="mt-8" aria-live="polite">
-        {loading && (
-          <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
-            {SKELETON_KEYS.map((key) => (
-              <div
-                key={key}
-                className="animate-pulse rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="h-5 w-24 rounded-full bg-black/[0.06]" />
-                  <div className="h-5 w-32 rounded-full bg-black/[0.06]" />
-                </div>
-                <div className="mt-4 h-5 w-3/4 rounded bg-black/[0.06]" />
-                <div className="mt-4 h-4 w-1/2 rounded bg-black/[0.06]" />
-                <div className="mt-2 h-4 w-2/5 rounded bg-black/[0.06]" />
-                <div className="mt-6 h-10 w-full rounded-[10px] bg-black/[0.06]" />
+          <form
+            onSubmit={handleSubmit}
+            aria-label="Buscar viajes"
+            className="mt-6 rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+          >
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
+              <div>
+                <label htmlFor="filter-origin" className={labelClass}>
+                  Origen
+                </label>
+                <input
+                  id="filter-origin"
+                  type="text"
+                  value={filters.origin}
+                  onChange={(e) => setFilters((f) => ({ ...f, origin: e.target.value }))}
+                  placeholder="Ej. Barquisimeto"
+                  className={inputClass}
+                />
               </div>
-            ))}
-          </div>
-        )}
-
-        {!loading && error && trips.length === 0 && (
-          <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-danger-bg)] text-[#ef4444]">
-              <AlertTriangle size={24} strokeWidth={1.75} aria-hidden />
+              <div>
+                <label htmlFor="filter-destination" className={labelClass}>
+                  Destino
+                </label>
+                <input
+                  id="filter-destination"
+                  type="text"
+                  value={filters.destination}
+                  onChange={(e) =>
+                    setFilters((f) => ({ ...f, destination: e.target.value }))
+                  }
+                  placeholder="Ej. Caracas"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <DatePicker
+                  label="Fecha"
+                  value={filters.date}
+                  onChange={(date) => setFilters((f) => ({ ...f, date }))}
+                  placeholder="Elige una fecha"
+                  className="w-full"
+                />
+              </div>
+              <button
+                type="submit"
+                className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-5 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue sm:w-auto"
+              >
+                <Search size={16} strokeWidth={1.75} aria-hidden />
+                Buscar
+              </button>
             </div>
-            <h2 className="mt-4 text-lg font-semibold">
-              No pudimos cargar los viajes
-            </h2>
-            <p className="mt-2 max-w-md text-sm text-brand-muted">{error}</p>
-            <button
-              type="button"
-              onClick={() => load()}
-              className="mt-6 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-            >
-              <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
-              Reintentar
-            </button>
-          </div>
+          </form>
+        </div>
+      </section>
+
+      <div
+        className={`mx-auto grid max-w-7xl items-start gap-8 px-4 pt-8 sm:px-6 ${
+          showSidebar
+            ? "lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_300px]"
+            : ""
+        }`}
+        aria-live="polite"
+      >
+        {/* Filtros de refinación en el sidebar (como el mockup) */}
+        {showSidebar && (
+          <Reveal className="lg:sticky lg:top-24 lg:max-h-[calc(100vh-96px)] lg:overflow-y-auto lg:pb-2">
+            <FiltrosLateral
+              value={viajeFilters}
+              onChange={setViajeFilters}
+              agencias={agenciasDisponibles}
+              precioDisponible={precioDisponible}
+            />
+          </Reveal>
         )}
 
-        {/* Refresco realtime fallido con datos ya cargados (RT-04A): el
-            fallo queda visible sin ocultar el catálogo. */}
-        {!loading && error && trips.length > 0 && (
-          <div
-            role="alert"
-            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-[#fef2f2] px-4 py-3"
-          >
-            <p className="text-sm font-semibold text-[#ef4444]">{error}</p>
-            <button
-              type="button"
-              onClick={() => load()}
-              disabled={loading}
-              className="inline-flex items-center gap-2 rounded-[10px] bg-white px-4 py-2 text-xs font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
-              Reintentar
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && visibleTrips.length === 0 && trips.length === 0 && (
-          <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-cyan-bg)] text-brand-cyan">
-              <span className="text-2xl font-extrabold">?</span>
-            </div>
-            <h2 className="mt-4 text-lg font-semibold">Aún no hay viajes publicados</h2>
-            <p className="mt-2 max-w-md text-sm text-brand-muted">
-              Estamos conectando el catálogo de agencias. Vuelve pronto o inicia sesión
-              para recibir avisos de nuevas rutas.
-            </p>
-            <button
-              type="button"
-              onClick={() => load()}
-              className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-            >
-              <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
-              Actualizar catálogo
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && visibleTrips.length === 0 && trips.length > 0 && (
-          <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-cyan-bg)] text-brand-cyan">
-              <Search size={24} strokeWidth={1.75} aria-hidden />
-            </div>
-            <h2 className="mt-4 text-lg font-semibold">
-              No hay viajes que coincidan con tu búsqueda
-            </h2>
-            <p className="mt-2 max-w-md text-sm text-brand-muted">
-              Prueba con otro origen, destino o fecha.
-            </p>
-            <button
-              type="button"
-              onClick={handleClear}
-              className="mt-6 rounded-[10px] bg-[#f1f5f9] px-6 py-3 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
-            >
-              Limpiar filtros
-            </button>
-          </div>
-        )}
-
-        {!loading && visibleTrips.length > 0 && (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-brand-muted">
-                {visibleTrips.length} viaje{visibleTrips.length === 1 ? "" : "s"}{" "}
-                disponible{visibleTrips.length === 1 ? "" : "s"}
-                {hasActiveFilters ? " con tus filtros" : ""}
-              </p>
-              {hasActiveFilters && (
-                <button
-                  type="button"
-                  onClick={handleClear}
-                  className="text-xs font-semibold text-brand-blue transition-colors duration-200 hover:text-brand-cyan"
+        {/* Resultados */}
+        <div>
+          {loading && (
+            <div className="grid gap-8 sm:grid-cols-2">
+              {SKELETON_KEYS.map((key) => (
+                <div
+                  key={key}
+                  className="animate-pulse rounded-2xl border border-black/[0.06] bg-brand-surface p-4 shadow-[0_1px_3px_rgba(0,0,0,0.06)] sm:p-6"
                 >
-                  Limpiar filtros
-                </button>
-              )}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="h-5 w-20 rounded-full bg-black/[0.06] sm:w-24" />
+                    <div className="h-5 w-24 rounded-full bg-black/[0.06] sm:w-32" />
+                  </div>
+                  <div className="mt-4 h-5 w-3/4 rounded bg-black/[0.06]" />
+                  <div className="mt-4 h-4 w-1/2 rounded bg-black/[0.06]" />
+                  <div className="mt-2 h-4 w-2/5 rounded bg-black/[0.06]" />
+                  <div className="mt-6 h-10 w-full rounded-[10px] bg-black/[0.06]" />
+                </div>
+              ))}
             </div>
+          )}
 
-            <div className="mt-4 grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
-              {visibleTrips.map((trip) => {
-                const agencies = trip.agencies ?? [];
-                return (
-                  <article
-                    key={trip.id}
-                    className="flex flex-col rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_6px_24px_rgba(0,212,255,0.12)]"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <span className="rounded-full bg-[#ecfdf5] px-2.5 py-0.5 text-[11px] font-semibold text-[#059669]">
-                        Disponible
-                      </span>
-                      <span className="rounded-full bg-[#f1f5f9] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">
-                        {vehicleLabel(trip.vehicle_type)} · {trip.capacity}{" "}
-                        asientos
-                      </span>
-                    </div>
-
-                    <h2 className="mt-4 text-[17px] font-semibold leading-snug [font-family:var(--font-sans)]">
-                      {trip.route.origin} → {trip.route.destination}
-                    </h2>
-
-                    <div className="mt-4 space-y-2 text-sm text-brand-muted">
-                      {agencies.length > 0 ? (
-                        <p className="flex items-center gap-2">
-                          <Building2
-                            size={16}
-                            strokeWidth={1.75}
-                            className="shrink-0"
-                            aria-hidden
-                          />
-                          <span className="font-medium text-brand-navy">
-                            {agencies[0].name}
-                          </span>
-                          {agencies.length > 1 && (
-                            <>
-                              <span className="rounded-full bg-[#f1f5f9] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">
-                                +{agencies.length - 1}
-                              </span>
-                              <span className="sr-only">
-                                Agencias disponibles:{" "}
-                                {agencies.map((agency) => agency.name).join(", ")}
-                              </span>
-                            </>
-                          )}
-                        </p>
-                      ) : (
-                        <p className="flex items-center gap-2 text-[#92400e]">
-                          <AlertTriangle
-                            size={16}
-                            strokeWidth={1.75}
-                            className="shrink-0"
-                            aria-hidden
-                          />
-                          <span>Sin agencias disponibles para reservar</span>
-                        </p>
-                      )}
-                      <p className="flex items-center gap-2">
-                        <CalendarDays
-                          size={16}
-                          strokeWidth={1.75}
-                          className="shrink-0"
-                          aria-hidden
-                        />
-                        {formatDateTimeShort(trip.departure_time)}
-                      </p>
-                      <p className="flex items-center gap-2">
-                        <Users
-                          size={16}
-                          strokeWidth={1.75}
-                          className="shrink-0"
-                          aria-hidden
-                        />
-                        {trip.capacity} asientos disponibles
-                      </p>
-                    </div>
-
-                    <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium uppercase text-brand-muted">
-                          Precio por asiento
-                        </span>
-                        {trip.seat_price === null ? (
-                          <span className="text-sm font-semibold text-brand-muted">
-                            {TRIP_PRICE_PENDING_LABEL}
-                          </span>
-                        ) : (
-                          <span className="text-[17px] font-extrabold leading-none text-brand-navy">
-                            {formatSeatPrice(trip.seat_price)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-auto pt-6">
-                      {trip.seat_price === null || agencies.length === 0 ? (
-                        // Sin precio publicado o sin agencias activas no hay
-                        // reserva posible: el CTA queda deshabilitado en lugar
-                        // de enviar al checkout.
-                        <button
-                          type="button"
-                          disabled
-                          aria-disabled="true"
-                          className="block w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white opacity-40"
-                        >
-                          Reservar
-                        </button>
-                      ) : (
-                        <Link
-                          // El selector de agencias vive DENTRO del checkout
-                          // (/reservations/new?trip=): el catálogo nunca deriva
-                          // a /trips/[id] para elegir agencia.
-                          href={`/reservations/new?trip=${trip.id}`}
-                          className="block w-full rounded-[10px] bg-brand-cyan px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
-                        >
-                          Reservar
-                        </Link>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+          {!loading && error && trips.length === 0 && (
+            <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-danger-bg)] text-[#ef4444]">
+                <AlertTriangle size={24} strokeWidth={1.75} aria-hidden />
+              </div>
+              <h2 className="mt-4 text-lg font-semibold">
+                No pudimos cargar los viajes
+              </h2>
+              <p className="mt-2 max-w-md text-sm text-brand-muted">{error}</p>
+              <button
+                type="button"
+                onClick={() => load()}
+                className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+              >
+                <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
+                Reintentar
+              </button>
             </div>
-          </>
+          )}
+
+          {/* Refresco realtime fallido con datos ya cargados (RT-04A): el
+              fallo queda visible sin ocultar el catálogo. */}
+          {!loading && error && trips.length > 0 && (
+            <div
+              role="alert"
+              className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[10px] bg-[#fef2f2] px-4 py-3"
+            >
+              <p className="text-sm font-semibold text-[#ef4444]">{error}</p>
+              <button
+                type="button"
+                onClick={() => load()}
+                disabled={loading}
+                className="inline-flex items-center gap-2 rounded-[10px] bg-white px-4 py-2 text-xs font-semibold text-[#ef4444] transition-colors duration-200 hover:bg-[#fee2e2] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
+                Reintentar
+              </button>
+            </div>
+          )}
+
+          {!loading && !error && visibleTrips.length === 0 && trips.length === 0 && (
+            <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+              <StateIcon>
+                <span className="text-2xl font-extrabold">?</span>
+              </StateIcon>
+              <h2 className="mt-4 text-lg font-semibold">Aún no hay viajes publicados</h2>
+              <p className="mt-2 max-w-md text-sm text-brand-muted">
+                Estamos conectando el catálogo de agencias. Vuelve pronto o inicia sesión
+                para recibir avisos de nuevas rutas.
+              </p>
+              <button
+                type="button"
+                onClick={() => load()}
+                className="mt-6 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+              >
+                <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
+                Actualizar catálogo
+              </button>
+            </div>
+          )}
+
+          {!loading && !error && visibleTrips.length === 0 && trips.length > 0 && (
+            <div className="flex flex-col items-center rounded-2xl border border-black/[0.06] bg-brand-surface px-6 py-16 text-center shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+              <StateIcon>
+                <Search size={24} strokeWidth={1.75} aria-hidden />
+              </StateIcon>
+              <h2 className="mt-4 text-lg font-semibold">
+                No hay viajes que coincidan con tu búsqueda
+              </h2>
+              <p className="mt-2 max-w-md text-sm text-brand-muted">
+                Prueba con otro origen, destino o fecha.
+              </p>
+              <button
+                type="button"
+                onClick={handleClear}
+                className="mt-6 rounded-[10px] bg-[#F5F1EC] px-6 py-3 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#ece5db]"
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          )}
+
+          {!loading && visibleTrips.length > 0 && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-brand-muted">
+                  {visibleTrips.length} viaje{visibleTrips.length === 1 ? "" : "s"}{" "}
+                  disponible{visibleTrips.length === 1 ? "" : "s"}
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  {pax !== null && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-cyan-bg)] px-3 py-1 text-[11px] font-semibold text-brand-cyan">
+                      <Users size={12} strokeWidth={2} aria-hidden />
+                      {pax} pasajero{pax === 1 ? "" : "s"}
+                    </span>
+                  )}
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={handleClear}
+                      className="text-xs font-semibold text-brand-cyan transition-colors duration-200 hover:text-brand-blue"
+                    >
+                      Limpiar filtros
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-8 sm:grid-cols-2">
+                {visibleTrips.map((trip, index) => (
+                  <TarjetaViaje key={trip.id} trip={trip} index={index} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Rail lateral derecho: solo cuando existe la 3ª columna (xl) */}
+        {showSidebar && (
+          <div className="hidden xl:block xl:sticky xl:top-24">
+            <RailLateral />
+          </div>
         )}
       </div>
     </main>

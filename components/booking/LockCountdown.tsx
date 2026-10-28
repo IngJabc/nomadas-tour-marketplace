@@ -34,7 +34,7 @@ export function LockCountdown({
   return (
     <p
       role="timer"
-      className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[12px] font-semibold ${
+      className={`inline-flex max-w-full flex-wrap items-center gap-2 rounded-full px-3 py-1 text-[12px] font-semibold ${
         urgent || expired ? 'bg-[#fef2f2] text-[#ef4444]' : 'bg-[#fffbeb] text-[#92400e]'
       }`}
     >

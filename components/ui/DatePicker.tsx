@@ -93,7 +93,7 @@ export function DatePicker({
           onClick={() => setOpen((prev) => !prev)}
           className={cn(
             'w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white py-3 pl-9 pr-9 text-left text-sm font-normal outline-none transition-shadow duration-200',
-            'focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]',
+            'focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)]',
             value ? 'text-brand-navy' : 'text-brand-muted',
             disabled && 'opacity-40 cursor-not-allowed',
           )}
@@ -130,7 +130,7 @@ export function DatePicker({
             transition={{ duration: 0.15 }}
             role="dialog"
             aria-label="Seleccionar fecha"
-            className="absolute left-0 top-[calc(100%+8px)] z-50 w-[min(100vw-32px,340px)] rounded-2xl border border-[rgba(0,0,0,0.06)] bg-brand-surface p-4 shadow-[0_6px_24px_rgba(0,212,255,0.12)]"
+            className="absolute left-0 top-[calc(100%+8px)] z-50 w-[min(100vw-32px,340px)] rounded-2xl border border-[rgba(0,0,0,0.06)] bg-brand-surface p-4 shadow-[0_6px_24px_rgba(212,98,43,0.12)]"
           >
             <DayPickerCalendar
               size="comfortable"

@@ -286,7 +286,7 @@ const FIELD_CLASSES =
   'w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 ' +
   'font-[Poppins] text-[14px] font-normal text-brand-navy outline-none ' +
   'transition-[border-color,box-shadow] duration-200 ' +
-  'focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)] ' +
+  'focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)] ' +
   'disabled:cursor-not-allowed disabled:opacity-60';
 
 const LABEL_CLASSES =

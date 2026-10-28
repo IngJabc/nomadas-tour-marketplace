@@ -41,6 +41,8 @@ const trip: PublicTrip = {
   id: '441559e6-ea35-4453-aae1-5ed0844289b3',
   departure_time: DEPARTURE,
   capacity: 31,
+  // Disponibilidad real: 3 asientos ya no están libres (reservados/bloqueados).
+  available_seats: 28,
   vehicle_type: 'bus',
   status: 'active',
   route: { origin: 'Barquisimeto', destination: 'Ruta de prueba' },
@@ -132,8 +134,11 @@ describe('ViajesPage (MKT-002)', () => {
       await screen.findByText('Barquisimeto → Ruta de prueba'),
     ).toBeInTheDocument();
     expect(screen.getByText(formatDateTimeShort(DEPARTURE))).toBeInTheDocument();
-    expect(screen.getByText(/31 asientos disponibles/)).toBeInTheDocument();
+    // La línea de disponibilidad muestra la cifra REAL (available_seats=28),
+    // no la capacidad total del vehículo.
+    expect(screen.getByText(/28 asientos disponibles/)).toBeInTheDocument();
     expect(screen.getByText('Disponible')).toBeInTheDocument();
+    // El badge superior muestra la capacidad TOTAL del vehículo.
     expect(screen.getByText('Autobús · 31 asientos')).toBeInTheDocument();
     // Una sola agencia: se muestra su nombre en la tarjeta.
     expect(screen.getByText('Bianchi travels')).toBeInTheDocument();

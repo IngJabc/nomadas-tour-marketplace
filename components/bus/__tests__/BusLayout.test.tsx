@@ -132,7 +132,7 @@ describe('BusLayout (MKT-003)', () => {
 
     const a1 = screen.getByRole('button', { name: 'Asiento A1, disponible' });
     expect(a1).toHaveAttribute('data-state', 'available');
-    expect(a1).toHaveStyle({ background: '#00D4FF' });
+    expect(a1).toHaveStyle({ background: '#D4622B' });
     expect(a1).not.toBeDisabled();
 
     const a2 = screen.getByRole('button', { name: 'Asiento A2, reservado' });

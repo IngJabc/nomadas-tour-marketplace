@@ -7,51 +7,54 @@
 
 ---
 
-## 🎨 Design Tokens — Single Source of Truth
+## 🎨 Design Tokens — Single Source of of Design
 
 ### Colores (usar SIEMPRE estas variables, nunca valores hardcodeados)
 
 ```css
---color-brand-cyan:       #00D4FF   /* Acento principal, CTAs, highlights */
---color-brand-blue:       #0080FF   /* Acento secundario, hovers */
---color-brand-navy:       #000024   /* Fondo principal, navbar, sidebar */
---color-brand-dark:       #00000C   /* Fondo más oscuro, hero sections */
---color-brand-mid:        #0a0a2e   /* Fondos intermedios (derivado de marca) */
---color-brand-surface:    #fdfdfd   /* Tarjetas y formularios */
---color-brand-muted:      #6b7280   /* Textos secundarios */
+--color-brand-cyan:       #D4622B   /* Acento principal, CTAs, highlights (terracota) */
+--color-brand-blue:       #B84E1F   /* Hover state del acento principal */
+--color-brand-navy:       #1F232F   /* Texto, títulos, superficies oscuras */
+--color-brand-dark:       #14181F   /* Tinta más oscura */
+--color-brand-mid:        #2A2F3A   /* Gris oscuro intermedio */
+--color-brand-surface:    #FFFFFF   /* Tarjetas y formularios */
+--color-brand-muted:      #6B7280   /* Textos secundarios */
+--color-canvas:           #F5F1EC   /* Fondo de página — blanco cálido */
+--color-trust:            #176B62   /* Verde teal — confianza, éxito */
+--color-trust-bg:         rgba(23,107,98,0.1)
 ```
 
 ### Colores semánticos (no cambiar)
 
-Success: #10b981
+Success: #176B62
 
 Warning: #f59e0b
 
 Danger: #ef4444
 
-Info: #00D4FF (mismo que cyan)
+Info: #D4622B (mismo que cyan/terracota)
 
-Page bg: #f1f5f9
+Page bg: #F5F1EC
 
 ### Tipografía
 
-- **Headings (h1–h3, títulos de sección):** Montserrat, peso 700–800
-- **Body, labels, botones, links:** Poppins, peso 400/600
-- **Nunca usar:** Geist, Inter, u otras fuentes no listadas aquí
+- **Headings (h1–h3, títulos de sección):** El Messiri, peso 600–700
+- **Body, labels, botones, links:** DM Sans, peso 400/500/600/700
+- **Nunca usar:** Geist, Inter, Montserrat, Poppins, u otras fuentes no listadas aquí
 
 ### Escala tipográfica
 
-Título página: Montserrat 800 / 28px
+Título página: El Messiri 700 / 28px
 
-Título sección: Montserrat 700 / 20–24px
+Título sección: El Messiri 600 / 20–24px
 
-Título tarjeta: Poppins 600 / 17–18px
+Título tarjeta: DM Sans 600 / 17–18px
 
-Body normal: Poppins 400 / 14px
+Body normal: DM Sans 400 / 14px
 
-Label/caption: Poppins 400 / 12–13px
+Label/caption: DM Sans 500 / 12–13px
 
-Badge/tag: Poppins 600 / 11–12px
+Badge/tag: DM Sans 600 / 11–12px
 
 ---
 
@@ -153,23 +156,57 @@ Navbar (que usa exactamente este ancho y padding):
 mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16
 ```
 
-- `max-w-7xl` (1280px) + `px-4 sm:px-6` en todas las páginas internas:
-  `/trips`, `/reservations/new`, `/account/purchases`, el boleto
-  (`.../ticket`) y la corrección de pago (`.../payment`).
-- Las páginas tipo documento (ticket, payment) mantienen el contenedor
-  7xl y acotan su contenido con un wrapper interno
-  (`max-w-2xl` para el boleto, `max-w-3xl` para el pago).
-- `/login` y `/register` se centran (`flex items-center justify-center`)
-  conservando el mismo ritmo vertical y padding `px-4 sm:px-6 pt-24 pb-16`.
-- La landing usa `mx-auto max-w-7xl px-4 sm:px-6`.
+**Regla de consistencia:** todas las páginas tienen el MISMO ancho
+máximo y los MISMOS márgenes horizontales. Ninguna página puede ser
+más ancha (full-bleed) ni más angosta que otra al mismo viewport. La
+única variación permitida es un wrapper INTERNO más angosto dentro de
+la página (nunca en el contenedor raíz).
+
+Páginas que usan este contenedor tal cual:
+
+- `/trips` (banda de búsqueda + grid de resultados)
+- `/reservations/new` (wizard)
+- `/account/purchases` (historial)
+- `/help` (FAQ + contacto)
+- `/account/purchases/[attemptId]/ticket` (boleto)
+- `/account/purchases/[attemptId]/payment` (corrección de pago)
+
+Excepciones (mismo padding, centrado):
+
+- La landing `/` usa secciones `mx-auto max-w-7xl px-4 sm:px-6`
+  (hero, confianza, destinos, historia, CTA final).
+- `/login` y `/register` se centran
+  (`flex items-center justify-center`) conservando `px-4 sm:px-6
+  pt-24 pb-16`.
+
+Wrappers internos (solo para acotar el CONTENIDO del documento,
+DENTRO del contenedor 7xl):
+
+- Boleto (`.../ticket`): `max-w-2xl`
+- Corrección de pago (`.../payment`): `max-w-3xl`
+
+**Regla para páginas tipo documento:** el encabezado (`h1` +
+subtítulo) SIEMPRE vive en el contenedor 7xl, hijo directo, con el
+mismo `border-l-4 border-brand-cyan pl-3` que el resto de páginas:
+el título arranca en el mismo margen izquierdo que todas. El wrapper
+interno centrado envuelve SOLO el documento (boleto, formulario),
+nunca el título.
+
+Reglas que nunca se rompen:
+
 - Nunca usar `px-8` ni anchos `max-w-4xl/5xl/6xl` como contenedor de
-  página: los anchos menores se logran con un wrapper interno.
+  página raíz.
+- El offset superior `pt-24` (96px) es obligatorio en toda página
+  bajo el Navbar fijo de 64px: **nada puede quedar debajo del
+  navbar**. Si una página no lo respeta, el navbar tapa su contenido.
+- `html { scroll-padding-top: 80px }` en `globals.css` mantiene el
+  skip link `#main` y los anclajes visibles bajo la barra fija.
 
 ---
 
 ## 🔤 Tipografía — Reglas complementarias
 
-Mantener Montserrat y Poppins como las únicas fuentes del sistema.
+Mantener El Messiri y DM Sans como las únicas fuentes del sistema.
 
 Nunca escribir bloques largos con el mismo peso tipográfico.
 
@@ -193,7 +230,7 @@ fondo: --color-brand-cyan
 
 hover: --color-brand-blue
 
-texto: blanco, Poppins 600 14–15px
+texto: blanco, DM Sans 600 14–15px
 
 border-radius: 10px
 
@@ -205,9 +242,9 @@ disabled: opacity 0.4, cursor not-allowed
 
 ### Botón Secundario
 
-fondo: #f1f5f9
+fondo: #F5F1EC
 
-texto: --color-brand-navy, Poppins 600 14px
+texto: --color-brand-navy, DM Sans 600 14px
 
 border-radius: 10px
 
@@ -217,7 +254,7 @@ hover: fondo #e2e8f0
 
 fondo: #fef2f2
 
-texto: #ef4444, Poppins 600 12–14px
+texto: #ef4444, DM Sans 600 12–14px
 
 border-radius: 8–10px
 
@@ -233,7 +270,7 @@ border-radius: 10px
 
 padding: 12px 16px
 
-font: Poppins 400 14px
+font: DM Sans 400 14px
 
 focus: border-color --color-brand-cyan
 
@@ -241,7 +278,7 @@ box-shadow 0 0 0 3px rgba(0,212,255,0.15)
 
 SIEMPRE incluir label visible encima del campo (no solo placeholder)
 
-Label style: Poppins 500 12px, --color-brand-muted, uppercase
+Label style: DM Sans 500 12px, --color-brand-muted, uppercase
 
 ### DatePicker (filtros de fecha)
 
@@ -251,7 +288,7 @@ fecha" y locale español). Nunca usar `<input type="date">` nativo.
 
 - Valor y cambio: `value`/`onChange` con string `YYYY-MM-DD` (`''` = vacío).
 - `label` opcional renderiza el label visible con el mismo estilo de los
-  inputs (Poppins 500 12px, uppercase, muted) y lo asocia al botón.
+  inputs (DM Sans 500 12px, uppercase, muted) y lo asocia al botón.
 - **Sin fecha por defecto**: los filtros de fecha nacen vacíos (sin
   filtrar) y el trigger muestra el placeholder `"Elige una fecha"`.
   Nunca placeholders ambiguos como "Cualquier fecha" o "Sin límite".
@@ -295,7 +332,7 @@ padding-left: 12px
 
 Activo/Disponible: fondo #ecfdf5, texto #059669
 
-Inactivo/Reservado: fondo #f1f5f9, texto --color-brand-muted
+Inactivo/Reservado: fondo #F5F1EC, texto --color-brand-muted
 
 Cancelado: fondo #fef2f2, texto #ef4444
 
@@ -305,7 +342,7 @@ border-radius: 9999px (siempre pill)
 
 padding: 3px 10px
 
-font: Poppins 600 11px
+font: DM Sans 600 11px
 
 ---
 
@@ -361,9 +398,12 @@ Solo usar tablas cuando existan grandes cantidades de registros.
 
 ### Entrada y autenticación (cliente)
 
-- `/` → Landing pública (hero + pasos + CTAs)
+- `/` → Landing pública (hero + buscador + escapadas + confianza + CTA)
 - `/login` → Login de cliente
 - `/register` → Registro de cliente
+- `/help` → Ayuda: FAQ (acordeones nativos `<details>`) + contacto
+  (canales reales: agencia en la reserva y Mis reservas; NUNCA inventar
+  datos de contacto que no existan en el producto)
 - `/forgot-password` → Solicitud de recuperación (PENDING)
 - `/reset-password` → Restablecimiento de contraseña (PENDING)
 
@@ -402,17 +442,21 @@ Solo usar tablas cuando existan grandes cantidades de registros.
 
 ### Navbar global
 
-fondo: --color-brand-navy
+fondo: blanco (--color-brand-surface), borde inferior sutil
 
 altura: 64px
 
 sticky: top-0, z-index alto
 
-logo: izquierda
+logo: izquierda (SVG oscuro de /brand/)
 
-nav links: Poppins 400 14px, blanco opacity 0.75, hover opacity 1
+nav links: Explorar → `/trips`, Mis reservas → `/account/purchases`
+(solo clientes autenticados), Ayuda → `/help`. DM Sans 500 14px, texto
+--color-brand-navy/75, hover --color-brand-navy
 
-CTA btn: --color-brand-cyan, pill (border-radius 9999px)
+CTA sesión: "Iniciar sesión" → `/login` (link de texto) +
+"Crear cuenta" → `/register` (pill --color-brand-cyan). Con sesión
+iniciada, un solo botón "Cerrar sesión" (pill --color-brand-cyan)
 
 ---
 
@@ -495,7 +539,7 @@ Mostrar únicamente: booker, viaje, pasajeros totales, abordados, pendientes, se
 
 ## 🚌 Mapa de asientos — Estados y colores
 
-Disponible: fondo #00D4FF | texto blanco | cursor pointer | transición 180ms
+Disponible: fondo #D4622B | texto blanco | cursor pointer | transición 180ms
 
 Seleccionado: fondo #f59e0b | texto blanco | scale sutil al click | transición 180ms
 
@@ -503,9 +547,9 @@ Reservado: fondo #374151 | texto #6b7280 | cursor not-allowed | transición 180m
 
 Bloqueado: fondo #7c3aed | opacity 0.7 | cursor not-allowed | transición 180ms
 
-Guía: fondo #00000C | border 2px solid #00D4FF
+Guía: fondo #14181F | border 2px solid #D4622B
 
-Boarded: fondo #10b981 | texto blanco | transición 180ms
+Boarded: fondo #176B62 | texto blanco | transición 180ms
 
 ## Layout del vehículo
 
@@ -599,11 +643,11 @@ Reglas Autobús:
 
 - **Laterales:** franjas verticales #9ca3af representando ventanas.
 
-- **Cuerpo de pasajeros:** fondo #00000C, padding 16px.
+- **Cuerpo de pasajeros:** fondo #14181F, padding 16px.
 
 - **Zona inferior/cabina:**
 
-  - Guía: rectángulo 48×48px fondo #166534, borde 2px #00D4FF, label "G" blanco.
+  - Guía: rectángulo 48×48px fondo #166534, borde 2px #D4622B, label "G" blanco.
   - Conductor: rectángulo 48×48px fondo #ea580c con SVG de volante.
 
 - **Ruedas:** 2 pares delanteras/traseras, 20×36px, border-radius 6px, fondo #1f2937.
@@ -701,12 +745,13 @@ El resultado final debe sentirse como un SaaS premium moderno, no como un panel 
 2. Nunca usar solo placeholder como label de un campo
 3. Nunca mostrar botón "Eliminar" sin modal de confirmación
 4. Nunca mostrar el alert "Necesitas iniciar sesión" si el usuario ya está autenticado
-5. Nunca usar fuentes distintas a Poppins y Montserrat
+5. Nunca usar fuentes distintas a El Messiri y DM Sans
 6. Nunca crear una pantalla completamente blanca sin contexto de marca
 7. Nunca dejar un empty state sin CTA que lleve al siguiente paso
 8. El panel admin SIEMPRE tiene sidebar, nunca comparte layout con el área pública
-9. Los colores oficiales de la marca son #00D4FF (cyan), #0080FF (azul),
-   #000024 (navy), #00000C (negro). Nunca aproximar con otros valores.
+9. Los colores oficiales de la marca son #D4622B (terracota), #B84E1F (hover),
+   #1F232F (tinta), #14181F (oscuro), #F5F1EC (lienzo) y #176B62 (confianza).
+   Nunca aproximar con otros valores.
 10. Los logos SVG oficiales están en /public/brand/.
     Nunca crear logos con texto o formas improvisadas.
     Usar siempre los archivos SVG reales.
@@ -722,7 +767,7 @@ El resultado final debe sentirse como un SaaS premium moderno, no como un panel 
     nunca created_at ni updated_at de la reserva.
 15. Nunca usar `alert()` ni `confirm()` del navegador — usar siempre Toast y Modal del sistema.
 16. Usar exclusivamente Lucide para iconografía — no mezclar librerías.
-17. El color cyan (#00D4FF) se reserva para acciones, foco, indicadores, gráficos
+17. El color terracota (#D4622B) se reserva para acciones, foco, indicadores, gráficos
     y estados activos — no para bordes decorativos ni fondos de cards.
 18. Si una implementación añade, renombra o cambia el default de una variable
     de entorno, el cierre de la tarea DEBE avisarlo de forma explícita:

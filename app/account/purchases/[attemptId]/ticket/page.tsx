@@ -215,14 +215,16 @@ export default function BoletoPage() {
 
   return (
     <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
-      <div className="mx-auto w-full max-w-2xl">
-        <div className="border-l-4 border-brand-cyan pl-3">
-          <h1 className="text-[28px] font-extrabold">Tu boleto</h1>
-          <p className="mt-1 text-sm text-brand-muted">
-            Presenta este código al abordar. Un boleto por reserva.
-          </p>
-        </div>
+      {/* Encabezado en el contenedor 7xl: mismo margen izquierdo que el
+          resto de páginas (el documento se centra más abajo) */}
+      <div className="border-l-4 border-brand-cyan pl-3">
+        <h1 className="text-[28px] font-extrabold">Tu boleto</h1>
+        <p className="mt-1 text-sm text-brand-muted">
+          Presenta este código al abordar. Un boleto por reserva.
+        </p>
+      </div>
 
+      <div className="mx-auto w-full max-w-2xl">
         <div className="mt-8" aria-live="polite">
           {view === 'loading' && <SkeletonTicket />}
 
