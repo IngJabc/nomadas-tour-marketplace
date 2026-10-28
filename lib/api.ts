@@ -98,6 +98,14 @@ export interface PublicTrip {
   seat_price: number | null;
   lock_ttl_seconds?: number;
   /**
+   * Asientos REALMENTE libres del viaje (status='available'). El badge de
+   * la tarjeta muestra la capacidad TOTAL; esta cifra alimenta la línea
+   * de "asientos disponibles". Opcional para no romper respuestas
+   * antiguas: los consumidores deben usar `trip.available_seats ??
+   * trip.capacity` como fallback.
+   */
+  available_seats?: number;
+  /**
    * Agencias activas que operan este viaje (orden alfabético estable).
    * Opcional para no romper consumidores con respuestas antiguas; los
    * consumidores deben usar `trip.agencies ?? []`.

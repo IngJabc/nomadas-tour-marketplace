@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Poppins, Montserrat } from "next/font/google";
+import { DM_Sans, El_Messiri } from "next/font/google";
 import { Navbar } from "@/components/ui/Navbar";
 import { ToastProvider } from "@/components/ui/ToastProvider";
 import { RootProviders } from "@/components/auth/RootProviders";
@@ -7,17 +7,17 @@ import { MotionConfig } from "framer-motion";
 import "./globals.css";
 import "./design-tokens.css";
 
-const poppins = Poppins({
+const dmSans = DM_Sans({
   // reuse the existing CSS variable name to keep globals.css unchanged
   variable: "--font-sans",
   subsets: ["latin"],
-  weight: ["400", "600", "700"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const montserrat = Montserrat({
+const elMessiri = El_Messiri({
   variable: "--font-heading",
   subsets: ["latin"],
-  weight: ["700", "800"],
+  weight: ["600", "700"],
 });
 
 export const metadata: Metadata = {
@@ -37,7 +37,7 @@ export default function RootLayout({
   return (
     <html
       lang="es"
-      className={`${poppins.variable} ${montserrat.variable} h-full antialiased`}
+      className={`${dmSans.variable} ${elMessiri.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-brand-surface text-brand-navy">
         <a

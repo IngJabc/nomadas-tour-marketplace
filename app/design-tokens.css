@@ -1,15 +1,22 @@
 :root {
-  /* Brand colors */
-  --color-brand-cyan:       #00D4FF;
-  --color-brand-blue:       #0080FF;
-  --color-brand-navy:       #000024;
-  --color-brand-dark:       #00000C;
-  --color-brand-mid:        #0a0a2e;
-  --color-brand-surface:    #fdfdfd;
-  --color-brand-muted:      #6b7280;
+  /* Brand colors — warm travel palette */
+  --color-brand-cyan:       #D4622B;  /* Primary action, CTAs, accents */
+  --color-brand-blue:       #B84E1F;  /* Hover state for primary */
+  --color-brand-navy:       #1F232F;  /* Text, headings, dark surfaces */
+  --color-brand-dark:       #14181F;  /* Darker ink */
+  --color-brand-mid:        #2A2F3A;  /* Medium dark */
+  --color-brand-surface:    #FFFFFF;  /* Cards, forms */
+  --color-brand-muted:      #6B7280;  /* Secondary text */
+
+  /* Warm canvas background */
+  --color-canvas:           #F5F1EC;  /* Page background — warm off-white */
+
+  /* Trust / positive accent (teal) */
+  --color-trust:            #176B62;
+  --color-trust-bg:         rgba(23,107,98,0.1);
 
   /* Semantic aliases used across the app (map to brand tokens) */
-  --background: var(--color-brand-surface);
+  --background: var(--color-canvas);
   --foreground: var(--color-brand-navy);
   --brand-navy: var(--color-brand-navy);
   --brand-dark: var(--color-brand-dark);
@@ -20,26 +27,29 @@
   --brand-muted: var(--color-brand-muted);
 
   /* Semánticos — no cambiar */
-  --color-success:          #10b981;
+  --color-success:          #176B62;
   --color-warning:          #f59e0b;
   --color-danger:           #ef4444;
-  --color-page-bg:          #f1f5f9;
+  --color-page-bg:          #F5F1EC;
 
   /* Semantic backgrounds (10% opacity) */
-  --color-success-bg:       rgba(16,185,129,0.1);
+  --color-success-bg:       rgba(23,107,98,0.1);
   --color-warning-bg:       rgba(245,158,11,0.1);
   --color-danger-bg:        rgba(239,68,68,0.1);
-  --color-cyan-bg:          rgba(0,212,255,0.1);
-  --color-brand-blue-bg:    rgba(0,128,255,0.1);
-  --color-brand-dark-bg:    rgba(0,0,12,0.08);
-  --color-brand-mid-bg:     rgba(10,10,46,0.08);
+  --color-cyan-bg:          rgba(212,98,43,0.1);
+  --color-brand-blue-bg:    rgba(184,78,31,0.1);
+  --color-brand-dark-bg:    rgba(20,24,31,0.08);
+  --color-brand-mid-bg:     rgba(42,47,58,0.08);
+
+  /* Focus ring */
+  --color-focus-ring:       rgba(212,98,43,0.15);
 
   /* Tipografía */
-  --font-heading:           'Montserrat', sans-serif;
-  --font-body:              'Poppins', sans-serif;
+  --font-heading:           'El Messiri', serif;
+  --font-body:              'DM Sans', sans-serif;
 }
 
-/* Headings use Montserrat (loaded in layout.tsx) and body uses Poppins */
+/* Headings use El Messiri (loaded in layout.tsx) and body uses DM Sans */
 h1, h2, h3, h4, h5 {
   font-family: var(--font-heading), var(--font-sans), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
 }
@@ -47,4 +57,5 @@ h1, h2, h3, h4, h5 {
 body {
   background: var(--background);
   color: var(--foreground);
+  font-family: var(--font-body), var(--font-sans), system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
 }

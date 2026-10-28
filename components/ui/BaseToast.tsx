@@ -1,4 +1,5 @@
-import { useState, useEffect, type CSSProperties, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { motion } from "framer-motion";
 import { X } from "lucide-react";
 
 // ── Variant ────────────────────────────────────────────────────────────────
@@ -12,8 +13,7 @@ export type ToastVariant =
 
 // ── Animation constants ────────────────────────────────────────────────────
 
-const TOAST_TRANSITION =
-  "opacity 200ms ease, transform 200ms ease, translate 200ms ease";
+const TOAST_TRANSITION = { type: "spring" as const, stiffness: 420, damping: 30 };
 const TOAST_ENTER_OFFSET = 24;
 const TOAST_ENTER_SCALE = 0.96;
 const TOAST_MAX_WIDTH = 360;
@@ -55,16 +55,14 @@ const BASE_CLASSES =
 
 // ── Animation style ────────────────────────────────────────────────────────
 
-function toastAnimation(hasMounted: boolean, visible: boolean): CSSProperties {
-  const isVisible = hasMounted && visible;
-
-  return {
-    opacity: isVisible ? 1 : 0,
-    transform: isVisible
-      ? "translateX(0) scale(1)"
-      : `translateX(${TOAST_ENTER_OFFSET}px) scale(${TOAST_ENTER_SCALE})`,
-    transition: TOAST_TRANSITION,
-  };
+function toastVisibility(visible: boolean) {
+  return visible
+    ? { opacity: 1, x: 0, scale: 1 }
+    : {
+        opacity: 0,
+        x: TOAST_ENTER_OFFSET,
+        scale: TOAST_ENTER_SCALE,
+      };
 }
 
 // ── Props ──────────────────────────────────────────────────────────────────
@@ -104,21 +102,19 @@ export function BaseToast({
   onDismiss,
   children,
 }: BaseToastProps) {
-  const [hasMounted, setHasMounted] = useState(false);
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      setHasMounted(true);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, []);
-
   const cfg = VARIANT_STYLES[variant];
-  const style = { maxWidth: TOAST_MAX_WIDTH, ...toastAnimation(hasMounted, visible) };
+  // Framer Motion anima la entrada (spring) y la salida cuando `visible`
+  // pasa a false (el proveedor lo mantiene montado durante removeDelay).
+  const motionProps = {
+    initial: { opacity: 0, x: TOAST_ENTER_OFFSET, scale: TOAST_ENTER_SCALE },
+    animate: toastVisibility(visible),
+    transition: TOAST_TRANSITION,
+    style: { maxWidth: TOAST_MAX_WIDTH },
+  } as const;
 
   if (onDismiss) {
     return (
-      <div className={`${BASE_CLASSES} ${cfg.layout} ${cfg.theme}`} style={style}>
+      <motion.div className={`${BASE_CLASSES} ${cfg.layout} ${cfg.theme}`} {...motionProps}>
         {onClick ? (
           <button
             type="button"
@@ -135,20 +131,31 @@ export function BaseToast({
           </>
         )}
         <DismissButton onDismiss={onDismiss} />
-      </div>
+      </motion.div>
     );
   }
 
-  const Tag = onClick ? "button" : "div";
+  if (onClick) {
+    return (
+      <motion.button
+        type="button"
+        onClick={onClick}
+        className={`${BASE_CLASSES} ${cfg.layout} ${cfg.theme} cursor-pointer`}
+        {...motionProps}
+      >
+        {icon && <span className="shrink-0">{icon}</span>}
+        <span className="flex-1 min-w-0">{children}</span>
+      </motion.button>
+    );
+  }
 
   return (
-    <Tag
-      {...(onClick ? { type: "button" as const, onClick } : {})}
-      className={`${BASE_CLASSES} ${cfg.layout} ${cfg.theme}${onClick ? " cursor-pointer" : ""}`}
-      style={style}
+    <motion.div
+      className={`${BASE_CLASSES} ${cfg.layout} ${cfg.theme}`}
+      {...motionProps}
     >
       {icon && <span className="shrink-0">{icon}</span>}
       <span className="flex-1 min-w-0">{children}</span>
-    </Tag>
+    </motion.div>
   );
 }

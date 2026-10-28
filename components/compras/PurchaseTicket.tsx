@@ -47,7 +47,7 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
       >
         {/* Header */}
         <div className="flex items-center gap-3 bg-[var(--color-brand-navy)] px-5 py-4">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[rgba(0,212,255,0.15)]">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[rgba(212,98,43,0.15)]">
             <CheckCircle2 className="size-5 text-[var(--color-brand-cyan)]" />
           </div>
           <div className="min-w-0 flex-1">
@@ -60,7 +60,7 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
 
         {/* QR Code — UN solo QR por reserva, valor exacto de Tour */}
         <div className="flex flex-col items-center px-5 py-6">
-          <div className="rounded-2xl border-2 border-[rgba(0,212,255,0.15)] bg-white p-3 shadow-[0_2px_12px_rgba(0,212,255,0.06)]">
+          <div className="rounded-2xl border-2 border-[rgba(212,98,43,0.15)] bg-white p-3 shadow-[0_2px_12px_rgba(212,98,43,0.06)]">
             <QRCode value={ticket.qr_code} size={150} />
           </div>
           <p
@@ -76,7 +76,7 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
         <div className="px-5 pb-4">
           <div className="space-y-3 rounded-xl bg-[var(--color-page-bg)] p-4">
             <div className="flex items-center gap-3">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[rgba(0,212,255,0.1)]">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[rgba(212,98,43,0.1)]">
                 <MapPin
                   className="size-4 text-[var(--color-brand-cyan)]"
                   strokeWidth={1.75}
@@ -165,7 +165,7 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
                     <div className="flex min-w-0 items-center gap-2.5">
                       <span
                         data-testid="passenger-seat"
-                        className="min-w-[34px] rounded-md bg-[rgba(0,212,255,0.1)] px-2 py-0.5 text-center text-[12px] font-bold text-[var(--color-brand-cyan)]"
+                        className="min-w-[34px] rounded-md bg-[rgba(212,98,43,0.1)] px-2 py-0.5 text-center text-[12px] font-bold text-[var(--color-brand-cyan)]"
                       >
                         {p.asiento}
                       </span>

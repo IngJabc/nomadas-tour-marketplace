@@ -480,15 +480,17 @@ export default function ReintentoPagoPage() {
 
   return (
     <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 sm:px-6 pt-24 pb-16">
-      <div className="mx-auto w-full max-w-3xl">
-        <div className="border-l-4 border-brand-cyan pl-3">
-          <h1 className="text-[28px] font-extrabold">Corregir pago</h1>
-          <p className="mt-1 text-sm text-brand-muted">
-            Revisa los datos de tu compra, corrige el comprobante y vuelve a
-            enviarlo. Tus asientos y pasajeros siguen guardados.
-          </p>
-        </div>
+      {/* Encabezado en el contenedor 7xl: mismo margen izquierdo que el
+          resto de páginas (el formulario se centra más abajo) */}
+      <div className="border-l-4 border-brand-cyan pl-3">
+        <h1 className="text-[28px] font-extrabold">Corregir pago</h1>
+        <p className="mt-1 text-sm text-brand-muted">
+          Revisa los datos de tu compra, corrige el comprobante y vuelve a
+          enviarlo. Tus asientos y pasajeros siguen guardados.
+        </p>
+      </div>
 
+      <div className="mx-auto w-full max-w-3xl">
         <div className="mt-8 space-y-4" aria-live="polite">
           {view === 'loading' && <SkeletonPago />}
 

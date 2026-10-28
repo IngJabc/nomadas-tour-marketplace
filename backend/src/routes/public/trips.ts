@@ -30,7 +30,10 @@ router.get('/', async (_req, res, next) => {
     const { data, error } = await supabaseAdmin
       .from('trips')
       .select(
-        'id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination), trip_agencies(agency_id, agencies(id, name, status))',
+        // seats(status) es un embed del MISMO query: el catálogo expone la
+        // disponibilidad real por viaje sin N+1 (un viaje con 31 asientos
+        // no dispara 31 consultas).
+        'id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination), trip_agencies(agency_id, agencies(id, name, status)), seats(status)',
       )
       .eq('status', 'active')
       .gte('departure_time', new Date().toISOString())
@@ -50,6 +53,11 @@ router.get('/', async (_req, res, next) => {
         .map((agency: any) => ({ id: agency.id, name: agency.name ?? '' }))
         // Orden estable y determinista (sin depender de locale del runtime).
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      // Disponibilidad REAL: solo los asientos en estado 'available' (los
+      // reservados, bloqueados, con lock o la guía no cuentan como libres).
+      const availableSeats = ((row.seats ?? []) as Array<any>).filter(
+        (seat: any) => seat?.status === 'available',
+      ).length;
       return {
         id: row.id,
         departure_time: row.departure_time,
@@ -60,6 +68,7 @@ router.get('/', async (_req, res, next) => {
         route: row.routes ?? { origin: '', destination: '' },
         lock_ttl_seconds: env.LOCK_TTL_SECONDS,
         agencies,
+        available_seats: availableSeats,
       };
     });
 

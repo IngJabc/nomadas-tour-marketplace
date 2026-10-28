@@ -4,6 +4,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
+import { motion } from "framer-motion";
 import { authApi } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
 import { establishSupabaseSession } from "@/lib/auth/session";
@@ -64,7 +65,12 @@ function RegisterForm() {
 
   return (
     <main id="main" className="flex flex-1 items-center justify-center px-4 sm:px-6 pt-24 pb-16">
-      <div className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-brand-surface p-8 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+        className="w-full max-w-md rounded-2xl border border-black/[0.06] bg-brand-surface p-8 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+      >
         <div className="border-l-4 border-brand-cyan pl-3">
           <h1 className="text-2xl font-bold">Crear cuenta</h1>
           <p className="mt-1 text-sm text-brand-muted">
@@ -87,7 +93,7 @@ function RegisterForm() {
               autoComplete="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]"
+              className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)]"
               placeholder="tu@correo.com"
             />
           </div>
@@ -107,7 +113,7 @@ function RegisterForm() {
               minLength={6}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)]"
+              className="w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm outline-none transition-shadow focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)]"
               placeholder="Mínimo 6 caracteres"
             />
           </div>
@@ -160,7 +166,7 @@ function RegisterForm() {
             Inicia sesión
           </Link>
         </p>
-      </div>
+      </motion.div>
     </main>
   );
 }

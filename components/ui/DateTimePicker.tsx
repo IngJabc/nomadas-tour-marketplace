@@ -37,7 +37,7 @@ function formatNaiveDateTime(date: Date, time: string): string {
 }
 
 const inputClassName =
-  'w-full border-[1.5px] border-[#e5e7eb] rounded-xl px-4 py-3 font-[family-name:var(--font-body)] font-normal text-sm text-[var(--color-brand-navy)] bg-white outline-none transition-all duration-200 focus:border-[var(--color-brand-cyan)] focus:shadow-[0_0_0_3px_rgba(0,212,255,0.15)] disabled:opacity-40 disabled:cursor-not-allowed';
+  'w-full border-[1.5px] border-[#e5e7eb] rounded-xl px-4 py-3 font-[family-name:var(--font-body)] font-normal text-sm text-[var(--color-brand-navy)] bg-white outline-none transition-all duration-200 focus:border-[var(--color-brand-cyan)] focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)] disabled:opacity-40 disabled:cursor-not-allowed';
 
 export function DateTimePicker({
   value,

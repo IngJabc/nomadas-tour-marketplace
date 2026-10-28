@@ -21,7 +21,7 @@ interface SeatStyle {
 }
 
 const SEAT_STYLES: Record<string, SeatStyle> = {
-  available: { background: "#00D4FF", color: "#ffffff", cursor: "pointer" },
+  available: { background: "#D4622B", color: "#ffffff", cursor: "pointer" },
   selected: { background: "#f59e0b", color: "#ffffff", cursor: "pointer" },
   reserved: { background: "#374151", color: "#6b7280", cursor: "not-allowed" },
   locked: {
@@ -37,10 +37,10 @@ const SEAT_STYLES: Record<string, SeatStyle> = {
     opacity: 0.7,
   },
   guide: {
-    background: "#00000C",
+    background: "#14181F",
     color: "#ffffff",
     cursor: "not-allowed",
-    border: "2px solid #00D4FF",
+    border: "2px solid #D4622B",
   },
   missing: { background: "#e5e7eb", color: "#9ca3af", cursor: "not-allowed" },
 };
@@ -256,7 +256,7 @@ export function BusLayout({
             aria-hidden="true"
           />
 
-          <div className="relative z-10 flex flex-col gap-2 rounded-t-[32px] bg-[#00000C] p-4">
+          <div className="relative z-10 flex flex-col gap-2 rounded-t-[32px] bg-[#14181F] p-4">
             {rows.map((row, index) => (
               <Row
                 key={index}
@@ -279,7 +279,7 @@ export function BusLayout({
 
           <div className="relative z-10 mt-2 flex items-center justify-between px-3 pb-1">
             <div
-              className="flex h-12 w-12 items-center justify-center rounded-[10px] border-2 border-[#00D4FF]"
+              className="flex h-12 w-12 items-center justify-center rounded-[10px] border-2 border-[#D4622B]"
               style={{ background: "#166534" }}
               aria-label="Asiento del guía"
             >
