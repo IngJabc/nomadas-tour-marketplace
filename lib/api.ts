@@ -1,5 +1,9 @@
 import type { AppUser } from '@/lib/auth/types';
-import { ApiError } from '@/lib/errors/api-error';
+import {
+  ApiError,
+  PUBLIC_ERROR_MESSAGES,
+  publicMessageForStatus,
+} from '@/lib/errors/api-error';
 import { logoutInactiveAccount } from '@/lib/auth/session-handler';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003/api';
@@ -50,21 +54,40 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     return undefined as T;
   }
 
-  const data = await res.json();
+  // SEC-02: la respuesta puede no ser JSON (p. ej. una página de error de un
+  // proxy/CDN). Nunca se propaga un error crudo de parsing.
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
 
   if (!res.ok) {
-    const errorObj = data?.error;
-    const code = errorObj?.code;
-    const message = errorObj?.message || data?.error || 'API request failed';
+    const rawError =
+      data && typeof data === 'object' ? (data as Record<string, unknown>).error : undefined;
+    const errorObj =
+      rawError && typeof rawError === 'object'
+        ? (rawError as Record<string, unknown>)
+        : undefined;
+
+    const code = typeof errorObj?.code === 'string' ? errorObj.code : 'UNKNOWN';
+    // El backend garantiza mensajes públicos. Si la respuesta no trae un
+    // envelope válido, se usa copy controlado por categoría de estado —
+    // jamás texto crudo de una fuente no controlada.
+    const message =
+      typeof errorObj?.message === 'string' && errorObj.message
+        ? errorObj.message
+        : publicMessageForStatus(res.status);
 
     if (code === 'ACCOUNT_INACTIVE' && !path.startsWith('/auth/login')) {
       logoutInactiveAccount();
     }
 
-    throw new ApiError(message, code || 'UNKNOWN', res.status);
+    throw new ApiError(message, code, res.status);
   }
 
-  return data;
+  return data as T;
 }
 
 // Auth (customer)

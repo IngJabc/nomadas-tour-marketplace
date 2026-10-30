@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { supabaseAdmin } from '../config/database.js';
 import { env } from '../config/env.js';
-import { AppError, UnauthorizedError } from '../errors/index.js';
+import { AppError, InternalError, UnauthorizedError } from '../errors/index.js';
 
 export type GuestSessionStatus = 'active' | 'claimed' | 'expired' | 'released';
 
@@ -126,7 +126,7 @@ async function findSessionByHash(
     .maybeSingle();
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_QUERY_ERROR');
+    throw new InternalError('GUEST_SESSION_QUERY_ERROR', error.message);
   }
   return (data as GuestSession | null) ?? null;
 }
@@ -139,7 +139,7 @@ async function markSessionExpired(sessionId: string): Promise<void> {
     .eq('status', 'active');
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', error.message);
   }
 }
 
@@ -166,7 +166,7 @@ async function createSession(tripId: string): Promise<{ session: GuestSession; t
 
     const duplicate = (error?.message ?? '').toLowerCase().includes('duplicate');
     if (!duplicate || attempt === 1) {
-      throw new AppError(error?.message ?? 'No se pudo crear la sesión guest', 500, 'GUEST_SESSION_CREATE_ERROR');
+      throw new InternalError('GUEST_SESSION_CREATE_ERROR', error?.message);
     }
   }
 
@@ -243,7 +243,7 @@ export async function synchronizeSessionExpiry(sessionId: string, expiresAt: str
     .maybeSingle();
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', error.message);
   }
   return (data as GuestSession | null) ?? null;
 }
@@ -256,7 +256,7 @@ export async function markSessionReleased(sessionId: string): Promise<void> {
     .eq('status', 'active');
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', error.message);
   }
 }
 
@@ -270,7 +270,7 @@ export async function releaseSessionIfUnused(sessionId: string): Promise<void> {
     .limit(1);
 
   if (locksError) {
-    throw new AppError(locksError.message, 500, 'GUEST_SESSION_QUERY_ERROR');
+    throw new InternalError('GUEST_SESSION_QUERY_ERROR', locksError.message);
   }
   if ((activeLocks ?? []).length > 0) return;
 
@@ -281,7 +281,7 @@ export async function releaseSessionIfUnused(sessionId: string): Promise<void> {
     .eq('status', 'active');
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', error.message);
   }
 }
 
@@ -294,7 +294,7 @@ export async function expireStaleGuestSessions(now = new Date().toISOString()): 
     .select('id');
 
   if (error) {
-    throw new AppError(error.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', error.message);
   }
   return { expired: (data ?? []).length };
 }

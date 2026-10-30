@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '../config/database.js';
-import { AppError, UnauthorizedError } from '../errors/index.js';
+import { AppError, InternalError, UnauthorizedError } from '../errors/index.js';
 
 export interface ClaimedSeat {
   id: string;
@@ -63,7 +63,7 @@ export async function claimGuestSession(
     .eq('guest_session_id', sessionId);
 
   if (seatsError) {
-    throw new AppError(seatsError.message, 500, 'SEATS_QUERY_ERROR');
+    throw new InternalError('SEATS_QUERY_ERROR', seatsError.message);
   }
 
   const eligible = ((seatRows ?? []) as EligibleSeatRow[])
@@ -99,7 +99,7 @@ export async function claimGuestSession(
     .maybeSingle();
 
   if (claimError) {
-    throw new AppError(claimError.message, 500, 'GUEST_SESSION_UPDATE_ERROR');
+    throw new InternalError('GUEST_SESSION_UPDATE_ERROR', claimError.message);
   }
 
   if (!claimed) {
@@ -118,7 +118,7 @@ export async function claimGuestSession(
 
   if (transferError) {
     await compensateClaim(sessionId, customerId, []);
-    throw new AppError(transferError.message, 500, 'SEAT_CLAIM_ERROR');
+    throw new InternalError('SEAT_CLAIM_ERROR', transferError.message);
   }
 
   const transferredIds = new Set(
@@ -163,7 +163,7 @@ async function describeLostClaim(sessionId: string): Promise<AppError> {
     .maybeSingle();
 
   if (error) {
-    return new AppError(error.message, 500, 'GUEST_SESSION_QUERY_ERROR');
+    return new InternalError('GUEST_SESSION_QUERY_ERROR', error.message);
   }
 
   const session = data as GuestSessionRow | null;

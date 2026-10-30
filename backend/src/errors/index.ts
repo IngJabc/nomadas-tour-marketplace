@@ -62,3 +62,24 @@ export class UnprocessableError extends AppError {
     super(message, 422, code);
   }
 }
+
+/**
+ * SEC-02 — Error interno 5xx cuyo mensaje crudo (Supabase, PostgreSQL,
+ * PostgREST, JWT o RPC) NUNCA se expone al cliente. El `errorHandler`
+ * responde con un mensaje público genérico + `request_id`; el detalle se
+ * conserva solo en logs y Sentry para diagnóstico.
+ *
+ * Usar `InternalError` en lugar de `AppError(error.message, 500, ...)`
+ * siempre que el mensaje provenga de una fuente interna.
+ */
+export class InternalError extends AppError {
+  /** Detalle crudo para diagnóstico; jamás viaja en la respuesta. */
+  readonly internalMessage?: string;
+
+  constructor(code: string, internalMessage?: string, statusCode: number = 500) {
+    // El mensaje PÚBLICO queda vacío: el handler lo reemplaza por copy genérico.
+    super('', statusCode, code);
+    this.name = 'InternalError';
+    this.internalMessage = internalMessage;
+  }
+}
