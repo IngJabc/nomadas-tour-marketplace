@@ -842,12 +842,44 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
 
 ---
 
+## Planificación de producto (2026-10-30)
+
+Nuevas iniciativas planificadas en [`docs/ROADMAP.md`](docs/ROADMAP.md)
+(Fases 5–8). **Todas Planificado — ninguna implementada**; este bloque es
+solo de referencia hasta que se abra el sprint correspondiente.
+
+- **LND** (Fase 5) — Landing dinámico: 4 viajes próximos desde
+  `GET /api/public/trips`. Tareas LND-001…006.
+- **REV** (Fase 6) — Calificaciones de viajes y agencias (independientes,
+  reservas verificadas + viaje completado). Tareas REV-001…006.
+- **REP** (Fase 6) — Ranking de confiabilidad y perfil público de agencia
+  (algoritmo: decisión pendiente con alternativas). Tareas REP-001…003.
+- **FDB** (Fase 7) — Feedback privado del Marketplace (categorías + estados
+  `new|in_review|resolved|closed`). Tareas FDB-001…004.
+- **SUP** (Fase 7) — Ayuda + botón flotante de WhatsApp con mensajes
+  predefinidos. Tareas SUP-001…004.
+- **LEG** (Fase 8) — Documentos legales del modelo dual (Venezuela) +
+  aceptación con versionado y trazabilidad. Revisión jurídica externa
+  obligatoria. Tareas LEG-001…005.
+
+Decisiones de negocio confirmadas (mercado Venezuela, modelo dual,
+reputación separada, WhatsApp, marco legal): ver
+[`docs/ROADMAP.md`](docs/ROADMAP.md) § Decisiones de negocio confirmadas.
+Dependencias de `nomadas-tour` (solo lectura): ver
+[`docs/NOMADAS_TOUR_INTEGRATION.md`](docs/NOMADAS_TOUR_INTEGRATION.md) §10.
+
+---
+
 ## Después
 
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
 | — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
+| — | Fase 5 — Landing dinámico (**LND**) | Planificada (2026-10-30) |
+| — | Fase 6 — Reputación (**REV** + **REP**) | Planificada (2026-10-30) |
+| — | Fase 7 — Feedback + WhatsApp (**FDB** + **SUP**) | Planificada (2026-10-30) |
+| — | Fase 8 — Marco legal (**LEG**) | Planificada (2026-10-30) |
 | — | Fase 4 — Panel admin + `/account` | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
 | — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |

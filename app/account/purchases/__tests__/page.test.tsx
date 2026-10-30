@@ -450,7 +450,11 @@ describe('MisComprasPage (RT-02)', () => {
     expect(
       await screen.findByText('No pudimos cargar tu historial de compras'),
     ).toBeInTheDocument();
-    expect(screen.getByText('boom')).toBeInTheDocument();
+    // SEC-02: el error crudo del mock ya no se expone; copy segura del fallback.
+    expect(
+      screen.getByText('No pudimos cargar tu historial de compras. Intenta de nuevo.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
 
     listPurchases.mockResolvedValueOnce(view([makeItem()]));
     fireEvent.click(screen.getByRole('button', { name: /Reintentar/ }));
@@ -748,7 +752,10 @@ describe('MisComprasPage (RT-02)', () => {
     expect(await screen.findByText('Ciudad P1 → Caracas')).toBeInTheDocument();
 
     // Falla la 2ª página del barrido: se muestra lo ya traído + el error.
-    expect(await screen.findByRole('alert')).toHaveTextContent('network down');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'No pudimos cargar tu historial de compras. Intenta de nuevo.',
+    );
+    expect(screen.queryByText('network down')).not.toBeInTheDocument();
     // La compra cargada sigue visible: no se limpia el estado del usuario.
     expect(screen.getByText('Ciudad P1 → Caracas')).toBeInTheDocument();
 
