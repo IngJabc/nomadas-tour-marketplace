@@ -359,7 +359,9 @@ describe('ViajesPage (MKT-002)', () => {
     expect(
       await screen.findByText('No pudimos cargar los viajes'),
     ).toBeInTheDocument();
-    expect(screen.getByText('boom')).toBeInTheDocument();
+    // SEC-02: un error no-API ya no se renderiza crudo; se muestra copy segura.
+    expect(screen.getByText('No pudimos conectar con el catálogo. Intenta de nuevo.')).toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
 
     mockedTrips.mockResolvedValue({ trips: [trip] });
     fireEvent.click(screen.getByRole('button', { name: /Reintentar/ }));
@@ -475,7 +477,9 @@ describe('ViajesPage realtime refrescos (RT-04A)', () => {
     });
 
     expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByText('fallo de red')).toBeInTheDocument();
+    // SEC-02: el mensaje crudo del mock ya no se expone; copy segura.
+    expect(screen.getByText('No pudimos conectar con el catálogo. Intenta de nuevo.')).toBeInTheDocument();
+    expect(screen.queryByText('fallo de red')).not.toBeInTheDocument();
     expect(screen.getByText('Barquisimeto → Ruta de prueba')).toBeInTheDocument();
   });
 });

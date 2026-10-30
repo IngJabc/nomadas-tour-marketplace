@@ -496,7 +496,11 @@ describe('ReintentoPagoPage (RT-05)', () => {
 
     render(<ReintentoPagoPage />);
 
-    expect(await screen.findByText('network down')).toBeInTheDocument();
+    // SEC-02: un TypeError de red muestra copy de conectividad, no el texto crudo.
+    expect(
+      await screen.findByText('No pudimos conectar con el servicio. Inténtalo nuevamente.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('network down')).not.toBeInTheDocument();
     // Nunca se afirma que los asientos se perdieron por una falla transitoria.
     expect(screen.queryByText('Asientos no disponibles')).not.toBeInTheDocument();
     expect(screen.queryByTestId('proof-file-input')).not.toBeInTheDocument();

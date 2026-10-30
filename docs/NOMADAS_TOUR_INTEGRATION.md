@@ -222,3 +222,26 @@ Ambos backends apuntan al mismo Supabase. En Render:
 
 Detalle de env vars de este repo: [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)
 § Environment.
+
+---
+
+## 10. PENDING — dependencias planificadas de tour (2026-10-30)
+
+Referencia de **solo lectura** para las iniciativas del
+[`ROADMAP.md`](ROADMAP.md) (LND, REV, REP, FDB, SUP, LEG). **Ninguna de estas
+tareas modifica `nomadas-tour` en esta etapa**; se listan las dependencias
+existentes que las nuevas iniciativas deben respetar o reutilizar.
+
+| Iniciativa | Dependencia en tour | Tipo | Notas |
+| ---------- | ------------------- | ---- | ----- |
+| LND | — (endpoint `GET /api/public/trips` es de este repo) | — | El catálogo público ya filtra `status='active'`, salida futura y expone `available_seats`; no requiere cambios de tour |
+| REV | `trips.status='completed'` — auto-complete T+3 (`completeExpiredTrips` de `tour/backend/src/services/trip.service.ts`, vía RPC `complete_trip` de `057_trip_events_rpc.sql`, WKR-007) | Read-only | Único estado verificable de "viaje completado"; **NO** asumir completado por hora de salida pasada |
+| REV | `audit_log` (`065`, ampliado `079`/`086`) | Read-only | Trazabilidad de moderación y cambios de reseñas |
+| REV / REP / FDB / LEG | Historia única de migraciones (`../nomadas-tour/supabase/migrations/`, prefijo **095+**) | Escritura futura (fuera de esta etapa) | Tablas nuevas (`*_reviews`, `marketplace_feedback`, `legal_documents`/`legal_acceptances`) se escriben en la historia única del repo tour, siguiendo la regla de una sola historia |
+| REP | `agencies` + `agency_settings` (`041`) + bucket `agency-logos` (`042`) | Read-only | Datos de identidad/branding del perfil público de agencia |
+| REP | `trip_agencies` (ofertas por viaje, `011`/`020`) | Read-only | Relación viaje ↔ agencia comercializadora (modelo dual) |
+| SUP | `agency_contacts` (`091`, canal `call|whatsapp`) | Patrón | SUP es canal de la **plataforma**, no de agencias; no duplicar el modelo de contactos de agencia |
+| FDB / SUP (futuro) | Outbox `outbox_events` + worker runner tour (`049–060`) | Read-only | Infraestructura de notificaciones si el feedback/Soporte evoluciona a notificaciones push/email |
+
+**Regla inmutable:** todo cambio que toque tablas compartidas debe pasar por
+la revisión de impacto sobre tour (§8 regla 1) antes de escribirse.

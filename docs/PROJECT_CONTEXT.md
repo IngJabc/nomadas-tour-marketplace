@@ -7,7 +7,7 @@ lugar. Compañero de [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md
 **Estado:** Bootstrap completado — skeleton buildable. Fase de implementación
 de producto no iniciada (ver [`../TASKS.md`](../TASKS.md)).
 
-**Última actualización:** 2026-09-30
+**Última actualización:** 2026-10-30
 
 ---
 
@@ -202,6 +202,10 @@ revisar siempre los flags del worker de `nomadas-tour` en Render.
 | Workers (T-1, comisiones) | ⏳ PENDING (MKT-008/009) |
 | Migraciones marketplace (074–087) | ✅ APLICADAS (074–080 verificado en vivo 2026-10-06; 085–087 posterior) |
 | Docs de diseño (6 auditorías) | ✅ Consolidadas en business-rules.md |
+| Landing dinámico (4 viajes próximos, LND) | ⏳ Planificado (ROADMAP Fase 5) |
+| Reputación: calificaciones viaje/agencia (REV/REP) | ⏳ Planificado (ROADMAP Fase 6) |
+| Feedback del Marketplace (FDB) + WhatsApp (SUP) | ⏳ Planificado (ROADMAP Fase 7) |
+| Marco legal y aceptación (LEG) | ⏳ Planificado (ROADMAP Fase 8) |
 
 ---
 
