@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../../config/database.js';
-import { AppError } from '../../errors/index.js';
+import { AppError, InternalError } from '../../errors/index.js';
 import { env } from '../../config/env.js';
 
 const router = Router();
@@ -41,7 +41,7 @@ router.get('/', async (_req, res, next) => {
       .limit(100);
 
     if (error) {
-      throw new AppError(error.message, 500, 'TRIPS_QUERY_ERROR');
+      throw new InternalError('TRIPS_QUERY_ERROR', error.message);
     }
 
     const trips = (data ?? []).map((row: any) => {
@@ -101,7 +101,7 @@ router.get('/:id', async (req, res, next) => {
       .maybeSingle();
 
     if (error) {
-      throw new AppError(error.message, 500, 'TRIP_QUERY_ERROR');
+      throw new InternalError('TRIP_QUERY_ERROR', error.message);
     }
     if (!trip) {
       throw new AppError('Viaje no encontrado', 404, 'TRIP_NOT_FOUND');
@@ -125,10 +125,10 @@ router.get('/:id', async (req, res, next) => {
     ]);
 
     if (offersResult.error) {
-      throw new AppError(offersResult.error.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+      throw new InternalError('TRIP_OFFERS_QUERY_ERROR', offersResult.error.message);
     }
     if (seatsResult.error) {
-      throw new AppError(seatsResult.error.message, 500, 'TRIP_SEATS_QUERY_ERROR');
+      throw new InternalError('TRIP_SEATS_QUERY_ERROR', seatsResult.error.message);
     }
 
     // MKT-007.4: agencias de ESTE viaje con al menos un canal de pago
@@ -164,11 +164,11 @@ router.get('/:id', async (req, res, next) => {
       ]);
 
       if (methodsResult.error) {
-        throw new AppError(methodsResult.error.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+        throw new InternalError('TRIP_OFFERS_QUERY_ERROR', methodsResult.error.message);
       }
       // Un fallo real de base de datos NO se silencia como "sin contactos".
       if (contactsResult.error) {
-        throw new AppError(contactsResult.error.message, 500, 'TRIP_OFFERS_QUERY_ERROR');
+        throw new InternalError('TRIP_OFFERS_QUERY_ERROR', contactsResult.error.message);
       }
       agenciesWithMethods = new Set(
         (methodsResult.data ?? []).map((row: any) => String(row.agency_id)),

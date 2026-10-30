@@ -441,7 +441,12 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
 
     expect(res.status).toBe(500);
     expect(body.error?.code).toBe('TRIP_OFFERS_QUERY_ERROR');
-    expect(body.error?.message).toBe('contacts table missing');
+    // SEC-02: el detalle crudo de la BD no se expone; copy público + request_id.
+    expect(body.error?.message).toBe(
+      'No pudimos completar la operación en este momento. Inténtalo nuevamente.',
+    );
+    expect(body.error?.message).not.toContain('contacts table missing');
+    expect(typeof (body.error as any)?.request_id).toBe('string');
   });
 
   it('solo incluye agencias activas entre las ofertas', async () => {
@@ -512,7 +517,11 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
 
     expect(res.status).toBe(500);
     expect(body.error?.code).toBe('TRIP_QUERY_ERROR');
-    expect(body.error?.message).toBe('boom');
+    // SEC-02: el mensaje crudo ("boom") no llega al cliente.
+    expect(body.error?.message).toBe(
+      'No pudimos completar la operación en este momento. Inténtalo nuevamente.',
+    );
+    expect(body.error?.message).not.toContain('boom');
   });
 
   it('responde 500 TRIP_SEATS_QUERY_ERROR cuando falla la consulta de asientos', async () => {

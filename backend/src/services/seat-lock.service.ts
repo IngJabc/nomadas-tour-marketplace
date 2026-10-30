@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../config/database.js';
 import { env } from '../config/env.js';
-import { AppError, ValidationError } from '../errors/index.js';
+import { AppError, InternalError, ValidationError } from '../errors/index.js';
 
 export interface LockedSeat {
   id: string;
@@ -106,7 +106,7 @@ export class SeatLockService {
       .maybeSingle();
 
     if (tripError) {
-      throw new AppError(tripError.message, 500, 'TRIP_QUERY_ERROR');
+      throw new InternalError('TRIP_QUERY_ERROR', tripError.message);
     }
     if (!trip) {
       throw new AppError('Viaje no encontrado', 404, 'TRIP_NOT_FOUND');
@@ -137,7 +137,7 @@ export class SeatLockService {
       .select('id');
 
     if (cleanupError) {
-      throw new AppError(cleanupError.message, 500, 'SEAT_LOCK_ERROR');
+      throw new InternalError('SEAT_LOCK_ERROR', cleanupError.message);
     }
 
     const { data: seatRows, error: seatsError } = await supabaseAdmin
@@ -148,7 +148,7 @@ export class SeatLockService {
       .in('id', seatIds);
 
     if (seatsError) {
-      throw new AppError(seatsError.message, 500, 'SEATS_QUERY_ERROR');
+      throw new InternalError('SEATS_QUERY_ERROR', seatsError.message);
     }
 
     const seats = (seatRows ?? []) as SeatRow[];
@@ -230,7 +230,7 @@ export class SeatLockService {
         .select('id');
 
       if (updateError) {
-        throw new AppError(updateError.message, 500, 'SEAT_LOCK_ERROR');
+        throw new InternalError('SEAT_LOCK_ERROR', updateError.message);
       }
 
       const acquired = new Set((updated ?? []).map((row: { id: string }) => row.id));
@@ -275,7 +275,7 @@ export class SeatLockService {
       ).select('id');
 
       if (extendError) {
-        throw new AppError(extendError.message, 500, 'SEAT_LOCK_ERROR');
+        throw new InternalError('SEAT_LOCK_ERROR', extendError.message);
       }
     }
 
@@ -334,7 +334,7 @@ export class SeatLockService {
       .in('id', seatIds);
 
     if (error) {
-      throw new AppError(error.message, 500, 'SEATS_QUERY_ERROR');
+      throw new InternalError('SEATS_QUERY_ERROR', error.message);
     }
 
     const seats = (seatRows ?? []) as SeatRow[];
@@ -393,7 +393,7 @@ export class SeatLockService {
 
     const { data, error } = await query.select('id');
     if (error) {
-      throw new AppError(error.message, 500, 'SEAT_UNLOCK_ERROR');
+      throw new InternalError('SEAT_UNLOCK_ERROR', error.message);
     }
 
     if (owner.kind === 'customer') {
@@ -432,7 +432,7 @@ export class SeatLockService {
     );
 
     if (error) {
-      throw new AppError(error.message, 500, 'SEATS_QUERY_ERROR');
+      throw new InternalError('SEATS_QUERY_ERROR', error.message);
     }
 
     const seats = ((data ?? []) as Array<{

@@ -53,7 +53,16 @@ export async function auth(req: Request, _res: Response, next: NextFunction) {
   const { data: { user }, error } = await supabase.auth.getUser(token);
 
   if (error || !user) {
-    throw new UnauthorizedError('Token inválido o expirado');
+    // SEC-02: el error crudo de Supabase (firma, kid, expiración, proyecto
+    // equivocado, etc.) NUNCA se expone. Se registra el detalle interno sin
+    // el token para diagnóstico y se responde un mensaje público controlado.
+    console.warn(
+      '[auth] getUser failed:',
+      error?.name,
+      error?.status,
+      error?.message,
+    );
+    throw new UnauthorizedError('No pudimos validar tu sesión. Inicia sesión nuevamente.');
   }
 
   req.ctx = await extractContext(user);
