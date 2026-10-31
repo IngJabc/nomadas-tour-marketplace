@@ -484,6 +484,105 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(lastRpcCall().args.p_idempotency_key).toBe(IDEMPOTENCY_KEY);
     });
 
+    it('rechaza con 409 CHECKOUT_TRIP_NOT_PUBLISHED y sin llamar al RPC cuando el viaje no esta publicado (TRIP-PUB-001)', async () => {
+      // El pre-chequeo corre ANTES del RPC: el endpoint directo no lo esquiva
+      // y nunca se crea el intento ni se toca la transacción de locks.
+      harness.push('trips', {
+        data: { id: TRIP_ID, is_published: false },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts',
+        {
+          method: 'POST',
+          body: validPayload(),
+          idempotencyKey: IDEMPOTENCY_KEY,
+        },
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_TRIP_NOT_PUBLISHED');
+      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(0);
+    });
+
+    it('un viaje publicado conserva el flujo existente hacia el RPC (TRIP-PUB-001)', async () => {
+      harness.push('trips', {
+        data: { id: TRIP_ID, is_published: true },
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts',
+        {
+          method: 'POST',
+          body: validPayload(),
+          idempotencyKey: IDEMPOTENCY_KEY,
+        },
+      );
+
+      expect(status).toBe(201);
+      expect(body.attempt_id).toBe(ATTEMPT_ID);
+      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(1);
+    });
+
+    it('el RPC rechaza el viaje despublicado en su transacción, sin crear checkout_attempt ni tocar asientos (TRIP-PUB-001.2)', async () => {
+      // Simula la carrera: el pre-chequeo ve el viaje PUBLICADO y deja pasar,
+      // pero la despublicación se concreta ANTES de que la RPC fije la fila
+      // del viaje con FOR UPDATE. En el mundo real quien rechaza es el SQL de
+      // la RPC (migración 096); aquí se reproduce devolviendo ese RAISE.
+      harness.push('trips', {
+        data: { id: TRIP_ID, is_published: true },
+        error: null,
+      });
+      harness.pushRpc(RPC_CREATE, {
+        data: null,
+        error: {
+          message:
+            'ERR_TRIP_NOT_PUBLISHED: Trip is not published in the Marketplace',
+        },
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts',
+        {
+          method: 'POST',
+          body: validPayload(),
+          idempotencyKey: IDEMPOTENCY_KEY,
+        },
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('CHECKOUT_TRIP_NOT_PUBLISHED');
+      expect(body.error.message).not.toContain('ERR_');
+      // La validación corrió DENTRO del RPC (el llamado devuelve error), no
+      // en el pre-chequeo de TypeScript: por eso se invocó exactamente una.
+      expect(rpcCallsFor(RPC_CREATE)).toHaveLength(1);
+      // Ni intento nuevo ni asientos consumidos: la RPC aborta antes de sus
+      // escrituras y este endpoint no escribe esas tablas por su cuenta.
+      const tables = harness.chains().map((chain) => chain.table);
+      expect(tables).not.toContain('checkout_attempts');
+      expect(tables).not.toContain('seats');
+      const writes = harness
+        .chains()
+        .filter((chain) =>
+          ['checkout_attempts', 'seats'].includes(chain.table),
+        )
+        .filter((chain) =>
+          chain.calls.some(
+            (call) =>
+              call.method === 'insert' ||
+              call.method === 'update' ||
+              call.method === 'upsert' ||
+              call.method === 'delete',
+          ),
+        );
+      expect(writes).toHaveLength(0);
+    });
+
     it('deriva customer_id de la sesión e ignora autoridades del cliente', async () => {
       const { status } = await requestJson(
         port,
@@ -692,6 +791,9 @@ describe('API pública de checkout (MKT-007)', () => {
         ['ERR_AGENCY_NOT_ASSIGNED: no offer', 404, 'CHECKOUT_AGENCY_NOT_ASSIGNED'],
         ['ERR_TRIP_DEPARTED: departed', 409, 'CHECKOUT_TRIP_DEPARTED'],
         ['ERR_TRIP_NOT_ACTIVE: inactive', 409, 'CHECKOUT_TRIP_NOT_ACTIVE'],
+        // TRIP-PUB-001.2 (096): la validación vive en el SQL de la RPC; aquí
+        // se prueba que ese RAISE se traduce al mismo 409 del pre-chequeo.
+        ['ERR_TRIP_NOT_PUBLISHED: not published', 409, 'CHECKOUT_TRIP_NOT_PUBLISHED'],
         ['ERR_PASSENGER_MISMATCH: mismatch', 400, 'CHECKOUT_PASSENGER_MISMATCH'],
       ];
 
@@ -1055,6 +1157,28 @@ describe('API pública de checkout (MKT-007)', () => {
       expect(args.p_bank_origin).toBe('Banco de Venezuela');
       // La fecha se normaliza a ISO-8601 antes de llegar al RPC.
       expect(args.p_payment_datetime).toBe('2020-01-01T10:00:00.000Z');
+    });
+
+    it('reenviar el comprobante de un intento existente sigue permitido tras despublicar el viaje (TRIP-PUB-001.2)', async () => {
+      // La validación de 096 afecta SOLO a la creación de intentos nuevos.
+      // El flujo de comprobante no vuelve a mirar trips: por eso ninguna
+      // cadena de esta petición consulta esa tabla, ni siquiera si el viaje
+      // quedó oculto del Marketplace (verify/reintento siguen abiertos).
+      harness.push('checkout_attempts', {
+        data: readyAttemptRow(),
+        error: null,
+      });
+      harness.pushRpc(RPC_PROOF, submittedProof());
+
+      const { status } = await postProof(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(201);
+      expect(rpcCallsFor(RPC_PROOF)).toHaveLength(1);
+      const tables = harness.chains().map((chain) => chain.table);
+      expect(tables).not.toContain('trips');
+      expect(tables).not.toContain('seats');
     });
 
     it('devuelve 200 cuando el envío es idempotente', async () => {

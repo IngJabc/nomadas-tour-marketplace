@@ -36,6 +36,10 @@ router.get('/', async (_req, res, next) => {
         'id, departure_time, capacity, vehicle_type, status, seat_price, routes(origin, destination), trip_agencies(agency_id, agencies(id, name, status)), seats(status)',
       )
       .eq('status', 'active')
+      // TRIP-PUB-001 (095): solo viajes publicados en el Marketplace.
+      // is_published es independiente de status (operativo, lo gestiona
+      // Tour): ocultar un viaje nunca cambia su estado operativo.
+      .eq('is_published', true)
       .gte('departure_time', new Date().toISOString())
       .order('departure_time', { ascending: true })
       .limit(100);
@@ -98,6 +102,9 @@ router.get('/:id', async (req, res, next) => {
       )
       .eq('id', id)
       .eq('status', 'active')
+      // TRIP-PUB-001 (095): el detalle responde 404 TRIP_NOT_FOUND tambien
+      // para viajes no publicados (acceso directo por UUID incluido).
+      .eq('is_published', true)
       .maybeSingle();
 
     if (error) {

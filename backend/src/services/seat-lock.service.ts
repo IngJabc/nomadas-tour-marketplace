@@ -101,7 +101,7 @@ export class SeatLockService {
   ): Promise<LockSeatsResult> {
     const { data: trip, error: tripError } = await supabaseAdmin
       .from('trips')
-      .select('id, status, capacity')
+      .select('id, status, capacity, is_published')
       .eq('id', tripId)
       .maybeSingle();
 
@@ -113,6 +113,13 @@ export class SeatLockService {
     }
     if (trip.status !== 'active') {
       throw new AppError('Este viaje ya no está disponible', 409, 'TRIP_NOT_ACTIVE');
+    }
+    // TRIP-PUB-001 (095): viaje oculto del Marketplace -> sin nuevos locks.
+    // Es un chequeo de VISIBILIDAD, no operativo: nunca mira ni cambia
+    // trips.status. `=== false` es estricto (columna NOT NULL en 095) para
+    // que un row sin el campo pase la validación operativa existente.
+    if (trip.is_published === false) {
+      throw new AppError('Este viaje ya no está disponible', 409, 'TRIP_NOT_PUBLISHED');
     }
     if (seatIds.length > (trip.capacity ?? 0)) {
       throw new ValidationError('No puedes bloquear más asientos que la capacidad del viaje');

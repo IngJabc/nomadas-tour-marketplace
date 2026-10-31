@@ -434,6 +434,16 @@ function mapRpcError(error: { message: string }): AppError {
       return checkoutError('Viaje no encontrado', 404, 'CHECKOUT_TRIP_NOT_FOUND');
     case 'ERR_TRIP_NOT_ACTIVE':
       return checkoutError('Este viaje ya no está disponible', 409, 'CHECKOUT_TRIP_NOT_ACTIVE');
+    // TRIP-PUB-001.2 (096): la validación vive DENTRO de la RPC, tras el
+    // FOR UPDATE de la fila del viaje. Este mapeo convierte ese RAISE en el
+    // mismo 409 que el pre-chequeo del backend, de modo que una carrera de
+    // despublicación entre el pre-chequeo y el RPC también responda 409.
+    case 'ERR_TRIP_NOT_PUBLISHED':
+      return checkoutError(
+        'Este viaje ya no está disponible',
+        409,
+        'CHECKOUT_TRIP_NOT_PUBLISHED',
+      );
     case 'ERR_TRIP_DEPARTED':
       return checkoutError(
         'El viaje ya partió. No se puede iniciar un checkout',
@@ -596,6 +606,40 @@ export async function createCheckoutAttempt(
     seat_ids: input.seat_ids,
     passengers: input.passengers,
   });
+
+  // TRIP-PUB-001 / .2 (095 + 096): el viaje debe estar publicado en el
+  // Marketplace. Este pre-chequeo corre AQUÍ, en el servidor y antes de
+  // invocar el RPC, para devolver un 409 rápido sin gastar la transacción:
+  // una llamada directa al endpoint no lo esquiva. Si el viaje no existe se
+  // deja pasar al RPC para conservar intacto su contrato 404
+  // CHECKOUT_TRIP_NOT_FOUND.
+  // La GARANTÍA de integridad ya NO vive aquí (esta lectura vía PostgREST
+  // no es atómica con la escritura): vive en el RPC create_checkout_attempt
+  // (migración 096), que lee is_published con FOR UPDATE sobre la fila del
+  // viaje y rechaza con ERR_TRIP_NOT_PUBLISHED dentro de su propia
+  // transacción. Si una despublicación concurrente se intercala entre este
+  // pre-chequeo y el RPC, el mapeo de mapRpcError convierte ese RAISE en el
+  // mismo 409 CHECKOUT_TRIP_NOT_PUBLISHED.
+  const { data: tripRow, error: tripError } = await supabaseAdmin
+    .from('trips')
+    .select('id, is_published')
+    .eq('id', data.trip_id)
+    .maybeSingle();
+
+  if (tripError) {
+    throw checkoutError(
+      'No se pudo iniciar la compra. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+  if (tripRow && tripRow.is_published === false) {
+    throw checkoutError(
+      'Este viaje ya no está disponible',
+      409,
+      'CHECKOUT_TRIP_NOT_PUBLISHED',
+    );
+  }
 
   const { data: result, error } = (await callRpc('create_checkout_attempt', {
     p_trip_id: data.trip_id,

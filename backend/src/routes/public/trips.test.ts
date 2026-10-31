@@ -508,6 +508,25 @@ describe('GET /api/public/trips/:id (MKT-003)', () => {
     expect(supabaseMock.from).toHaveBeenCalledTimes(1);
   });
 
+  it('excluye viajes no publicados del detalle: 404 TRIP_NOT_FOUND también por UUID directo (TRIP-PUB-001)', async () => {
+    // La BD descarta el viaje con is_published=false en la propia consulta
+    // (como con status!='active'), y el endpoint responde el mismo 404
+    // uniforme. Aquí se blinda que la cadena del detalle lleve el filtro.
+    const tripsChain = queryChain({ data: null, error: null });
+    supabaseMock.from.mockReturnValueOnce(tripsChain);
+
+    const port = await startServer();
+    const res = await fetch(`http://127.0.0.1:${port}/api/public/trips/${TRIP_ID}`);
+    const body = (await res.json()) as { error?: { code?: string } };
+
+    expect(res.status).toBe(404);
+    expect(body.error?.code).toBe('TRIP_NOT_FOUND');
+    expect(tripsChain.eq).toHaveBeenCalledWith('id', TRIP_ID);
+    expect(tripsChain.eq).toHaveBeenCalledWith('status', 'active');
+    expect(tripsChain.eq).toHaveBeenCalledWith('is_published', true);
+    expect(supabaseMock.from).toHaveBeenCalledTimes(1);
+  });
+
   it('responde 500 TRIP_QUERY_ERROR cuando la consulta del viaje falla', async () => {
     givenQueries({ data: null, error: { message: 'boom' } });
 
@@ -605,6 +624,8 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(body.trips[0].agencies).toEqual([]);
     // Nunca lista viajes cuya salida ya pasó.
     expect(listChain.eq).toHaveBeenCalledWith('status', 'active');
+    // TRIP-PUB-001 (095): el catálogo excluye viajes no publicados.
+    expect(listChain.eq).toHaveBeenCalledWith('is_published', true);
     expect(listChain.select).toHaveBeenCalledWith(
       expect.stringContaining('seat_price'),
     );
@@ -615,6 +636,33 @@ describe('GET /api/public/trips (catálogo)', () => {
     expect(listChain.order).toHaveBeenCalledWith('departure_time', {
       ascending: true,
     });
+  });
+
+  it('excluye viajes no publicados: solo pide filas con is_published = true (TRIP-PUB-001)', async () => {
+    // El filtrado real lo hace SQL (PostgREST). Aquí se blinda que la
+    // cadena del catálogo lleve el filtro; un viaje con status='active' pero
+    // is_published=false nunca llega en `data` (como cualquier viaje que la BD
+    // descarta), y el endpoint responde la lista resultante vacía.
+    const listChain = queryChain({ data: [], error: null });
+    supabaseMock.from.mockReturnValueOnce(listChain);
+
+    server = await new Promise<Server>((resolve, reject) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      s.once('error', reject);
+    });
+    const port = (server.address() as AddressInfo).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/public/trips`);
+    const body = (await res.json()) as Record<string, any>;
+
+    expect(res.status).toBe(200);
+    expect(body.trips).toEqual([]);
+    expect(listChain.eq).toHaveBeenCalledWith('status', 'active');
+    expect(listChain.eq).toHaveBeenCalledWith('is_published', true);
+    expect(listChain.gte).toHaveBeenCalledWith(
+      'departure_time',
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    );
   });
 
   it('devuelve seat_price null cuando el viaje no tiene precio', async () => {

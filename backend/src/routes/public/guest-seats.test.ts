@@ -497,6 +497,25 @@ describe('POST /api/public/seats/lock-guest', () => {
     expect(body.error.code).toBe('SEAT_LOCKED');
   });
 
+  it('responde 409 TRIP_NOT_PUBLISHED cuando el viaje esta activo pero no publicado (TRIP-PUB-001)', async () => {
+    const session = guestSession();
+    harness.push('guest_sessions', { data: session, error: null });
+    harness.push('trips', {
+      data: { id: TRIP_ID, status: 'active', capacity: 31, is_published: false },
+      error: null,
+    });
+
+    const { status, body } = await postGuest(
+      port,
+      '/api/public/seats/lock-guest',
+      { trip_id: TRIP_ID, seat_ids: [SEAT_A1] },
+      cookieHeader(TRIP_ID, 'c'.repeat(43)),
+    );
+
+    expect(status).toBe(409);
+    expect(body.error.code).toBe('TRIP_NOT_PUBLISHED');
+  });
+
   it('rechaza una sesion expirada y limpia la cookie', async () => {
     const expired = guestSession({
       expires_at: new Date(Date.now() - 1_000).toISOString(),
