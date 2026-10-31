@@ -24,6 +24,11 @@ const COPY_ERROR =
  * presentación (defensa en profundidad, sin duplicar la consulta), se
  * descarta lo no elegible y se toman los primeros 4. Si hay menos de cuatro,
  * se muestran los que haya. Nunca se completa con datos ficticios.
+ *
+ * Disponibilidad (LND-001.1): la ausencia de `available_seats` (null o
+ * campo inexistente) se interpreta como 0 —agotado—; la capacidad total
+ * (`capacity`) NUNCA sustituye la disponibilidad real, porque podría
+ * presentar un viaje agotado como disponible.
  */
 function seleccionarDestacados(trips: PublicTrip[]): PublicTrip[] {
   return trips
@@ -31,7 +36,7 @@ function seleccionarDestacados(trips: PublicTrip[]): PublicTrip[] {
       (trip) =>
         trip.status === "active" &&
         isDepartureTimeInFuture(trip.departure_time) &&
-        (trip.available_seats ?? trip.capacity) > 0,
+        (trip.available_seats ?? 0) > 0,
     )
     .sort(
       (a, b) =>

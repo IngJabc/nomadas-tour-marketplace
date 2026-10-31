@@ -37,6 +37,13 @@ function makeTrip(overrides: Partial<PublicTrip> = {}): PublicTrip {
   };
 }
 
+/** Viaje con el campo available_seats ausente por completo (sin la clave). */
+function makeTripSinCampoDisponibilidad(): PublicTrip {
+  const trip = makeTrip({ capacity: 31 });
+  delete trip.available_seats;
+  return trip;
+}
+
 /** Nombres de ruta accesibles de las tarjetas, en orden del DOM. */
 function renderedRouteTitles(): string[] {
   return screen
@@ -228,5 +235,108 @@ describe("SeccionProximosViajes — LND", () => {
     });
     expect(ctas).toHaveLength(1);
     expect(ctas[0]).toHaveAttribute("href", "/trips");
+  });
+});
+
+describe("SeccionProximosViajes — disponibilidad (regresión LND-001.1)", () => {
+  it("excluye viajes con available_seats: null aunque capacity sea 31", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [makeTrip({ available_seats: null })],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    expect(
+      await screen.findByText("No hay viajes disponibles por ahora"),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    // La capacidad total jamás se muestra como disponibilidad.
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
+  });
+
+  it("excluye viajes con available_seats: undefined aunque capacity sea 31", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [makeTrip({ available_seats: undefined })],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    expect(
+      await screen.findByText("No hay viajes disponibles por ahora"),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
+  });
+
+  it("excluye viajes con el campo available_seats ausente por completo", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [makeTripSinCampoDisponibilidad()],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    expect(
+      await screen.findByText("No hay viajes disponibles por ahora"),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
+  });
+
+  it("excluye viajes con available_seats: 0 aunque capacity sea 31", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [makeTrip({ available_seats: 0 })],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    expect(
+      await screen.findByText("No hay viajes disponibles por ahora"),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
+  });
+
+  it("muestra la disponibilidad positiva con la cifra real, nunca la capacidad", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [makeTrip({ available_seats: 7, capacity: 31 })],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    expect(
+      await screen.findByText(/7 asientos disponibles/),
+    ).toBeInTheDocument();
+    // Badge superior y línea de detalle usan la cifra REAL (7), no 31.
+    expect(screen.getByText("7 asientos")).toBeInTheDocument();
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
+  });
+
+  it("con disponibilidad mixta solo renderiza viajes con cifra real", async () => {
+    mockedTrips.mockResolvedValue({
+      trips: [
+        makeTrip({
+          available_seats: null,
+          route: { origin: "Sin cifra origen", destination: "Sin cifra destino" },
+        }),
+        makeTrip({
+          available_seats: 5,
+          capacity: 31,
+          route: { origin: "Con cifra origen", destination: "Con cifra destino" },
+        }),
+      ],
+    });
+
+    render(<SeccionProximosViajes />);
+
+    const cards = await screen.findAllByRole("article");
+    expect(cards).toHaveLength(1);
+    expect(
+      screen.getByText("Con cifra origen → Con cifra destino"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/5 asientos disponibles/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("Sin cifra origen → Sin cifra destino"),
+    ).toBeNull();
+    expect(screen.queryByText(/31 asientos/)).toBeNull();
   });
 });

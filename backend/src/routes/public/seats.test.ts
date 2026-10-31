@@ -414,6 +414,39 @@ describe('POST /api/public/seats/lock (MKT-004)', () => {
     expect(body.error.code).toBe('TRIP_NOT_ACTIVE');
   });
 
+  it('responde 409 TRIP_NOT_PUBLISHED cuando el viaje esta activo pero no publicado (TRIP-PUB-001)', async () => {
+    harness.push('trips', {
+      data: { id: TRIP_ID, status: 'active', capacity: 31, is_published: false },
+      error: null,
+    });
+
+    const { status, body } = await postJson(port, '/api/public/seats/lock', {
+      trip_id: TRIP_ID,
+      seat_ids: [SEAT_A1],
+    });
+
+    expect(status).toBe(409);
+    expect(body.error.code).toBe('TRIP_NOT_PUBLISHED');
+  });
+
+  it('bloquea asientos de un viaje activo y publicado (TRIP-PUB-001)', async () => {
+    harness.push('trips', {
+      data: { id: TRIP_ID, status: 'active', capacity: 31, is_published: true },
+      error: null,
+    });
+    harness.push('seats', { data: [], error: null });
+    harness.push('seats', { data: [seatRow()], error: null });
+    harness.push('seats', { data: [{ id: SEAT_A1 }], error: null });
+
+    const { status, body } = await postJson(port, '/api/public/seats/lock', {
+      trip_id: TRIP_ID,
+      seat_ids: [SEAT_A1],
+    });
+
+    expect(status).toBe(200);
+    expect(body.locked).toBe(true);
+  });
+
   it('responde 404 TRIP_NOT_FOUND cuando el viaje no existe', async () => {
     harness.push('trips', { data: null, error: null });
 

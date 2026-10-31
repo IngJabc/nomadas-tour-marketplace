@@ -291,7 +291,7 @@ export default function ViajesPage() {
           >
             <h1 className="text-[28px] font-bold">Viajes disponibles</h1>
             <p className="mt-1 text-sm text-brand-muted">
-              Busca por origen, destino y fecha. El catálogo se conecta a la API pública.
+              Busca por origen, destino y fecha.
             </p>
           </motion.div>
 

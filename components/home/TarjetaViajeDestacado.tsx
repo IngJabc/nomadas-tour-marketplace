@@ -30,9 +30,11 @@ interface TarjetaViajeDestacadoProps {
  */
 export function TarjetaViajeDestacado({ trip }: TarjetaViajeDestacadoProps) {
   const agencies = trip.agencies ?? [];
-  // Disponibilidad REAL (status='available') con fallback documentado a la
-  // capacidad para respuestas antiguas sin el campo (ver lib/api.ts).
-  const available = trip.available_seats ?? trip.capacity;
+  // Disponibilidad REAL (status='available'). Si el endpoint no envía la
+  // cifra (null o campo ausente, p. ej. respuestas antiguas) se interpreta
+  // como 0: la capacidad total NUNCA sustituye la disponibilidad porque
+  // podría mostrar un viaje agotado como disponible (regresión LND-001.1).
+  const available = trip.available_seats ?? 0;
   const reservable = trip.seat_price !== null && agencies.length > 0;
 
   return (
