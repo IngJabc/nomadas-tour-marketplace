@@ -3,6 +3,7 @@ import app from './app.js';
 import { env } from './config/env.js';
 import { expireStaleGuestSessions } from './services/guest-session.service.js';
 import { runPeriodicCheckoutCleanup } from './services/checkout-cleanup.service.js';
+import { runReviewReconciliation } from './services/review.service.js';
 import { initSentryFromEnv } from './observability/init-from-env.js';
 import {
   captureException,
@@ -55,6 +56,21 @@ setInterval(async () => {
     captureException(err, {
       tags: { service: 'api', area: 'lock_cleanup' },
       fingerprint: fingerprintHttpError(500, 'LOCK_CLEANUP'),
+    });
+  }
+
+  // REV-001: reconciliation idempotente de invitaciones de reseña.
+  // Cubre ambos paths de completion del viaje (RPC y UPDATE directo del
+  // worker de Tour), eventos perdidos, caída del Marketplace y
+  // reintentos. `runReviewReconciliation` NUNCA lanza (devuelve null en
+  // fallo); el try/catch es una red adicional para no afectar el loop.
+  try {
+    await runReviewReconciliation();
+  } catch (err: any) {
+    console.error('[ReviewReconciliation] Loop error:', err.message);
+    captureException(err, {
+      tags: { service: 'api', area: 'review_reconciliation' },
+      fingerprint: fingerprintHttpError(500, 'REVIEW_RECONCILIATION'),
     });
   }
 }, 60_000);

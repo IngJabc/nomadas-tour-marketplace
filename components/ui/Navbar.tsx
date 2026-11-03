@@ -127,6 +127,7 @@ export function Navbar() {
         <nav aria-label="Principal" className="hidden items-center gap-6 sm:flex">
           {desktopLink("explorar", "/trips", "Explorar")}
           {isCustomer && desktopLink("reservas", "/account/purchases", "Mis reservas")}
+          {desktopLink("reviews", "/account/reviews", "Mis reseñas")}
           {desktopLink("ayuda", "/help", "Ayuda")}
           {signedIn ? (
             <motion.button
@@ -240,6 +241,10 @@ export function Navbar() {
               Ayuda
             </Link>
           </motion.div>
+            {/* Enlace a Mis reseñas (mobile) */}
+            <motion.div variants={NAV_LINK_MOTION} transition={{ duration: 0.18 }}>
+              <Link href="/account/reviews" className={mobileLinkClass}>Mis reseñas</Link>
+            </motion.div>
           <motion.div
             variants={NAV_LINK_MOTION}
             transition={{ duration: 0.18 }}

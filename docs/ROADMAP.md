@@ -39,7 +39,7 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | Cuenta de cliente (`/account`) | ⏳ Planificado (MKT-013) |
 | Migraciones marketplace (074–094) | ✅ Aplicadas (074–080 verificado en vivo 2026-10-06; 085–087 posterior; 088–094 tour) |
 | **Landing dinámico (4 viajes próximos)** | ⏳ Planificado (Fase 5, **LND**) |
-| **Sistema de reputación y calificaciones** | ⏳ Planificado (Fase 6, **REV/REP**) |
+| **Sistema de reputación y calificaciones** | ✅ Implementado REV (Fase 6, REV-001…006); ⏳ REP pendiente |
 | **Feedback del Marketplace** | ⏳ Planificado (Fase 7, **FDB**) |
 | **Atención al cliente por WhatsApp** | ⏳ Planificado (Fase 7, **SUP**) |
 | **Marco legal y cumplimiento** | ⏳ Planificado (Fase 8, **LEG**) |
@@ -47,9 +47,9 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
 Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 
-> **Ninguna de las iniciativas LND/REV/REP/FDB/SUP/LEG está implementada.**
-> Todo lo que sigue es planificación; nada debe marcarse como completado hasta
-> que exista código validado y desplegado.
+> **REV está implementado (código + pruebas, 2026-11-01; migraciones 097–099
+> escritas, SIN aplicar).** LND, REP, FDB, SUP y LEG siguen sin implementarse.
+> Nada se marca completado hasta existir código validado y desplegado.
 
 ---
 
@@ -141,11 +141,15 @@ FASE 5 — Experiencia pública                 ⏳ Planificada (2026-10-30)
   LND-002  Estados de carga, error y ausencia de viajes + CTA catálogo
   LND-003  Tarjetas preparadas para imagen/descripción futuros
 
-FASE 6 — Confianza y reputación              ⏳ Planificada (2026-10-30)
-  REV-001  Definición de "viaje completado" elegible (estado verificable)
-  REV-002  Diseño de datos de calificaciones (viaje y agencia, independientes)
-  REV-003  MVP de evaluación: estrellas 1–5 + comentario opcional
-  REV-004  Reglas de integridad y moderación (backend + DB)
+FASE 6 — Confianza y reputación              ✅ REV implementado (2026-11-01)
+  REV-001  ✅ Viaje completado elegible: trips.completed_at (trigger 097,
+           ventana 48 h desde completed_at; nunca por hora de salida)
+  REV-002  ✅ Datos: trip_reviews + agency_reviews separadas, 1 por
+           reserva y entidad (UNIQUE, 099)
+  REV-003  ✅ MVP: estrellas 1–5 + comentario opcional, envío ATÓMICO
+           (RPC submit_reservation_reviews)
+  REV-004  ✅ Integridad + moderación: RLS, RPCs service_role,
+           audit_log (review.created / review.moderated, 099)
   REP-001  Perfil público de agencia
   REP-002  Ranking de confiabilidad (algoritmo: decisión pendiente)
 
@@ -281,6 +285,10 @@ robustas.
 **Problema que resuelve:** No hay forma de medir la calidad percibida del
 servicio ni de generar confianza entre clientes y agencias.
 
+**Estado:** ✅ **REV-001…REV-006 implementados** (2026-11-01, código +
+pruebas; migraciones `097`–`099` escritas en `../nomadas-tour/supabase/`,
+**SIN aplicar** a ninguna base de datos). REP sigue pendiente.
+
 ### 3.1 Calificación del viaje (MVP)
 - Puntuación 1–5 estrellas.
 - Comentario opcional.
@@ -344,18 +352,45 @@ servicio ni de generar confianza entre clientes y agencias.
 - Sin datos suficientes, no se muestran rankings ni distintivos.
 
 **Tareas de implementación:**
-- **REV-001** — Definir e implementar flag/estado de "viaje completado" elegible (decidir con negocio).
-- **REV-002** — Diseñar esquema: `trip_reviews`, `agency_reviews` con constraints únicos.
-- **REV-003** — Endpoints backend: crear leer/moderar reseñas; rate limiting.
-- **REV-004** — Reglas de integridad en DB (constraints, triggers) + `audit_log`.
-- **REV-005** — UI de evaluación (estrellas, comentario) en flujo post-viaje.
-- **REV-006** — Panel de moderación superadmin (básico).
+- **REV-001** ✅ — Viaje completado elegible: columna `trips.completed_at`
+  (migración `097`, trigger `BEFORE UPDATE` que la estampa en TODOS los
+  paths de completado y la preserva; sin backfill). Ventana de 48 h desde
+  `completed_at`, nunca desde `invited_at` ni por hora de salida pasada.
+- **REV-002** ✅ — Esquema: `trip_reviews` y `agency_reviews` separadas
+  (migración `099`), `UNIQUE(reservation_id)` por tabla, CHECK rating 1–5
+  y comentario ≤ 2000; `review_requests` única por reserva (`098`).
+- **REV-003** ✅ — Envío atómico de las DOS reseñas (viaje + agencia) en
+  UNA operación: RPC `submit_reservation_reviews` (SECURITY DEFINER,
+  service_role). Backend: `GET/POST /api/public/reviews`,
+  `GET /api/public/reviews/reservations/:id`, notificaciones del cliente.
+- **REV-004** ✅ — Integridad en DB + `audit_log` (`review.created`,
+  `review.moderated`; entidades `trip_review`/`agency_review`), RLS
+  (cliente lee lo suyo; público solo `visible`; escritura solo vía RPC),
+  moderación `moderate_review` (hide/reject/restore, actor superadmin
+  validado contra `public.users`).
+- **REV-005** ✅ — UI: `/account/reviews` (lista de invitaciones con
+  pendiente/enviada/expirada) y `/account/reviews/[reservationId]`
+  (formulario con dos estrellas 1–5 + comentarios, UNA sola acción);
+  CTA "Calificar" integrado en `/account/purchases`. Invitación por
+  reconciliación idempotente (`generate_review_requests`, cada 60 s) +
+  notificación interna `customer_notifications` (sin email).
+- **REV-006** ✅ — Moderación superadmin: `GET /api/admin/reviews` +
+  `PATCH /api/admin/reviews/:reviewType/:reviewId` (hide/reject/restore),
+  cada acción auditada. UI del panel queda para MKT-012 (`/admin`).
 
 **Pruebas necesarias:**
-- Backend: unicidad, autoría, estado del viaje, rate limit, autoevaluación.
-- Frontend: formulario, bloqueo de doble envío, feedback de éxito/error.
+- Backend: ✅ unicidad, autoría, estado del viaje, ventana de 48 h,
+  idempotencia, moderación y contrato de migraciones
+  (`review.service.test.ts` 26, `routes/public/reviews.test.ts` +
+  `routes/admin/reviews.test.ts` 32, `097-099-reviews-contract.test.ts`
+  26 — suite backend completa: 415 ✅).
+- Frontend: ✅ formulario (doble calificación obligatoria), bloqueo de
+  doble envío, feedback de éxito/error, estados de sesión/rol/404
+  (`app/account/reviews/__tests__` — 17 ✅).
 
-**Estado actual:** ⏳ Planificado.
+**Estado actual:** ✅ Implementado (2026-11-01). Migraciones `097`–`099`
+escritas SIN aplicar; sin deploy; sin commit. UI de moderación pendiente
+del panel `/admin` (MKT-012); rankings/distintivos = REP.
 
 **Decisiones pendientes:**
 - [PENDIENTE] Definición exacta de "viaje completado" (campo/estado/lógica).
