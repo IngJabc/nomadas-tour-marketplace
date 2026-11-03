@@ -8,6 +8,7 @@ import {
   Building2,
   CalendarDays,
   LogIn,
+  MessageSquareHeart,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -17,8 +18,10 @@ import {
 } from 'lucide-react';
 import {
   checkoutApi,
+  reviewsApi,
   type PurchaseEstado,
   type PurchaseItemDto,
+  type ReviewItemState,
 } from '@/lib/api';
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
 import { compareSeatCodes, sortSeatCodes } from '@/lib/booking/seat-code';
@@ -50,6 +53,7 @@ const REFRESH_DEBOUNCE_MS = 500;
 const LOGIN_PATH = '/login?redirect=%2Faccount%2Fpurchases';
 const CATALOG_HREF = '/trips';
 const COMPRAS_PATH = '/account/purchases';
+const REVIEWS_PATH = '/account/reviews';
 
 /**
  * Una compra solo habilita su boleto cuando el backend la confirmó como
@@ -60,11 +64,8 @@ const COMPRAS_PATH = '/account/purchases';
  * el QR: este flag es solo para no mostrar un enlace que fallaría.
  */
 function esBoletoDisponible(item: PurchaseItemDto): boolean {
-  return (
-    item.estado === 'reserva_confirmada' &&
-    item.reserva !== null &&
-    item.reserva.ticket_code !== null
-  );
+  // El boleto está disponible siempre que exista un código de boleto, sin importar el estado de la compra.
+  return item.reserva?.ticket_code != null;
 }
 
 /**
@@ -283,6 +284,15 @@ export default function MisComprasPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
+  /**
+   * REV-001: estado de reseña por reserva (reservation_id → pending/
+   * submitted/expired). Cargado en paralelo al historial; un fallo solo
+   * oculta el CTA de calificar (la página /account/reviews maneja sus
+   * propios errores).
+   */
+  const [reviewStates, setReviewStates] = useState<
+    ReadonlyMap<string, ReviewItemState> | null
+  >(null);
   /** Modal de pasajeros: el intento cuya lista está abierta (o null). */
   const [passengersModalFor, setPassengersModalFor] =
     useState<PurchaseItemDto | null>(null);
@@ -403,6 +413,36 @@ export default function MisComprasPage() {
     setSessionExpired(false);
     void loadHistory();
   }, [authLoading, customerId, role, loadHistory]);
+
+  /**
+   * REV-001: estados de reseña del cliente. Se traen UNA vez por
+   * identidad (cambian poco: pending → submitted/expired); el CTA
+   * "Calificar" en cada compra se muestra solo si la reserva tiene una
+   * invitación pendiente. Un fallo es silencioso: sin mapa no hay CTA.
+   */
+  useEffect(() => {
+    if (authLoading || !customerId || role !== 'customer') {
+      setReviewStates(null);
+      return undefined;
+    }
+    let cancelled = false;
+    reviewsApi
+      .list()
+      .then((result) => {
+        if (cancelled) return;
+        const map = new Map<string, ReviewItemState>();
+        for (const review of result.items) {
+          map.set(review.reservation_id, review.state);
+        }
+        setReviewStates(map);
+      })
+      .catch(() => {
+        if (!cancelled) setReviewStates(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, customerId, role]);
 
   // Botón "Subir": aparece cuando hay contenido por encima del viewport.
   useEffect(() => {
@@ -972,6 +1012,24 @@ export default function MisComprasPage() {
                         )}
                       </div>
                     )}
+
+                    {/* REV-001: CTA de reseña pendiente (la invitación vive
+                        en /account/reviews; la URL no autoriza — el backend
+                        revalida elegibilidad al abrir el formulario). */}
+                    {item.reserva &&
+                      reviewStates?.get(item.reserva.id) === 'pending' && (
+                        <Link
+                          href={`${REVIEWS_PATH}/${item.reserva.id}`}
+                          className="mt-3 inline-flex items-center gap-1.5 rounded-[10px] bg-brand-cyan px-4 py-2 text-xs font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                        >
+                          <MessageSquareHeart
+                            size={16}
+                            strokeWidth={1.75}
+                            aria-hidden
+                          />
+                          Calificar viaje y agencia
+                        </Link>
+                      )}
 
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
                       <span className="text-[11px] font-medium uppercase text-brand-muted">

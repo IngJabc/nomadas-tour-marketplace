@@ -14,8 +14,11 @@ import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort } from '@/lib/timezone';
 import {
   checkoutApi,
+  reviewsApi,
   type PurchaseHistoryView,
   type PurchaseItemDto,
+  type ReviewItemDto,
+  type ReviewItemState,
 } from '@/lib/api';
 import { subscribeToPurchaseHistory } from '@/lib/realtime/subscriptions';
 import MisComprasPage from '../page';
@@ -43,6 +46,13 @@ vi.mock('@/components/auth/AuthProvider', () => ({
 
 vi.mock('@/lib/api', () => ({
   checkoutApi: { listPurchases: vi.fn() },
+  // REV-001: la página consulta los estados de reseña en paralelo. Por
+  // defecto, sin invitaciones: la mayoría de tests de este archivo no
+  // interactúan con el CTA de calificar; el bloque "CTA de reseña
+  // (REV-001)" al final usa mockResolvedValueOnce/mockRejectedValueOnce
+  // para no contaminar este default (`clearAllMocks` no borra
+  // implementaciones, así que este default persiste).
+  reviewsApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
 }));
 
 vi.mock('@/lib/realtime/subscriptions', () => realtime);
@@ -1434,5 +1444,106 @@ describe('MisComprasPage — filtros de búsqueda del cliente', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── REV-001 · CTA de reseña en Mis compras ───────────────────────────────────
+
+/** Item de reseña mínimo pero completo (el DTO exige todos los campos). */
+function reviewItem(
+  reservationId: string,
+  state: ReviewItemState,
+): ReviewItemDto {
+  return {
+    reservation_id: reservationId,
+    state,
+    trip: {
+      id: 'trip-1',
+      origin: 'Barquisimeto',
+      destination: 'Caracas',
+      departure_time: DEPARTURE,
+      completed_at: '2026-10-10T10:00:00.000Z',
+    },
+    agency: { id: 'ag-1', name: 'Bianchi travels' },
+    expires_at: '2026-10-12T10:00:00.000Z',
+    window_expired: state === 'expired',
+    trip_review: null,
+    agency_review: null,
+    created_at: CREATED_AT,
+  };
+}
+
+/** Compra con reserva nacida (el CTA de reseña exige item.reserva). */
+function confirmedWithReserva(
+  attemptId: string,
+  reservaId: string,
+): PurchaseItemDto {
+  return makeItem({
+    attempt_id: attemptId,
+    estado: 'reserva_confirmada',
+    status: 'verified',
+    reserva: {
+      id: reservaId,
+      status: 'reserved',
+      payment_status: 'fully_paid',
+      ticket_code: 'ABCD1234',
+      created_at: '2026-10-15T10:05:00.000Z',
+    },
+  });
+}
+
+describe('MisComprasPage — CTA de reseña (REV-001)', () => {
+  it('muestra "Calificar viaje y agencia" SOLO en la reserva con invitación pendiente', async () => {
+    // mockResolvedValueOnce: el default del factory ({ items: [] }) sigue
+    // intacto para el resto de tests del archivo.
+    vi.mocked(reviewsApi.list).mockResolvedValueOnce({
+      items: [reviewItem('res-1', 'pending')],
+    });
+    listPurchases.mockResolvedValue(
+      view([
+        confirmedWithReserva('att-pend', 'res-1'),
+        confirmedWithReserva('att-lista', 'res-2'),
+      ]),
+    );
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findAllByText('Reserva confirmada')).toHaveLength(2);
+    const links = screen.getAllByRole('link', {
+      name: /Calificar viaje y agencia/,
+    });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/account/reviews/res-1');
+  });
+
+  it('sin CTA cuando la invitación no está pendiente (expired / submitted)', async () => {
+    vi.mocked(reviewsApi.list).mockResolvedValueOnce({
+      items: [reviewItem('res-1', 'expired'), reviewItem('res-2', 'submitted')],
+    });
+    listPurchases.mockResolvedValue(
+      view([
+        confirmedWithReserva('att-exp', 'res-1'),
+        confirmedWithReserva('att-env', 'res-2'),
+      ]),
+    );
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findAllByText('Reserva confirmada')).toHaveLength(2);
+    expect(
+      screen.queryByRole('link', { name: /Calificar viaje y agencia/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('un fallo al cargar los estados de reseña no rompe la página ni ofrece CTA', async () => {
+    vi.mocked(reviewsApi.list).mockRejectedValueOnce(new Error('boom'));
+    listPurchases.mockResolvedValue(view([confirmedWithReserva('att-1', 'res-1')]));
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByText('Barquisimeto → Caracas')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Calificar viaje y agencia/ }),
+    ).not.toBeInTheDocument();
   });
 });

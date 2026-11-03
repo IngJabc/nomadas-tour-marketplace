@@ -235,9 +235,10 @@ existentes que las nuevas iniciativas deben respetar o reutilizar.
 | Iniciativa | Dependencia en tour | Tipo | Notas |
 | ---------- | ------------------- | ---- | ----- |
 | LND | — (endpoint `GET /api/public/trips` es de este repo) | — | El catálogo público ya filtra `status='active'`, salida futura y expone `available_seats`; no requiere cambios de tour |
-| REV | `trips.status='completed'` — auto-complete T+3 (`completeExpiredTrips` de `tour/backend/src/services/trip.service.ts`, vía RPC `complete_trip` de `057_trip_events_rpc.sql`, WKR-007) | Read-only | Único estado verificable de "viaje completado"; **NO** asumir completado por hora de salida pasada |
-| REV | `audit_log` (`065`, ampliado `079`/`086`) | Read-only | Trazabilidad de moderación y cambios de reseñas |
-| REV / REP / FDB / LEG | Historia única de migraciones (`../nomadas-tour/supabase/migrations/`, prefijo **095+**) | Escritura futura (fuera de esta etapa) | Tablas nuevas (`*_reviews`, `marketplace_feedback`, `legal_documents`/`legal_acceptances`) se escriben en la historia única del repo tour, siguiendo la regla de una sola historia |
+| REV | `trips.status='completed'` — auto-complete T+3 (`completeExpiredTrips` de `tour/backend/src/services/trip.service.ts`, vía RPC `complete_trip` de `057_trip_events_rpc.sql`, WKR-007) + **`trips.completed_at`** (migración `097`, REV-001, SIN aplicar) | Read-only + Escritura futura | Único estado verificable de "viaje completado"; **NO** asumir completado por hora de salida pasada. `completed_at` la estampa un trigger `BEFORE UPDATE` (cubre `set_trip_status`, `complete_trip` y el UPDATE directo del worker); la ventana de 48 h se mide desde ahí |
+| REV | `audit_log` (`065`, ampliado `079`/`086`/`099`) | Read-only | Trazabilidad de moderación y cambios de reseñas (`review.created`, `review.moderated`) |
+| REV | Historia única de migraciones: **`097_trip_completed_at`**, **`098_review_invitations`**, **`099_trip_agency_reviews`** (+ rollbacks en `supabase/rollbacks/`) | Escritura futura (fuera de esta etapa) | Escritas en `../nomadas-tour/supabase/migrations/`, **SIN aplicar** a ninguna BD. Siguiente prefijo libre tras REV-001: **100** |
+| REP / FDB / LEG | Historia única de migraciones (`../nomadas-tour/supabase/migrations/`, prefijo **100+** tras REV) | Escritura futura (fuera de esta etapa) | Tablas nuevas (`marketplace_feedback`, `legal_documents`/`legal_acceptances`, perfiles REP) se escriben en la historia única del repo tour, siguiendo la regla de una sola historia |
 | REP | `agencies` + `agency_settings` (`041`) + bucket `agency-logos` (`042`) | Read-only | Datos de identidad/branding del perfil público de agencia |
 | REP | `trip_agencies` (ofertas por viaje, `011`/`020`) | Read-only | Relación viaje ↔ agencia comercializadora (modelo dual) |
 | SUP | `agency_contacts` (`091`, canal `call|whatsapp`) | Patrón | SUP es canal de la **plataforma**, no de agencias; no duplicar el modelo de contactos de agencia |
@@ -245,3 +246,145 @@ existentes que las nuevas iniciativas deben respetar o reutilizar.
 
 **Regla inmutable:** todo cambio que toque tablas compartidas debe pasar por
 la revisión de impacto sobre tour (§8 regla 1) antes de escribirse.
+
+---
+
+## 11. REV-001 — Reseñas de viaje y agencia (2026-11-01, auditoría 2026-11-02)
+
+Implementación completa del MVP de reseñas (ROADMAP Fase 6, REV-001…006).
+Backend, frontend y tests en este repo; **migraciones escritas en la historia
+única de tour, SIN aplicar** a ninguna base de datos. Sin deploy, sin commit.
+Tras la primera validación corrió una **ronda de auditoría independiente**
+(2 subagentes read-only, marketplace y SQL) y sus correcciones; ver §11.7.
+
+### 11.1 Migraciones (tour, `supabase/migrations/` + `supabase/rollbacks/`)
+
+| Archivo | Contenido |
+| ------- | --------- |
+| `097_trip_completed_at` | Columna `trips.completed_at TIMESTAMPTZ NULL` + trigger `BEFORE UPDATE trg_trips_set_completed_at` que la estampa **solo** en la transición a `status='completed'` (cubre `set_trip_status`, `complete_trip`, `archive_trip` y el UPDATE directo del worker), la **preserva en `archived`** (estado terminal: `057 archive_trip` permite `completed → archived`; archivar jamás borra la ventana) y la limpia solo al **reabrir** (`→ active/cancelled`). **Sin backfill** de viajes históricos (fail-closed si es NULL). |
+| `098_review_invitations` | `review_requests` (**UNICA por `reservation_id`** → una invitación por reserva, no dos), `customer_notifications` (notificación interna, sin email/WhatsApp) y RPC `generate_review_requests()` (SECURITY DEFINER, service_role): idempotente (`ON CONFLICT DO NOTHING`), lote `LIMIT 500`, expira pendientes vencidas; `expires_at = trips.completed_at + 48 h` **nunca** `invited_at + 48 h`. Lista inclusiva de estados: `reserved/confirmed/completed/boarded/**partial**` (excluye `locked/cancelled`); **no invita a reservas ya reseñadas** (el filtro vive en una sentencia plpgsql **separada** bajo `IF to_regclass('public.trip_reviews')` con `CONTINUE` — lazy-prepare: un sublink inline se analiza siempre y abortaría el lote con "relation trip_reviews does not exist" si 099 aún no está aplicada); los fallos por reserva se **cuentan y loguean** (`RAISE LOG` + contador `failed` en el JSONB), nunca en silencio. Permisos: `REVOKE UPDATE` total a `authenticated` en `customer_notifications` + **`GRANT UPDATE (read_at)` a nivel de columna** (el cliente solo marca leída su fila; RLS no restringe columnas). Crea también los enablers `UNIQUE(id, trip_id/…)` en `reservations` (coherencia por esquema) y el `action_url` interno `/account/reviews/{reservation_id}` (la URL **no** autoriza). |
+| `099_trip_agency_reviews` | `trip_reviews` + `agency_reviews` separadas (`UNIQUE(reservation_id)` cada una, CHECK rating 1–5, comentario ≤ 2000 opcional), RPC **atómica** `submit_reservation_reviews` (valida ownership, `source='marketplace'`, reserva no `locked/cancelled`, viaje `completed` con `completed_at` presente y ventana viva; **idempotencia `already_submitted` ANTES de los chequeos de viaje/ventana** para que un reintento tardío no reciba un falso `WINDOW_EXPIRED`; lock `FOR UPDATE` + 2 inserts + invitación + 2 auditorías en UNA transacción) y RPC `moderate_review` (actor `superadmin` validado contra `public.users`, acciones `hide/reject/restore`, audita `review.moderated` en la misma transacción). `audit_log` ampliado **additivo** desde el estado VIVO de `091` (**31 acciones / 12 entidades**: guard y `ADD CONSTRAINT` incluyen `agency_payment_method.*` + `agency_contact.*` además de `review.created`/`review.moderated` y `trip_review`/`agency_review`) con guard `ERR_099_*` que exige merge manual ante migraciones posteriores. RLS: cliente lee lo suyo, público solo `visible`, escritura solo vía RPCs service_role. |
+
+Rollbacks equivalentes en `supabase/rollbacks/097…099*_rollback.sql`:
+`099` restaura los CHECK al estado vivo de **`091` (29 acciones / 10
+entidades)** quitando solo los valores de 099; ejecutar en **orden inverso
+`099 → 098 → 097`** (nota en el header del rollback de 098).
+
+### 11.2 Elegibilidad (reglas de negocio)
+
+- Solo el **cliente autenticado dueño** de la reserva
+  (`reservations.customer_id`); sin reseñas por pasajero.
+- Solo `reservations.source='marketplace'` (reservas internas de Tour
+  excluidas del MVP).
+- Estado elegible (lista inclusiva, espejo de 098/099):
+  `reserved`/`confirmed`/`completed`/`boarded`/`partial`; **excluye
+  `locked` y `cancelled`**. Reserva confirmada aunque luego se reembolse;
+  cancelada antes del viaje NO es elegible.
+- Viaje con `status='completed'` **y** `completed_at` presente; ventana
+  **exactamente 48 h desde `completed_at`** (constante `REVIEW_WINDOW_HOURS`
+  = 48, idéntica en SQL y TS; no es env var).
+- Una reseña de viaje + una de agencia por reserva, **obligatorias ambas y
+  enviadas juntas en UNA operación**. Ratings enteros 1–5; comentarios
+  opcionales. El cliente **no** puede editar ni eliminar (solo corrección
+  del superadmin). Visibles de inmediato salvo moderación.
+- Atribución de la agencia: `reservations.agency_id`.
+
+### 11.3 Reconciliación de invitaciones
+
+`runReviewReconciliation()` invoca `generate_review_requests()` cada 60 s
+desde el loop del backend (`backend/src/index.ts`, try/catch propio +
+Sentry `REVIEW_RECONCILIATION`). Cubre todos los paths de completado,
+eventos perdidos y caídas; **la generación retrasada NUNCA extiende la
+ventana** (expira contra `completed_at + 48 h` en SQL). Idempotente: una
+invitación por reserva.
+
+### 11.4 API y UI
+
+- **Backend** (`backend/src/services/review.service.ts` + rutas):
+  `GET /api/public/reviews` (lista), `GET|POST /api/public/reviews/reservations/:id`
+  (contexto revalidado / envío atómico), notificaciones
+  `GET …/notifications` + `PATCH …/notifications/:id/read`,
+  `GET /api/admin/reviews` + `PATCH /api/admin/reviews/:reviewType/:reviewId`
+  (moderación, superadmin). La URL de login regresa al usuario al formulario
+  exacto (`?redirect=`), pero **la URL no es token de autorización**: el
+  backend revalida elegibilidad en cada GET y en el envío.
+- **Frontend:** `/account/reviews` (pendiente/enviada/expirada + skeletons),
+  `/account/reviews/[reservationId]` (dos estrellas 1–5 + comentarios, UNA
+  acción, estados sesión/rol/404/expirado/y-enviado) y CTA "Calificar viaje
+  y agencia" en `/account/purchases`.
+
+### 11.5 Pruebas
+
+- `backend/src/services/review.service.test.ts` (39),
+  `routes/public/reviews.test.ts` + `routes/admin/reviews.test.ts` (32),
+  `db/__tests__/097-099-reviews-contract.test.ts` (27). Suite backend
+  completa: **429 ✅** (26 files).
+- `app/account/reviews/__tests__` (17 = 7 lista + 10 formulario) + CTA de
+  reseña en `app/account/purchases/__tests__` (3, dentro de sus 39). Suite
+  frontend: **404 ✅** (27 files).
+- Builds reales: `npm run build` raíz y en `backend/` ✅.
+
+### 11.6 Pendiente fuera de este cambio
+
+- Aplicar `097`–`099` en Supabase (revisión de impacto §8 regla 1 +
+  rollout; siguiente prefijo libre: **100**).
+- UI de moderación (panel `/admin`, MKT-012); rankings/distintivos (REP).
+
+### 11.7 Ronda de auditoría independiente y correcciones (2026-11-02)
+
+Dos auditorías **independientes del implementador** (subagentes `explore`
+solo-lectura, mismo modelo base que el implementador — disclosure en el
+reporte): una de marketplace (backend+frontend) y una de SQL (tour). Sus
+hallazgos se triagearon contra el código antes de corregir; se aplicó una
+única ronda de correcciones y una auditoría de verificación posterior.
+
+Correcciones aplicadas (las de mayor severidad):
+
+- **CRITICAL C1 (SQL)**: guards/`ADD CONSTRAINT`/`COMMENT` de `audit_log`
+  en `099` reconstruidos desde el estado vivo de `091` (31 acciones / 12
+  entidades); el `099` original solo contenía las 22 de `087` y **abortaría
+  al aplicarse**. Rollback `099` restaura `091` (29/10).
+- **HIGH H3 (SQL)**: trigger `097` ahora **preserva `completed_at` en
+  `archived`** (estado terminal) y lo limpia solo al reabrir.
+- **HIGH (marketplace)**: `composeReviewItem` ahora excluye de la lista las
+  reservas `locked/cancelled` y los viajes `completed` sin `completed_at`
+  (antes prometía un CTA "Calificar" que la RPC negaría); helper
+  `isReservationStatusEligible` compartido con `getReviewContext`.
+- **MEDIUM**: paginación global de `adminListReviews` con `range` +
+  `slice(offset)` + guard de `.in(col, [])` + error del subquery;
+  idempotencia antes de la ventana en `099` (M4); `REVOKE UPDATE` +
+  `GRANT UPDATE (read_at)` en `customer_notifications` (M5); `partial` en
+  la lista de `098` (M6); contador `failed` + `RAISE LOG` en `098` (M7);
+  sin coerción `Number()` en ratings y docstring veraz de Idempotency-Key;
+  fallback de `moderation_status` `action→status`; reset de estado al
+  cambiar identidad/reserva en las páginas de reseñas; typo "otfrecer".
+- **LOW**: `098` no invita a reservas ya reseñadas; comentario de deuda
+  (UI de moderación) en la ruta admin.
+
+**Ronda 2 (verificación independiente, misma sesión del auditor):** una
+tercera auditoría `explore` (solo sobre las correcciones) encontró 1 HIGH
+real y varios nits, corregidos a continuación:
+
+- **HIGH D1**: el guard `to_regclass` de `098` estaba inline en el
+  `SELECT ... FOR` (PostgreSQL analiza el sublink completo sin
+  short-circuit → la migración abortaría sin 099). Movido a una
+  sentencia plpgsql separada bajo `IF to_regclass(...) IS NOT NULL` con
+  `SELECT EXISTS ... INTO` + `CONTINUE` (lazy-prepare).
+- **MEDIUM D2**: `setSessionExpired(false)` al inicio de `load()` en
+  ambas páginas de reseñas (reintento tras 401 no deja el panel de
+  sesión visible).
+- **MEDIUM D5**: tests nuevos de `adminListReviews` (merge global +
+  `slice(offset)` + `has_more`, args de `range`, early-return con `.in`
+  sin llamar, error del subquery → `REVIEW_ERROR`, filtro por tipo).
+- **MEDIUM D9**: `contextReady` exige `context.reservation_id ===
+  reservationId` (nunca pintar el formulario de otra reserva).
+- **LOW D3/D4/D6/D7**: comentario obsoleto del factory de compras,
+  conteo de tests verificado por ejecución (17 = 7+10), condición muerta
+  del test de archivos, asserts de conteo **reales** (31/12 guards y
+  ADD CONSTRAINT de 099; 29/10 del rollback).
+- **D8 (preexistente, documentado sin tocar)**: el subquery de reservas
+  en `adminListReviews` no pagina y el `offset` no tiene tope de
+  profundidad; aceptado como deuda.
+
+Sin variables de entorno nuevas (`REVIEW_WINDOW_HOURS=48` es constante en
+SQL y TS) → **sin cambios de Render**.

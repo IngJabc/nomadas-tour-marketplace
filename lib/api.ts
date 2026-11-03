@@ -837,3 +837,113 @@ export const agencyPaymentApi = {
     ),
   // MKT-007: verify/reject eliminados. La revisión vive en Tour.
 };
+
+// ── REV-001 · Reseñas de viaje y agencia (cliente) ─────────────────────────────
+// DTOs espejo de backend/src/services/review.service.ts. La ventana de
+// 48 h se calcula en el servidor (trips.completed_at + 48 h); el cliente
+// solo la muestra. La URL /account/reviews/[id] NO autoriza: la
+// elegibilidad se revalida en el backend en cada GET y en el envío.
+
+export type ReviewItemState = 'pending' | 'submitted' | 'expired';
+
+export interface ReviewDto {
+  id: string;
+  rating: number;
+  comment: string | null;
+  moderation_status: 'visible' | 'hidden' | 'rejected';
+  created_at: string;
+}
+
+export interface ReviewItemDto {
+  reservation_id: string;
+  state: ReviewItemState;
+  trip: {
+    id: string;
+    origin: string | null;
+    destination: string | null;
+    departure_time: string | null;
+    completed_at: string | null;
+  };
+  agency: { id: string; name: string | null };
+  /** Límite real = trips.completed_at + 48 h. Solo si el viaje terminó. */
+  expires_at: string | null;
+  window_expired: boolean;
+  trip_review: ReviewDto | null;
+  agency_review: ReviewDto | null;
+  created_at: string;
+}
+
+export interface ReviewContextDto {
+  reservation_id: string;
+  trip: {
+    id: string;
+    origin: string | null;
+    destination: string | null;
+    departure_time: string | null;
+    completed_at: string | null;
+  };
+  agency: { id: string; name: string | null };
+  eligible: boolean;
+  state: ReviewItemState;
+  expires_at: string | null;
+  window_expired: boolean;
+  trip_review: ReviewDto | null;
+  agency_review: ReviewDto | null;
+  /** Motivo por el que no está elegible (cuando eligible=false). */
+  reason: string | null;
+}
+
+export interface SubmitReviewsPayload {
+  trip_rating: number;
+  trip_comment?: string | null;
+  agency_rating: number;
+  agency_comment?: string | null;
+}
+
+export interface SubmitReviewsResult {
+  reservation_id: string;
+  already_submitted: boolean;
+  trip_review_id: string | null;
+  agency_review_id: string | null;
+}
+
+export interface CustomerNotificationDto {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  entity_type: string;
+  entity_id: string;
+  action_url: string | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export const reviewsApi = {
+  /** Lista de reseñas/invitaciones del cliente (pendientes, enviadas, expiradas). */
+  list: () => request<{ items: ReviewItemDto[] }>('/public/reviews'),
+
+  /** Contexto del formulario de reseña de UNA reserva (revalida elegibilidad). */
+  getContext: (reservationId: string) =>
+    request<ReviewContextDto>(
+      `/public/reviews/reservations/${encodeURIComponent(reservationId)}`,
+    ),
+
+  /** Envío ATÓMICO de las DOS reseñas (viaje + agencia) en UNA transacción. */
+  submit: (reservationId: string, payload: SubmitReviewsPayload) =>
+    request<SubmitReviewsResult>(
+      `/public/reviews/reservations/${encodeURIComponent(reservationId)}`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  /** Notificaciones internas del cliente (aviso de reseña pendiente). */
+  notifications: () =>
+    request<{ items: CustomerNotificationDto[] }>('/public/reviews/notifications'),
+
+  /** Marca una notificación como leída (solo la del cliente autenticado). */
+  markNotificationRead: (notificationId: string) =>
+    request<{ ok: boolean }>(
+      `/public/reviews/notifications/${encodeURIComponent(notificationId)}/read`,
+      { method: 'PATCH' },
+    ),
+};

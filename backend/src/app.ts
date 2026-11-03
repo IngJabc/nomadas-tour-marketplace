@@ -10,7 +10,9 @@ import publicSeatsRoutes from './routes/public/seats.js';
 import publicCheckoutRoutes from './routes/public/checkout.js';
 import publicReservationsRoutes from './routes/public/reservations.js';
 import publicPaymentsRoutes from './routes/public/payments.js';
+import publicReviewsRoutes from './routes/public/reviews.js';
 import adminPaymentsRoutes from './routes/admin/payments.js';
+import adminReviewsRoutes from './routes/admin/reviews.js';
 
 const app = express();
 
@@ -75,7 +77,9 @@ app.use('/api/public/seats', publicSeatsRoutes);
 app.use('/api/public/checkout', publicCheckoutRoutes);
 app.use('/api/public/reservations', publicReservationsRoutes);
 app.use('/api/public/reservations', publicPaymentsRoutes);
+app.use('/api/public/reviews', publicReviewsRoutes);
 app.use('/api/admin/payments', adminPaymentsRoutes);
+app.use('/api/admin/reviews', adminReviewsRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
