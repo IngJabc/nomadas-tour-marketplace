@@ -6,6 +6,7 @@ import { formatDateShort, formatTime12h } from '@/lib/timezone';
 import { compareSeatCodes } from '@/lib/booking/seat-code';
 import type { CheckoutTicketView } from '@/lib/api';
 import {
+  AlertTriangle,
   Building2,
   Calendar,
   CheckCircle2,
@@ -47,16 +48,46 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
       >
         {/* Header */}
         <div className="flex items-center gap-3 bg-[var(--color-brand-navy)] px-5 py-4">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[rgba(212,98,43,0.15)]">
-            <CheckCircle2 className="size-5 text-[var(--color-brand-cyan)]" />
+          <div
+            className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${
+              ticket.is_trip_completed
+                ? 'bg-[rgba(245,158,11,0.15)]'
+                : 'bg-[rgba(212,98,43,0.15)]'
+            }`}
+          >
+            {ticket.is_trip_completed ? (
+              <AlertTriangle className="size-5 text-[#f59e0b]" strokeWidth={1.75} />
+            ) : (
+              <CheckCircle2 className="size-5 text-[var(--color-brand-cyan)]" />
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="text-[15px] font-bold text-white">Boleto de viaje</h3>
             <p className="text-[11px] text-white/60">
-              Presenta este código QR al abordar
+              {ticket.is_trip_completed
+                ? 'Viaje completado · Comprobante histórico'
+                : ticket.is_boarding_completed
+                  ? 'Abordaje completado'
+                  : 'Presenta este código QR al abordar'}
             </p>
           </div>
         </div>
+
+        {/* Banner de viaje finalizado */}
+        {ticket.is_trip_completed && (
+          <div
+            data-testid="trip-completed-banner"
+            className="mx-5 mb-2 mt-4 flex items-center gap-2.5 rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-[#92400e]"
+          >
+            <AlertTriangle
+              className="size-4 shrink-0 text-[#92400e]"
+              strokeWidth={1.75}
+            />
+            <p className="text-xs font-medium">
+              El viaje ya fue completado. Este boleto ya no es válido para abordar.
+            </p>
+          </div>
+        )}
 
         {/* QR Code — UN solo QR por reserva, valor exacto de Tour */}
         <div className="flex flex-col items-center px-5 py-6">
@@ -70,6 +101,15 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
           >
             {ticket.qr_code}
           </p>
+        
+          {!ticket.is_trip_completed && ticket.is_boarding_completed && (
+            <span
+              data-testid="boarding-completed-badge"
+              className="mt-2.5 inline-flex items-center gap-1 rounded-full bg-[#ecfdf5] px-3 py-1 text-[11px] font-semibold text-[#059669]"
+            >
+              Abordaje completado
+            </span>
+          )}
         </div>
 
         {/* Trip info */}
@@ -173,6 +213,18 @@ export const PurchaseTicket = forwardRef<HTMLDivElement, PurchaseTicketProps>(
                         {p.nombre || 'Sin nombre'}
                       </span>
                     </div>
+                    {p.boarded !== undefined && (
+                      <span
+                        data-testid="passenger-boarding-status"
+                        className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                          p.boarded
+                            ? 'bg-[#ecfdf5] text-[#059669]'
+                            : 'bg-[#F5F1EC] text-brand-muted'
+                        }`}
+                      >
+                        {p.boarded ? 'Abordado' : 'Por abordar'}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>

@@ -241,7 +241,11 @@ describe('GET /api/public/checkout/attempts/:attemptId/ticket — boleto QR (RT-
       error: null,
     });
     harness.setDefault('trips', {
-      data: { id: TRIP_ID, route_id: ROUTE_ID, departure_time: '2026-12-01T08:00:00.000Z' },
+      data: { id: TRIP_ID, route_id: ROUTE_ID, departure_time: '2026-12-01T08:00:00.000Z', status: 'active' },
+      error: null,
+    });
+    harness.setDefault('reservation_passengers', {
+      data: [],
       error: null,
     });
     harness.setDefault('routes', {
@@ -306,12 +310,13 @@ describe('GET /api/public/checkout/attempts/:attemptId/ticket — boleto QR (RT-
       origin: 'Caracas',
       destination: 'Maracaibo',
       departure_time: '2026-12-01T08:00:00.000Z',
+      status: 'active',
     });
     expect(body.seats).toEqual(['A1', 'A2']);
     // Un SOLO QR por reserva (modelo de Tour); los pasajeros se listan aparte.
     expect(body.passengers).toHaveLength(2);
-    expect(body.passengers).toContainEqual({ asiento: 'A1', nombre: 'Ana Pérez' });
-    expect(body.passengers).toContainEqual({ asiento: 'A2', nombre: 'Luis Gómez' });
+    expect(body.passengers).toContainEqual({ asiento: 'A1', nombre: 'Ana Pérez', boarded: false });
+    expect(body.passengers).toContainEqual({ asiento: 'A2', nombre: 'Luis Gómez', boarded: false });
   });
 
   it('filtra el intento por el customer_id de la sesión (nunca acepta ids del cliente)', async () => {
@@ -409,12 +414,82 @@ describe('GET /api/public/checkout/attempts/:attemptId/ticket — boleto QR (RT-
     expect(body.error.code).toBe('TICKET_NOT_FOUND');
   });
 
-  // ── reserved ≠ confirmed: no se equiparan ─────────────────────────────────
+  // ── Ciclo de abordaje de pasajeros y completitud de viaje ─────────────────
 
-  it('devuelve 404 si la reserva está confirmed (flujo Tour) y no reserved', async () => {
+  it('permite ver el boleto cuando algunos pasajeros han abordado (status partial)', async () => {
+    harness.push('checkout_attempts', { data: verifiedAttemptRow(), error: null });
+    harness.push('payments', { data: verifiedPaymentRow(), error: null });
+    harness.push('reservations', { data: approvedReservationRow({ status: 'partial' }), error: null });
+    harness.push('reservation_passengers', {
+      data: [
+        { id: 'rp-1', seat_id: SEAT_A1, boarded: true, status: 'active' },
+        { id: 'rp-2', seat_id: SEAT_A2, boarded: false, status: 'active' },
+      ],
+      error: null,
+    });
+
+    const { status, body } = await requestJson(port, TICKET_URL);
+    expect(status).toBe(200);
+    expect(body.reservation_status).toBe('partial');
+    expect(body.is_boarding_completed).toBe(false);
+    expect(body.is_trip_completed).toBe(false);
+    expect(body.passengers).toEqual([
+      { asiento: 'A1', nombre: 'Ana Pérez', boarded: true },
+      { asiento: 'A2', nombre: 'Luis Gómez', boarded: false },
+    ]);
+  });
+
+  it('permite ver el boleto cuando todos los pasajeros han abordado (status completed)', async () => {
+    harness.push('checkout_attempts', { data: verifiedAttemptRow(), error: null });
+    harness.push('payments', { data: verifiedPaymentRow(), error: null });
+    harness.push('reservations', { data: approvedReservationRow({ status: 'completed' }), error: null });
+    harness.push('reservation_passengers', {
+      data: [
+        { id: 'rp-1', seat_id: SEAT_A1, boarded: true, status: 'active' },
+        { id: 'rp-2', seat_id: SEAT_A2, boarded: true, status: 'active' },
+      ],
+      error: null,
+    });
+
+    const { status, body } = await requestJson(port, TICKET_URL);
+    expect(status).toBe(200);
+    expect(body.reservation_status).toBe('completed');
+    expect(body.is_boarding_completed).toBe(true);
+    expect(body.is_trip_completed).toBe(false);
+    expect(body.passengers.every((p: any) => p.boarded === true)).toBe(true);
+  });
+
+  it('mantiene el boleto accesible como histórico cuando el viaje está completado (trips.status completed)', async () => {
+    harness.push('checkout_attempts', { data: verifiedAttemptRow(), error: null });
+    harness.push('payments', { data: verifiedPaymentRow(), error: null });
+    harness.push('reservations', { data: approvedReservationRow({ status: 'completed' }), error: null });
+    harness.setDefault('trips', {
+      data: { id: TRIP_ID, route_id: ROUTE_ID, departure_time: '2026-12-01T08:00:00.000Z', status: 'completed' },
+      error: null,
+    });
+
+    const { status, body } = await requestJson(port, TICKET_URL);
+    expect(status).toBe(200);
+    expect(body.is_trip_completed).toBe(true);
+    expect(body.is_boarding_completed).toBe(true);
+    expect(body.qr_code).toBe(QR_CODE);
+    expect(body.ticket_code).toBe(TICKET_CODE);
+  });
+
+  it('permite ver el boleto si los pasajeros fueron des-abordados (status confirmed)', async () => {
     harness.push('checkout_attempts', { data: verifiedAttemptRow(), error: null });
     harness.push('payments', { data: verifiedPaymentRow(), error: null });
     harness.push('reservations', { data: approvedReservationRow({ status: 'confirmed' }), error: null });
+
+    const { status, body } = await requestJson(port, TICKET_URL);
+    expect(status).toBe(200);
+    expect(body.reservation_status).toBe('confirmed');
+  });
+
+  it('devuelve 404 si la reserva está cancelada (status cancelled)', async () => {
+    harness.push('checkout_attempts', { data: verifiedAttemptRow(), error: null });
+    harness.push('payments', { data: verifiedPaymentRow(), error: null });
+    harness.push('reservations', { data: approvedReservationRow({ status: 'cancelled' }), error: null });
 
     const { status, body } = await requestJson(port, TICKET_URL);
     expect(status).toBe(404);
@@ -458,8 +533,8 @@ describe('GET /api/public/checkout/attempts/:attemptId/ticket — boleto QR (RT-
     expect(raw).not.toContain('SENTINEL_PAY_IDEMP');
     expect(raw).not.toContain('proof_path');
     expect(raw).not.toContain('idempotency_key');
-    // El DTO del pasajero solo expone asiento + nombre.
-    expect(Object.keys(body.passengers[0]).sort()).toEqual(['asiento', 'nombre']);
+    // El DTO del pasajero solo expone asiento + nombre + estado de abordaje.
+    expect(Object.keys(body.passengers[0]).sort()).toEqual(['asiento', 'boarded', 'nombre']);
   });
 
   // ── Errores de base de datos ──────────────────────────────────────────────

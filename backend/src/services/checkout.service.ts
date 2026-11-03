@@ -1932,21 +1932,26 @@ function ticketQueryError(): AppError {
 }
 
 /**
- * Aprobación completa de una reserva nacida en verify_checkout_attempt (087).
+ * Estados de reserva válidos para visualización de boleto (aprobación completa).
  *
- * Devuelve true SOLO cuando la reserva cumple el contrato atómico de 087:
- * `status='reserved'` y `payment_status='fully_paid'`. NO se equipara
- * `reserved` con `confirmed` (075:104-111): `reserved` es el estado
- * definitivo del ciclo marketplace; `confirmed` es el flujo tour y no se
- * acepta aquí. Un pago `verified` sin reserva válida (o con una reserva
- * distinta a la del intento) NUNCA habilita el boleto.
+ * Incluye el estado inicial de verificación ('reserved'), estados durante y
+ * tras el abordaje de pasajeros ('partial', 'completed'), reajustes de abordaje
+ * ('confirmed') y formato legado ('boarded'). Nunca incluye 'cancelled' ni 'locked'.
  */
+const ELIGIBLE_TICKET_RESERVATION_STATUSES = new Set([
+  'reserved',
+  'confirmed',
+  'partial',
+  'completed',
+  'boarded',
+]);
+
 function isFullyApprovedReservation(reservation: {
   status: string;
   payment_status: string | null;
 }): boolean {
   return (
-    reservation.status === 'reserved' &&
+    ELIGIBLE_TICKET_RESERVATION_STATUSES.has(reservation.status) &&
     reservation.payment_status === 'fully_paid'
   );
 }
@@ -1954,12 +1959,14 @@ function isFullyApprovedReservation(reservation: {
 export interface CheckoutTicketPaxDto {
   asiento: string;
   nombre: string;
+  boarded?: boolean;
 }
 
 export interface CheckoutTicketTripDto {
   origin: string | null;
   destination: string | null;
   departure_time: string | null;
+  status?: string | null;
 }
 
 /**
@@ -2001,6 +2008,7 @@ export async function getCheckoutTicket(input: {
   qr_code: string;
   ticket_code: string;
   reservation_id: string;
+  reservation_status: string;
   reservation_created_at: string;
   amount_cents: number;
   currency: string;
@@ -2009,6 +2017,8 @@ export async function getCheckoutTicket(input: {
   trip: CheckoutTicketTripDto;
   seats: string[];
   passengers: CheckoutTicketPaxDto[];
+  is_trip_completed: boolean;
+  is_boarding_completed: boolean;
 }> {
   // 1) Intento del propio cliente. El filtro de dueño es parte de la query.
   const { data: attempt, error: attemptError } = await supabaseAdmin
@@ -2101,8 +2111,8 @@ export async function getCheckoutTicket(input: {
     throw ticketNotFoundError();
   }
 
-  // Contexto de agencia y viaje para el boleto (sin teléfono ni extras).
-  const [agencyResult, tripResult, seatResult] = await Promise.all([
+  // Contexto de agencia y viaje para el boleto (sin teléfono ni extras) y abordaje de pasajeros.
+  const [agencyResult, tripResult, seatResult, passengerRowsResult] = await Promise.all([
     supabaseAdmin
       .from('agencies')
       .select('id, name')
@@ -2110,16 +2120,25 @@ export async function getCheckoutTicket(input: {
       .maybeSingle(),
     supabaseAdmin
       .from('trips')
-      .select('id, route_id, departure_time')
+      .select('id, route_id, departure_time, status')
       .eq('id', row.trip_id)
       .maybeSingle(),
     supabaseAdmin
       .from('seats')
       .select('id, seat_code')
       .in('id', [...new Set(row.seat_ids)]),
+    supabaseAdmin
+      .from('reservation_passengers')
+      .select('id, seat_id, boarded, status')
+      .eq('reservation_id', res.id),
   ]);
 
-  if (agencyResult.error || tripResult.error || seatResult.error) {
+  if (
+    agencyResult.error ||
+    tripResult.error ||
+    seatResult.error ||
+    passengerRowsResult.error
+  ) {
     throw ticketQueryError();
   }
 
@@ -2127,6 +2146,7 @@ export async function getCheckoutTicket(input: {
     id: string;
     route_id: string | null;
     departure_time: string | null;
+    status: string | null;
   } | null;
 
   let routeRow: { origin: string; destination: string } | null = null;
@@ -2146,15 +2166,39 @@ export async function getCheckoutTicket(input: {
   }>;
   const seatCodeById = new Map(seatRows.map((s) => [s.id, s.seat_code]));
 
+  const rpRows = (passengerRowsResult.data ?? []) as unknown as Array<{
+    id: string;
+    seat_id: string;
+    boarded: boolean;
+    status: string;
+  }>;
+  const boardedBySeatId = new Map(
+    rpRows
+      .filter((rp) => rp.status !== 'cancelled')
+      .map((rp) => [rp.seat_id, Boolean(rp.boarded)]),
+  );
+
   const agencyRow = agencyResult.data as { id: string; name: string } | null;
   const seats = row.seat_ids.map((id) => seatCodeById.get(id) ?? id);
-  const passengers = (Array.isArray(row.passenger_data)
+  const passengers: CheckoutTicketPaxDto[] = (Array.isArray(row.passenger_data)
     ? row.passenger_data
     : []
-  ).map((p) => ({
-    asiento: seatCodeById.get(p.seat_id) ?? p.seat_id,
-    nombre: `${p.first_name} ${p.last_name}`.trim(),
-  }));
+  ).map((p) => {
+    const isBoarded = boardedBySeatId.has(p.seat_id)
+      ? Boolean(boardedBySeatId.get(p.seat_id))
+      : res.status === 'completed' || res.status === 'boarded';
+    return {
+      asiento: seatCodeById.get(p.seat_id) ?? p.seat_id,
+      nombre: `${p.first_name} ${p.last_name}`.trim(),
+      boarded: isBoarded,
+    };
+  });
+
+  const isTripCompleted = tripRow?.status === 'completed';
+  const isBoardingCompleted =
+    res.status === 'completed' ||
+    res.status === 'boarded' ||
+    (passengers.length > 0 && passengers.every((p) => p.boarded === true));
 
   return {
     attempt_id: row.id,
@@ -2162,6 +2206,7 @@ export async function getCheckoutTicket(input: {
     qr_code: res.qr_code,
     ticket_code: res.ticket_code,
     reservation_id: res.id,
+    reservation_status: res.status,
     reservation_created_at: res.created_at,
     amount_cents: pay.amount_cents,
     currency: pay.currency,
@@ -2171,8 +2216,11 @@ export async function getCheckoutTicket(input: {
       origin: routeRow?.origin ?? null,
       destination: routeRow?.destination ?? null,
       departure_time: tripRow?.departure_time ?? null,
+      status: tripRow?.status ?? null,
     },
     seats,
     passengers,
+    is_trip_completed: isTripCompleted,
+    is_boarding_completed: isBoardingCompleted,
   };
 }
