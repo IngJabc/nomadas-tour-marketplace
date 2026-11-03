@@ -268,6 +268,73 @@ describe('BoletoPage (RT-03)', () => {
     expect(screen.getByText('Importe pagado')).toBeInTheDocument();
     expect(screen.getByText(/Reserva del/)).toBeInTheDocument();
   });
+
+  it('muestra estado de abordaje de pasajeros cuando algunos ya abordaron', async () => {
+    getTicket.mockResolvedValue(
+      makeTicket({
+        reservation_status: 'partial',
+        is_boarding_completed: false,
+        passengers: [
+          { asiento: 'A1', nombre: 'Ana Pérez', boarded: true },
+          { asiento: 'A2', nombre: 'Luis Gómez', boarded: false },
+        ],
+      }),
+    );
+
+    render(<BoletoPage />);
+    await screen.findByText('Código: ABCDEF01');
+
+    const statuses = screen.getAllByTestId('passenger-boarding-status');
+    expect(statuses).toHaveLength(2);
+    expect(statuses[0]).toHaveTextContent('Abordado');
+    expect(statuses[1]).toHaveTextContent('Por abordar');
+  });
+
+  it('muestra indicador de abordaje completado cuando todos los pasajeros abordaron', async () => {
+    getTicket.mockResolvedValue(
+      makeTicket({
+        reservation_status: 'completed',
+        is_boarding_completed: true,
+        passengers: [
+          { asiento: 'A1', nombre: 'Ana Pérez', boarded: true },
+          { asiento: 'A2', nombre: 'Luis Gómez', boarded: true },
+        ],
+      }),
+    );
+
+    render(<BoletoPage />);
+    await screen.findByText('Código: ABCDEF01');
+
+    expect(screen.getByTestId('boarding-completed-badge')).toHaveTextContent('Abordaje completado');
+    expect(screen.getByText('Todos los pasajeros han abordado.')).toBeInTheDocument();
+  });
+
+  it('muestra aviso histórico y desactiva validez para abordar cuando el viaje fue completado', async () => {
+    getTicket.mockResolvedValue(
+      makeTicket({
+        is_trip_completed: true,
+        is_boarding_completed: true,
+        trip: {
+          origin: 'Caracas',
+          destination: 'Maracaibo',
+          departure_time: '2026-10-10T08:00:00.000Z',
+          status: 'completed',
+        },
+      }),
+    );
+
+    render(<BoletoPage />);
+    await screen.findByText('Código: ABCDEF01');
+
+    expect(screen.getByTestId('trip-completed-banner')).toHaveTextContent(
+      'El viaje ya fue completado. Este boleto ya no es válido para abordar.',
+    );
+    expect(screen.getByTestId('ticket-invalid-badge')).toHaveTextContent(
+      'No válido para abordar (viaje finalizado)',
+    );
+    expect(screen.getByText('Viaje completado · Comprobante histórico')).toBeInTheDocument();
+    expect(screen.getByText('Detalle histórico de tu viaje completado.')).toBeInTheDocument();
+  });
 });
 
 describe('BoletoPage realtime (RT-04A)', () => {

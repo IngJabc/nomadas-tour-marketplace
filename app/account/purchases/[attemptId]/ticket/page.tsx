@@ -220,7 +220,11 @@ export default function BoletoPage() {
       <div className="border-l-4 border-brand-cyan pl-3">
         <h1 className="text-[28px] font-extrabold">Tu boleto</h1>
         <p className="mt-1 text-sm text-brand-muted">
-          Presenta este código al abordar. Un boleto por reserva.
+          {ticket?.is_trip_completed
+            ? 'Detalle histórico de tu viaje completado.'
+            : ticket?.is_boarding_completed
+              ? 'Todos los pasajeros han abordado.'
+              : 'Presenta este código al abordar. Un boleto por reserva.'}
         </p>
       </div>
 

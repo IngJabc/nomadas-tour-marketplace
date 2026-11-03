@@ -660,6 +660,19 @@ export interface PurchaseHistoryView {
 // verificado + reserva nacida en verify con aprobación completa). El
 // `qr_code` es el valor EXACTO generado por Tour en 087; jamás se inventa.
 
+export interface CheckoutTicketPaxDto {
+  asiento: string;
+  nombre: string;
+  boarded?: boolean;
+}
+
+export interface CheckoutTicketTripDto {
+  origin: string | null;
+  destination: string | null;
+  departure_time: string | null;
+  status?: string | null;
+}
+
 export interface CheckoutTicketView {
   attempt_id: string;
   estado: 'reserva_confirmada';
@@ -668,19 +681,18 @@ export interface CheckoutTicketView {
   /** CHAR(8) derivado del UUID de la reserva por Tour. */
   ticket_code: string;
   reservation_id: string;
+  reservation_status?: string;
   reservation_created_at: string;
   amount_cents: number;
   currency: string;
   paid_at: string | null;
   agency: { id: string; name: string | null };
-  trip: {
-    origin: string | null;
-    destination: string | null;
-    departure_time: string | null;
-  };
+  trip: CheckoutTicketTripDto;
   seats: string[];
-  /** Nombre + asiento del propio cliente; sin teléfono ni documento. */
-  passengers: Array<{ asiento: string; nombre: string }>;
+  /** Nombre + asiento del propio cliente y estado de abordaje. */
+  passengers: CheckoutTicketPaxDto[];
+  is_trip_completed?: boolean;
+  is_boarding_completed?: boolean;
 }
 
 // ── Revisión de pagos de agencia — OBSOLETO desde MKT-007 ───────────────────
