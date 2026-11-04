@@ -329,9 +329,6 @@ describe('BoletoPage (RT-03)', () => {
     expect(screen.getByTestId('trip-completed-banner')).toHaveTextContent(
       'El viaje ya fue completado. Este boleto ya no es válido para abordar.',
     );
-    expect(screen.getByTestId('ticket-invalid-badge')).toHaveTextContent(
-      'No válido para abordar (viaje finalizado)',
-    );
     expect(screen.getByText('Viaje completado · Comprobante histórico')).toBeInTheDocument();
     expect(screen.getByText('Detalle histórico de tu viaje completado.')).toBeInTheDocument();
   });

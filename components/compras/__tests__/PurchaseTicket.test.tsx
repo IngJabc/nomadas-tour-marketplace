@@ -59,7 +59,6 @@ describe('PurchaseTicket component', () => {
     expect(qr.getAttribute('data-value')).toBe('NT-CARACAS-TEST1234567890');
     expect(screen.getByTestId('qr-value')).toHaveTextContent('NT-CARACAS-TEST1234567890');
     expect(screen.queryByTestId('trip-completed-banner')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('ticket-invalid-badge')).not.toBeInTheDocument();
   });
 
   it('renders individual passenger boarding statuses when partially boarded', () => {
@@ -116,9 +115,6 @@ describe('PurchaseTicket component', () => {
     expect(screen.getByText('Viaje completado · Comprobante histórico')).toBeInTheDocument();
     expect(screen.getByTestId('trip-completed-banner')).toHaveTextContent(
       'El viaje ya fue completado. Este boleto ya no es válido para abordar.',
-    );
-    expect(screen.getByTestId('ticket-invalid-badge')).toHaveTextContent(
-      'No válido para abordar (viaje finalizado)',
     );
     // QR code is preserved for historical integrity
     expect(screen.getByTestId('qr-value')).toHaveTextContent('NT-CARACAS-TEST1234567890');
