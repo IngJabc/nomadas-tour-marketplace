@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  subscribeToCustomerNotifications,
   subscribeToPurchaseHistory,
   subscribeToPurchaseTicket,
   subscribeToTripCatalog,
@@ -7,25 +8,33 @@ import {
   subscribeToTrips,
 } from '../subscriptions';
 
-const { handlers, removeChannel, createClientMock, channel } = vi.hoisted(() => {
-  const handlers: Array<{
-    config: Record<string, unknown>;
-    callback: (payload: unknown) => void;
-  }> = [];
-  const removeChannel = vi.fn();
-  const channel: Record<string, unknown> = {};
-  channel.on = (
-    _type: string,
-    config: Record<string, unknown>,
-    callback: (payload: unknown) => void,
-  ) => {
-    handlers.push({ config, callback });
-    return channel;
-  };
-  channel.subscribe = () => channel;
-  const createClientMock = vi.fn(() => ({ channel: () => channel, removeChannel }));
-  return { handlers, removeChannel, createClientMock, channel };
-});
+const { handlers, removeChannel, createClientMock, channel, statusCallbacks } =
+  vi.hoisted(() => {
+    const handlers: Array<{
+      config: Record<string, unknown>;
+      callback: (payload: unknown) => void;
+    }> = [];
+    const removeChannel = vi.fn();
+    const channel: Record<string, unknown> = {};
+    channel.on = (
+      _type: string,
+      config: Record<string, unknown>,
+      callback: (payload: unknown) => void,
+    ) => {
+      handlers.push({ config, callback });
+      return channel;
+    };
+    // Captura el callback de estado (Task 8D) además de encadenar.
+    const statusCallbacks: Array<
+      (status: string, error?: Error) => void
+    > = [];
+    channel.subscribe = (cb?: (status: string, error?: Error) => void) => {
+      if (cb) statusCallbacks.push(cb);
+      return channel;
+    };
+    const createClientMock = vi.fn(() => ({ channel: () => channel, removeChannel }));
+    return { handlers, removeChannel, createClientMock, channel, statusCallbacks };
+  });
 
 vi.mock('@/lib/supabase/client', () => ({
   createClient: createClientMock,
@@ -33,6 +42,7 @@ vi.mock('@/lib/supabase/client', () => ({
 
 beforeEach(() => {
   handlers.length = 0;
+  statusCallbacks.length = 0;
   removeChannel.mockClear();
   createClientMock.mockClear();
 });
@@ -276,5 +286,69 @@ describe('subscribeToTripCatalog (RT-04A)', () => {
     handlers[2].callback({ eventType: 'UPDATE', new: { id: 'ag-1', status: 'inactive' } });
 
     expect(onChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('subscribeToCustomerNotifications (Task 8D)', () => {
+  it('sin customerId no crea cliente ni suscribe', () => {
+    const cleanup = subscribeToCustomerNotifications('', () => {});
+
+    expect(createClientMock).not.toHaveBeenCalled();
+    expect(() => cleanup()).not.toThrow();
+  });
+
+  it('suscribe customer_notifications con evento INSERT filtrado por customer_id y limpia el canal', () => {
+    const cleanup = subscribeToCustomerNotifications('user-1', () => {});
+
+    expect(createClientMock).toHaveBeenCalledTimes(1);
+    expect(handlers).toHaveLength(1);
+    expect(handlers[0].config).toMatchObject({
+      event: 'INSERT',
+      schema: 'public',
+      table: 'customer_notifications',
+      filter: 'customer_id=eq.user-1',
+    });
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(1);
+    expect(removeChannel).toHaveBeenCalledWith(channel);
+  });
+
+  it('entrega la fila INSERT propia e ignora filas ajenas o malformadas', () => {
+    const onInsert = vi.fn();
+    subscribeToCustomerNotifications('user-1', onInsert);
+
+    const row = { id: 'n-1', customer_id: 'user-1', type: 'payment_verified' };
+    handlers[0].callback({ eventType: 'INSERT', new: row });
+    expect(onInsert).toHaveBeenCalledTimes(1);
+    expect(onInsert).toHaveBeenCalledWith(row);
+
+    // Cliente distinto (defensa extra sobre el filtro del canal).
+    handlers[0].callback({
+      eventType: 'INSERT',
+      new: { id: 'n-2', customer_id: 'user-2', type: 'payment_verified' },
+    });
+    // Filas malformadas.
+    handlers[0].callback({ eventType: 'INSERT', new: null });
+    handlers[0].callback({ eventType: 'INSERT', new: { customer_id: 'user-1' } });
+
+    expect(onInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('reporta los estados del canal a onStatus sin lanzar', () => {
+    const onStatus = vi.fn();
+    const cleanup = subscribeToCustomerNotifications('user-1', () => {}, onStatus);
+
+    expect(statusCallbacks).toHaveLength(1);
+    expect(() => statusCallbacks[0]('SUBSCRIBED')).not.toThrow();
+    expect(onStatus).toHaveBeenLastCalledWith('SUBSCRIBED', null);
+
+    expect(() =>
+      statusCallbacks[0]('CHANNEL_ERROR', new Error('boom')),
+    ).not.toThrow();
+    expect(onStatus).toHaveBeenLastCalledWith('CHANNEL_ERROR', 'boom');
+
+    cleanup();
+    expect(removeChannel).toHaveBeenCalledTimes(1);
   });
 });

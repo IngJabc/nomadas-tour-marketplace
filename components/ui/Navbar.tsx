@@ -7,6 +7,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Menu, X } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useOptionalAuthUser } from "@/components/auth/AuthProvider";
+import { useOptionalCustomerNotifications } from "@/components/notifications/CustomerNotificationsProvider";
+import { PillBadge } from "@/components/ui/PillBadge";
 
 const NAV_LINK_MOTION = {
   initial: { opacity: 0, y: -4 },
@@ -22,6 +24,16 @@ export function Navbar() {
   const auth = useOptionalAuthUser();
   const signedIn = !!auth?.user;
   const isCustomer = signedIn && auth?.user?.role === "customer";
+  /**
+   * PAY-NOTIFICATIONS Task 8C — badge de no leídos sobre "Mis compras".
+   * Solo para clientes (misma visibilidad que el link), oculto a 0 y con
+   * tope `9+`. El contador lo aporta el estado global del provider: el
+   * Navbar no gestiona estado propio de notificaciones.
+   */
+  const notificationState = useOptionalCustomerNotifications();
+  const unreadCount = isCustomer ? (notificationState?.unreadCount ?? 0) : 0;
+  const unreadBadge =
+    unreadCount > 9 ? "9+" : unreadCount > 0 ? String(unreadCount) : null;
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -65,7 +77,12 @@ export function Navbar() {
     "rounded-full bg-brand-cyan px-5 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue";
 
   /** Link de escritorio con subrayado elástico compartido (layoutId). */
-  function desktopLink(key: string, href: string, label: string) {
+  function desktopLink(
+    key: string,
+    href: string,
+    label: string,
+    badge?: string | null,
+  ) {
     return (
       <Link
         key={key}
@@ -75,6 +92,11 @@ export function Navbar() {
         onMouseLeave={() => setHoveredLink((current) => (current === key ? null : current))}
       >
         {label}
+        {badge && (
+          <PillBadge className="ml-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-brand-cyan px-1.5 text-[11px] font-semibold leading-[18px] text-white">
+            {badge}
+          </PillBadge>
+        )}
         {hoveredLink === key && (
           <motion.span
             layoutId="navbar-underline"
@@ -126,7 +148,13 @@ export function Navbar() {
         {/* Nav escritorio (>= sm) */}
         <nav aria-label="Principal" className="hidden items-center gap-6 sm:flex">
           {desktopLink("explorar", "/trips", "Explorar")}
-          {isCustomer && desktopLink("reservas", "/account/purchases", "Mis reservas")}
+          {isCustomer &&
+            desktopLink(
+              "compras",
+              "/account/purchases",
+              "Mis compras",
+              unreadBadge,
+            )}
           {desktopLink("reviews", "/account/reviews", "Mis reseñas")}
           {desktopLink("ayuda", "/help", "Ayuda")}
           {signedIn ? (
@@ -232,7 +260,12 @@ export function Navbar() {
           {isCustomer && (
             <motion.div variants={NAV_LINK_MOTION} transition={{ duration: 0.18 }}>
               <Link href="/account/purchases" className={mobileLinkClass}>
-                Mis reservas
+                Mis compras
+                {unreadBadge && (
+                  <PillBadge className="ml-2 inline-flex min-w-[18px] items-center justify-center rounded-full bg-brand-cyan px-1.5 text-[11px] font-semibold leading-[18px] text-white">
+                    {unreadBadge}
+                  </PillBadge>
+                )}
               </Link>
             </motion.div>
           )}

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { motion } from "framer-motion";
-import { X } from "lucide-react";
+import { Check, X } from "lucide-react";
 
 // ── Variant ────────────────────────────────────────────────────────────────
 
@@ -25,28 +25,67 @@ interface VariantStyle {
   theme: string;
 }
 
+// Mismo lenguaje visual que la variante `notification` (toasts de pago):
+// superficie de card con token, borde hairline e icono semántico suave.
+// Así todos los toasts del marketplace se ven iguales.
+const CARD_THEME =
+  "bg-[var(--color-brand-surface)] text-[var(--color-brand-navy)] border border-black/[0.06]";
+
 const VARIANT_STYLES: Record<ToastVariant, VariantStyle> = {
   success: {
     layout: "flex items-center gap-2.5 px-4 py-3",
-    theme: "bg-[var(--color-brand-navy)] text-[var(--color-brand-surface)]",
+    theme: CARD_THEME,
   },
   error: {
     layout: "flex items-center gap-2.5 px-4 py-3",
-    theme: "bg-[var(--color-brand-navy)] text-[var(--color-brand-surface)]",
+    theme: CARD_THEME,
   },
   blank: {
     layout: "flex items-center gap-2.5 px-4 py-3",
-    theme: "bg-[var(--color-brand-navy)] text-[var(--color-brand-surface)]",
+    theme: CARD_THEME,
   },
   loading: {
     layout: "flex items-center gap-2.5 px-4 py-3",
-    theme: "bg-[var(--color-brand-navy)] text-[var(--color-brand-surface)]",
+    theme: CARD_THEME,
   },
   notification: {
     layout: "flex items-start gap-3 p-3 text-left",
-    theme: "bg-white text-[var(--color-brand-navy)]",
+    // Lenguaje visual del marketplace: superficie de card (token, nunca
+    // blanco hardcodeado) + borde hairline de card (rgba(0,0,0,0.06)).
+    theme: CARD_THEME,
   },
 };
+
+// ── Icono de estado (éxito / error) ─────────────────────────────────────────
+
+/**
+ * Icono semántico compartido por todos los toasts del marketplace — el
+ * mismo lenguaje de los toasts de pago:
+ *
+ *   - éxito   → check sobre `--color-trust-bg`;
+ *   - error   → X sobre `--color-danger-bg`.
+ *
+ * Contenedor pill de 32px (como los badges), Lucide stroke 1.75 y tamaño
+ * 16px del sistema. El terracota de marca queda reservado para acciones.
+ */
+export function ToastStatusIcon({ tone }: { tone: "trust" | "danger" }) {
+  const danger = tone === "danger";
+  return (
+    <span
+      className={
+        danger
+          ? "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-danger-bg)] text-[var(--color-danger)]"
+          : "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-trust-bg)] text-[var(--color-trust)]"
+      }
+    >
+      {danger ? (
+        <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+      ) : (
+        <Check className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+      )}
+    </span>
+  );
+}
 
 // ── Shared base classes (hover, radius, shadow, transition) ────────────────
 

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import toast from 'react-hot-toast';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -351,7 +350,6 @@ export default function ReintentoPagoPage() {
    */
   const handleProofSubmitted = useCallback(() => {
     setServerReview({ submittedAt: new Date().toISOString() });
-    toast.success('Comprobante enviado. Tu pago está pendiente de revisión.');
   }, []);
 
   /**
@@ -361,7 +359,6 @@ export default function ReintentoPagoPage() {
    */
   const handleAlreadySubmitted = useCallback(() => {
     setServerReview({ submittedAt: null });
-    toast.success('Tu comprobante ya estaba enviado y sigue en revisión.');
   }, []);
 
   /**

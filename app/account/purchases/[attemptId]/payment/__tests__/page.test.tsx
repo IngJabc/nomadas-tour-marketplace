@@ -307,10 +307,8 @@ describe('ReintentoPagoPage (RT-05)', () => {
     });
 
     expect(await screen.findByText('Pago en revisión')).toBeInTheDocument();
-    expect(toastMock.success).toHaveBeenCalledTimes(1);
-    expect(toastMock.success).toHaveBeenCalledWith(
-      'Comprobante enviado. Tu pago está pendiente de revisión.',
-    );
+    // El flujo de pago informa en la vista (sin toast redundante).
+    expect(toastMock.success).not.toHaveBeenCalled();
 
     // Reutiliza el MISMO intento con los datos corregidos, sin repetir nada.
     expect(submitProof).toHaveBeenCalledTimes(1);
@@ -349,10 +347,8 @@ describe('ReintentoPagoPage (RT-05)', () => {
     });
 
     expect(await screen.findByText('Pago en revisión')).toBeInTheDocument();
-    expect(toastMock.success).toHaveBeenCalledTimes(1);
-    expect(toastMock.success).toHaveBeenCalledWith(
-      'Tu comprobante ya estaba enviado y sigue en revisión.',
-    );
+    // Sin toast: la vista de revisión ya comunica el estado.
+    expect(toastMock.success).not.toHaveBeenCalled();
     // Este código no es un bloqueo: no se revalida contra el backend.
     expect(getAttempt).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('proof-file-input')).not.toBeInTheDocument();

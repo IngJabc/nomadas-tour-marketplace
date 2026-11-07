@@ -11,8 +11,18 @@ const authState = vi.hoisted(() => ({
   },
 }));
 
+const notifState = vi.hoisted(() => ({
+  value: null as { unreadCount: number } | null,
+}));
+
 vi.mock('@/components/auth/AuthProvider', () => ({
   useOptionalAuthUser: () => authState.value,
+}));
+
+// El badge consume el estado del provider global; aquí se sustituye por un
+// valor controlable para no montar el árbol completo de notificaciones.
+vi.mock('@/components/notifications/CustomerNotificationsProvider', () => ({
+  useOptionalCustomerNotifications: () => notifState.value,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -37,6 +47,7 @@ beforeEach(() => {
   authState.value.user = null;
   authState.value.loading = false;
   authState.value.signOut.mockReset();
+  notifState.value = null;
 });
 
 describe('Navbar', () => {
@@ -84,7 +95,7 @@ describe('Navbar', () => {
     expect(authState.value.signOut).toHaveBeenCalledTimes(1);
   });
 
-  it('ofrece "Mis reservas" solo a clientes autenticados', () => {
+  it('ofrece "Mis compras" solo a clientes autenticados', () => {
     authState.value.user = {
       id: 'user-me',
       email: 'cliente@test.com',
@@ -94,21 +105,21 @@ describe('Navbar', () => {
     render(<Navbar />);
     const desktop = within(screen.getByRole('navigation', { name: 'Principal' }));
 
-    expect(desktop.getByRole('link', { name: 'Mis reservas' })).toHaveAttribute(
+    expect(desktop.getByRole('link', { name: 'Mis compras' })).toHaveAttribute(
       'href',
       '/account/purchases',
     );
   });
 
-  it('no ofrece "Mis reservas" sin sesión', () => {
+  it('no ofrece "Mis compras" sin sesión', () => {
     render(<Navbar />);
 
     expect(
-      screen.queryByRole('link', { name: 'Mis reservas' }),
+      screen.queryByRole('link', { name: 'Mis compras' }),
     ).not.toBeInTheDocument();
   });
 
-  it('no ofrece "Mis reservas" a roles que no son de cliente', () => {
+  it('no ofrece "Mis compras" a roles que no son de cliente', () => {
     authState.value.user = {
       id: 'user-agency',
       email: 'agencia@test.com',
@@ -118,7 +129,7 @@ describe('Navbar', () => {
     render(<Navbar />);
 
     expect(
-      screen.queryByRole('link', { name: 'Mis reservas' }),
+      screen.queryByRole('link', { name: 'Mis compras' }),
     ).not.toBeInTheDocument();
   });
 
@@ -164,6 +175,99 @@ describe('Navbar', () => {
     expect(
       screen.queryByRole('link', { name: 'Iniciar sesión' }),
     ).not.toBeInTheDocument();
+  });
+
+  describe('badge de no leídos en "Mis compras" (Task 8C)', () => {
+    beforeEach(() => {
+      authState.value.user = {
+        id: 'user-me',
+        email: 'cliente@test.com',
+        role: 'customer',
+      };
+    });
+
+    it('oculto cuando no hay estado de notificaciones', () => {
+      notifState.value = null;
+
+      render(<Navbar />);
+      const desktop = within(screen.getByRole('navigation', { name: 'Principal' }));
+      const link = desktop.getByRole('link', { name: 'Mis compras' });
+
+      expect(link).toHaveAttribute('href', '/account/purchases');
+      expect(link.textContent).toBe('Mis compras');
+    });
+
+    it('oculto cuando el contador de no leídos es 0', () => {
+      notifState.value = { unreadCount: 0 };
+
+      render(<Navbar />);
+      const link = screen.getByRole('link', { name: 'Mis compras' });
+
+      expect(link.textContent).toBe('Mis compras');
+      expect(link.textContent).not.toMatch(/\d/);
+    });
+
+    it('muestra el conteo numérico con no leídas', () => {
+      notifState.value = { unreadCount: 3 };
+
+      render(<Navbar />);
+      const link = screen.getByRole('link', { name: /Mis compras/ });
+
+      expect(link).toHaveAttribute('href', '/account/purchases');
+      expect(link.textContent).toContain('3');
+    });
+
+    it('limita el conteo a "9+" por encima de 9', () => {
+      notifState.value = { unreadCount: 12 };
+
+      render(<Navbar />);
+      const link = screen.getByRole('link', { name: /Mis compras/ });
+
+      expect(link.textContent).toContain('9+');
+      expect(link.textContent).not.toContain('12');
+    });
+
+    it('el badge también se muestra en el menú móvil', () => {
+      notifState.value = { unreadCount: 5 };
+
+      render(<Navbar />);
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Abrir menú de navegación' }),
+      );
+      const mobile = within(
+        screen.getByRole('navigation', { name: 'Navegación móvil' }),
+      );
+      const link = mobile.getByRole('link', { name: /Mis compras/ });
+
+      expect(link).toHaveAttribute('href', '/account/purchases');
+      expect(link.textContent).toContain('5');
+    });
+
+    it('sin sesión el badge nunca aparece aunque haya no leídas', () => {
+      notifState.value = { unreadCount: 7 };
+      authState.value.user = null;
+
+      render(<Navbar />);
+
+      expect(
+        screen.queryByRole('link', { name: /Mis compras/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('en roles que no son de cliente el badge nunca aparece', () => {
+      notifState.value = { unreadCount: 7 };
+      authState.value.user = {
+        id: 'user-agency',
+        email: 'agencia@test.com',
+        role: 'agency',
+      };
+
+      render(<Navbar />);
+
+      expect(
+        screen.queryByRole('link', { name: /Mis compras/ }),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe('menú móvil', () => {

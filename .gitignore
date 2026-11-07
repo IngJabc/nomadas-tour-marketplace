@@ -32,10 +32,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — NUNCA se suben: ni los .env ni los .env-example
+# (los .env-example pueden contener valores reales de cada entorno)
 .env*
-!.env-example
-!/backend/.env-example
+.env-example
+backend/.env-example
 /backend/.env
 
 # vercel

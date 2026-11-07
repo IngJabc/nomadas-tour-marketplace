@@ -1245,7 +1245,8 @@ describe('Creación de reserva marketplace (MKT-004 Fase B)', () => {
     // Ningún marcador del formato anterior.
     expect(stored).not.toHaveProperty('reservation_id');
     expect(stored).not.toHaveProperty('payment');
-    expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
+    // El envío del comprobante ya informa en la vista: sin toast redundante.
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalledWith(
       'Compra iniciada. Ahora envía tu comprobante de pago.',
     );
   });
@@ -2788,7 +2789,8 @@ describe('Comprobante de pago (MKT-007)', () => {
 
     expect(screen.getByText(REVIEW_TEXT)).toBeInTheDocument();
     expect(screen.getByText('Pendiente de revisión')).toBeInTheDocument();
-    expect(toast.success).toHaveBeenCalledWith(REVIEW_TEXT);
+    // El éxito se informa en la vista; el flujo de pago ya no emite toast.
+    expect(toast.success).not.toHaveBeenCalled();
 
     // Nunca una reserva "confirmada" ni "pagada" cuando solo se envió el comprobante.
     expect(screen.queryByText('Confirmada')).not.toBeInTheDocument();
@@ -2997,10 +2999,8 @@ describe('Comprobante de pago (MKT-007)', () => {
     // Sin ids inventados: esta respuesta no trae datos nuevos.
     expect(storedLock().checkout).toMatchObject({ status: 'pending_review' });
     expect(storedLock().checkout).not.toHaveProperty('proof_path');
-    // El toast vive fuera del DOM (mockeado): se afirma la llamada, no el nodo.
-    expect(toast.success).toHaveBeenCalledWith(
-      'Tu comprobante ya estaba enviado y sigue en revisión.',
-    );
+    // Sin toast: la vista de revisión comunica el estado por sí sola.
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('CHECKOUT_IDEMPOTENCY_CONFLICT no marca la revisión y conserva la selección', async () => {

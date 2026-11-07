@@ -3,12 +3,14 @@
 import {
   Toaster,
   resolveValue,
-  CheckmarkIcon,
-  ErrorIcon,
   LoaderIcon,
   type Toast,
 } from 'react-hot-toast';
-import { BaseToast, type ToastVariant } from '@/components/ui/BaseToast';
+import {
+  BaseToast,
+  ToastStatusIcon,
+  type ToastVariant,
+} from '@/components/ui/BaseToast';
 
 export function ToastProvider() {
   return (
@@ -17,30 +19,25 @@ export function ToastProvider() {
       toastOptions={{
         duration: 2500,
         removeDelay: 200,
-        success: {
-          iconTheme: {
-            primary: 'var(--color-brand-cyan)',
-            secondary: 'var(--color-brand-surface)',
-          },
-        },
-        error: {
-          iconTheme: {
-            primary: '#fb923c',
-            secondary: 'var(--color-brand-surface)',
-          },
-        },
       }}
     >
       {(t: Toast) => {
         const message = resolveValue(t.message, t);
+        // PAY-NOTIFICATIONS: el toast de notificación llega como función que
+        // ya renderiza BaseToast completo (variante `notification` con onClick
+        // y onDismiss propios); se pinta tal cual para no envolverlo dos veces.
+        if ((t.type as string) === 'notification') return <>{message}</>;
+        // Icono de estado con el MISMO lenguaje visual de los toasts de pago
+        // (círculo suave trust/danger, Lucide stroke 1.75). El spinner de
+        // carga se conserva tal cual.
         const icon = t.icon
           ? typeof t.icon === 'string'
             ? <span className="text-lg">{t.icon}</span>
             : t.icon
           : t.type === 'success'
-            ? <CheckmarkIcon />
+            ? <ToastStatusIcon tone="trust" />
             : t.type === 'error'
-              ? <ErrorIcon />
+              ? <ToastStatusIcon tone="danger" />
               : t.type === 'loading'
                 ? <LoaderIcon />
                 : null;
