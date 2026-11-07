@@ -658,7 +658,6 @@ function NewReservationContent() {
       // PaymentMethodSection; no arrastramos la elección del intento previo.
       setSelectedMethodId(null);
       setCoordinatedPayment(false);
-      toast.success('Compra iniciada. Ahora envía tu comprobante de pago.');
     } catch (err: unknown) {
       handleCreateError(err);
     } finally {
@@ -696,7 +695,6 @@ function NewReservationContent() {
         expires_at: result.expires_at,
       });
       setCheckoutStatus('pending_review');
-      toast.success('Comprobante enviado. Tu pago está pendiente de revisión.');
     },
     [persistCheckout],
   );
@@ -714,7 +712,6 @@ function NewReservationContent() {
       expires_at: lock.checkout?.expires_at,
     });
     setCheckoutStatus('pending_review');
-    toast.success('Tu comprobante ya estaba enviado y sigue en revisión.');
   }, [lock, persistCheckout]);
 
   // ─── Cancelación del intento (acción destructiva → modal) ────────────

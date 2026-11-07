@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { supabaseAdmin } from '../config/database.js';
 import { AppError, ValidationError } from '../errors/index.js';
 import { runCheckoutCleanup } from './checkout-cleanup.service.js';
+import { notifyPaymentReceiptSubmitted } from './payment-notification.service.js';
 
 // ── Constantes ───────────────────────────────────────────────────────────────
 
@@ -942,6 +943,152 @@ function parseReconciliation(fields: ParsedCheckoutProof['fields']): {
   };
 }
 
+// ── PAY-NOTIFICATIONS Task 4 — notificación a la agencia ─────────────────────
+
+/**
+ * Namespace fija tipo RFC 4122 "URL" para derivar el `source_event_id`
+ * con UUIDv5 (SHA-1, determinístico): el MISMO par
+ * (intent, Idempotency-Key) produce SIEMPRE el mismo UUID, y envíos
+ * distintos producen UUIDs distintos.
+ */
+const PAYMENT_EVENT_NAMESPACE = Buffer.from(
+  '6ba7b8119dad11d180b400c04fd430c8',
+  'hex',
+);
+
+/**
+ * `source_event_id` estable para la notificación de un envío de comprobante.
+ *
+ * Deriva de la MISMA clave con la que la RPC `submit_checkout_proof`
+ * (087) deduplica el envío en el historial del intento:
+ * `mkt007:<attempt_id>:<idempotency_key>`.
+ *
+ * - Envíos exitosos SEPARADOS usan un Idempotency-Key distinto →
+ *   evento distinto → notificaciones separadas.
+ * - Reintentos del MISMO envío reutilizan la clave → evento idéntico →
+ *   el índice único (source_event_id, agency_id, recipient_role) de
+ *   `notifications` deduplica sin filas dobles.
+ * - La clave va namespaced por intento: una clave repetida en OTRO
+ *   intento jamás colisiona.
+ */
+function receiptSubmittedEventId(attemptId: string, idempotencyKey: string): string {
+  const name = `mkt007:${attemptId}:${idempotencyKey}`;
+  const hash = createHash('sha1')
+    .update(PAYMENT_EVENT_NAMESPACE)
+    .update(name, 'utf8')
+    .digest();
+  const bytes = Buffer.from(hash.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50; // versión 5 (UUIDv5)
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variante RFC 4122
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Emite `payment_receipt_submitted` hacia la agencia dueña del intento.
+ *
+ * El contexto de propiedad (agency_id, trip_id) se relee del intento en
+ * base DESPUÉS de que la RPC tuvo éxito: es contexto server-side
+ * confiable, nunca datos de propiedad del request del cliente.
+ *
+ * Para el copy específico también se resuelve server-side:
+ *   - el booker = PRIMER pasajero del snapshot `passenger_data`
+ *     (misma convención que Tour, `bookerFrom()`); solo el nombre viaja;
+ *   - la ruta del viaje = `routes(origin, destination)` → `Origen →
+ *     Destino`. La lectura de la ruta es best-effort: si falla, el
+ *     cuerpo degrada sin ruta (la notificación igual se emite).
+ *
+ * `checkout_attempts` no tiene `reservation_id` (la reserva nace en
+ * `verify_checkout_attempt`), por eso el adaptador usa su fallback
+ * `trip` con el `trip_id` real. Falta de contexto válido → el
+ * validador del adaptador lanza y el caller lo registra sin tumbar nada.
+ */
+async function emitReceiptSubmittedNotification(input: {
+  attemptId: string;
+  idempotencyKey: string;
+}): Promise<void> {
+  const { data, error } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select('agency_id, trip_id, passenger_data')
+    .eq('id', input.attemptId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`checkout_attempts lookup failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error('checkout_attempts row missing after submit');
+  }
+
+  const attempt = data as {
+    agency_id?: string | null;
+    trip_id?: string | null;
+    passenger_data?: unknown;
+  };
+
+  await notifyPaymentReceiptSubmitted({
+    agencyId: attempt.agency_id as string,
+    attemptId: input.attemptId,
+    tripId: attempt.trip_id ?? null,
+    bookerName: bookerNameFromPassengers(attempt.passenger_data),
+    tripLabel: await tripLabelFromTripId(attempt.trip_id),
+    sourceEventId: receiptSubmittedEventId(input.attemptId, input.idempotencyKey),
+  });
+}
+
+/**
+ * Booker = PRIMER elemento del snapshot `passenger_data` (convención de
+ * Tour: `bookerFrom()`). Devuelve SOLO `first_name last_name` normalizados;
+ * documento, teléfono y el resto del snapshot jamás salen de aquí.
+ */
+function bookerNameFromPassengers(passengerData: unknown): string | null {
+  if (!Array.isArray(passengerData) || passengerData.length === 0) {
+    return null;
+  }
+  const first = passengerData[0] as Record<string, unknown> | null | undefined;
+  const name = [first?.first_name, first?.last_name]
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter(Boolean)
+    .join(' ');
+  return name || null;
+}
+
+/**
+ * Ruta del viaje `Origen → Destino` para el copy de la notificación.
+ * Best-effort: cualquier fallo (viaje sin ruta, error de lectura)
+ * devuelve `null` y el cuerpo degrada sin ruta.
+ */
+async function tripLabelFromTripId(tripId: unknown): Promise<string | null> {
+  if (typeof tripId !== 'string' || tripId.length === 0) {
+    return null;
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('trips')
+      .select('routes(origin, destination)')
+      .eq('id', tripId)
+      .maybeSingle();
+    if (error || !data) {
+      return null;
+    }
+    const route = (
+      data as {
+        routes?: { origin?: unknown; destination?: unknown } | null;
+      }
+    ).routes;
+    const origin =
+      typeof route?.origin === 'string' ? route.origin.trim() : '';
+    const destination =
+      typeof route?.destination === 'string' ? route.destination.trim() : '';
+    if (!origin || !destination) {
+      return null;
+    }
+    return `${origin} → ${destination}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Flujo completo del envío de un comprobante:
  *
@@ -951,6 +1098,8 @@ function parseReconciliation(fields: ParsedCheckoutProof['fields']): {
  *  3. Upload privado al bucket `payment-proofs` con `upsert: true`.
  *  4. RPC `submit_checkout_proof` con p_customer_id de la sesión.
  *  5. Si el RPC falla, limpieza condicionada del objeto recién subido.
+ *  6. Si el RPC tuvo éxito, notificación best-effort a la agencia
+ *     (PAY-NOTIFICATIONS Task 4) — nunca afecta la respuesta.
  *
  * Esta función nunca hace UPDATE sobre checkout_attempts/seats/payments:
  * todo eso vive dentro del RPC.
@@ -1005,6 +1154,31 @@ export async function submitCheckoutProof(
       500,
       'CHECKOUT_ERROR',
     );
+  }
+
+  // PAY-NOTIFICATIONS Task 4 — best-effort: la notificación a la agencia
+  // se emite SOLO DESPUÉS de que la RPC registró el comprobante y jamás
+  // falla ni revierte un envío ya exitoso (si algo sale mal, se registra
+  // y se continúa). El source_event_id es determinístico por
+  // (intent, Idempotency-Key), así los reintentos deduplican y los
+  // envíos separados generan notificaciones separadas.
+  try {
+    await emitReceiptSubmittedNotification({
+      attemptId: input.attemptId,
+      idempotencyKey: input.idempotencyKey,
+    });
+  } catch (error) {
+    // InternalError guarda el crudo en internalMessage (message es copy
+    // público vacío): se registra el diagnóstico real, no el vacío.
+    console.error('[checkout] notificación de comprobante no emitida', {
+      attemptId: input.attemptId,
+      error:
+        error instanceof Error
+          ? ((error as { internalMessage?: string }).internalMessage ||
+            error.message ||
+            'error desconocido')
+          : String(error),
+    });
   }
 
   return {

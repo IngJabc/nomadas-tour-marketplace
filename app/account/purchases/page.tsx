@@ -7,6 +7,7 @@ import {
   ArrowUp,
   Building2,
   CalendarDays,
+  CreditCard,
   LogIn,
   MessageSquareHeart,
   RefreshCw,
@@ -19,6 +20,7 @@ import {
 import {
   checkoutApi,
   reviewsApi,
+  type CustomerNotificationDto,
   type PurchaseEstado,
   type PurchaseItemDto,
   type ReviewItemState,
@@ -26,10 +28,15 @@ import {
 import { ApiError, getApiErrorMessage } from '@/lib/errors/api-error';
 import { compareSeatCodes, sortSeatCodes } from '@/lib/booking/seat-code';
 import { subscribeToPurchaseHistory } from '@/lib/realtime/subscriptions';
+import { parsePaymentActionUrl } from '@/lib/notifications/payment-action-url';
 import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort, toBusinessDateString } from '@/lib/timezone';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
+import {
+  useOptionalCustomerNotifications,
+} from '@/components/notifications/CustomerNotificationsProvider';
 import { DatePicker } from '@/components/ui/DatePicker';
+import { PillBadge } from '@/components/ui/PillBadge';
 
 /** Tarjetas visibles por pantalla del historial. */
 const PAGE_SIZE = 5;
@@ -160,6 +167,20 @@ function routeLabel(trip: PurchaseItemDto['trip']): string {
   return 'Ruta no disponible';
 }
 
+/**
+ * PAY-NOTIFICATIONS Task 8G — asociación notificación de pago SIN LEER →
+ * compra. La asociación se hace SIEMPRE por la `action_url` validada: en la
+ * Task 6, `payment_verified` guarda en `entity_id` un `reservation_id` (no
+ * un attempt id) y `payment_rejected` usa el attempt id como workaround del
+ * CHECK, así que `entity_id` jamás se usa aquí como intento de compra.
+ */
+interface UnreadPaymentNotice {
+  notification: CustomerNotificationDto;
+  /** Ruta interna validada del intento (ticket o payment). */
+  href: string;
+  kind: 'ticket' | 'payment';
+}
+
 // ── Filtros de búsqueda (en el cliente, sobre el historial completo) ──
 
 interface PurchaseFilters {
@@ -276,6 +297,13 @@ export default function MisComprasPage() {
   const authLoading = auth?.loading ?? false;
   const customerId = user?.id ?? null;
   const role = user?.role ?? null;
+  /**
+   * PAY-NOTIFICATIONS Task 8G — notificaciones de pago sin leer sobre las
+   * compras. El estado es SIEMPRE del provider global (aquí solo se lee);
+   * fuera del provider el hook devuelve null y la página queda idéntica a
+   * como era antes.
+   */
+  const notifications = useOptionalCustomerNotifications();
 
   const [items, setItems] = useState<PurchaseItemDto[] | null>(null);
   /** Página visible sobre el subconjunto FILTRADO (paginación local). */
@@ -482,6 +510,62 @@ export default function MisComprasPage() {
     }
     return counts;
   }, [items]);
+
+  /**
+   * Compras con una notificación de pago SIN LEER, indexadas por su
+   * `attempt_id` vía `action_url` validada. Es INDEPENDIENTE del contador
+   * de no leídos del badge: aquí solo interesa qué compra abrir, no cuántas
+   * notificaciones hay. La primera notificación por intento gana.
+   */
+  const unreadPaymentByAttempt = useMemo(() => {
+    const map = new Map<string, UnreadPaymentNotice>();
+    if (!notifications) return map;
+    for (const notification of notifications.paymentNotifications) {
+      if (notification.read_at !== null) continue;
+      const target = parsePaymentActionUrl(
+        notification.type,
+        notification.action_url,
+      );
+      if (!target || map.has(target.attemptId)) continue;
+      map.set(target.attemptId, {
+        notification,
+        href: target.href,
+        kind: target.type === 'payment_verified' ? 'ticket' : 'payment',
+      });
+    }
+    return map;
+  }, [notifications]);
+
+  /**
+   * Marca la notificación de ESTA compra como leída al abrirla (CTA nuevo
+   * o las acciones de boleto/pago existentes). Fire-and-forget: el badge se
+   * actualiza apenas el provider confirma (`markAsRead` actualiza el
+   * estado local) y un fallo queda observable en log + estado de error.
+   */
+  const markAttemptNoticeRead = useCallback(
+    (attemptId: string) => {
+      const notice = unreadPaymentByAttempt.get(attemptId);
+      if (!notice || !notifications) return;
+      void notifications
+        .markAsRead(notice.notification.id)
+        .then((ok) => {
+          if (!ok) {
+            console.error('[MisCompras] mark-as-read de notificación falló:', {
+              attemptId,
+              notificationId: notice.notification.id,
+            });
+          }
+        })
+        .catch((err) => {
+          console.error(
+            '[MisCompras] mark-as-read de notificación lanzó:',
+            { attemptId, notificationId: notice.notification.id },
+            err,
+          );
+        });
+    },
+    [notifications, unreadPaymentByAttempt],
+  );
 
   const filtered = useMemo(
     () => filtrarCompras(items ?? [], searchIndex, filters),
@@ -826,6 +910,14 @@ export default function MisComprasPage() {
             <div className="grid gap-4">
               {visibleItems.map((item) => {
                 const meta = estadoMeta(item.estado);
+                // Notificación de pago sin leer sobre ESTA compra (resaltado
+                // Task 8G): indicador sutil, no un contador de pendientes.
+                const notice =
+                  unreadPaymentByAttempt.get(item.attempt_id) ?? null;
+                const ticketCtaCoversNotice =
+                  notice?.kind === 'ticket' && esBoletoDisponible(item);
+                const paymentCtaCoversNotice =
+                  notice?.kind === 'payment' && esReintentoDisponible(item);
                 // Orden natural (A1, A4, A10), sin importar el orden de selección.
                 const asientos = sortSeatCodes(item.pasajeros.asientos).join(', ');
                 const paymentStatus =
@@ -846,14 +938,26 @@ export default function MisComprasPage() {
                 return (
                   <article
                     key={item.attempt_id}
-                    className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+                    // Borde terracota SOLO cuando hay una notificación sin
+                    // leer: es un indicador de estado activo que requiere
+                    // atención (regla 17), no adorno decorativo.
+                    className={`rounded-2xl border bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] ${
+                      notice ? 'border-brand-cyan/50' : 'border-black/[0.06]'
+                    }`}
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${meta.className}`}
-                      >
-                        {meta.label}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${meta.className}`}
+                        >
+                          {meta.label}
+                        </span>
+                        {notice && (
+                          <PillBadge className="inline-flex rounded-full bg-[var(--color-cyan-bg)] px-2.5 py-0.5 text-[11px] font-semibold text-brand-cyan">
+                            Notificación nueva
+                          </PillBadge>
+                        )}
+                      </div>
                       <div className="text-right">
                         <p className="text-[11px] font-medium uppercase text-brand-muted">
                           Operación iniciada
@@ -921,6 +1025,31 @@ export default function MisComprasPage() {
                       {item.mensaje}
                     </p>
 
+                    {/* Task 8G: CTA de la notificación SIN LEER cuando las
+                        acciones existentes de la tarjeta no cubren su
+                        destino (boleto aún no disponible / reintento no
+                        habilitado). El href sale SIEMPRE de la action_url
+                        validada. */}
+                    {notice && !ticketCtaCoversNotice && !paymentCtaCoversNotice && (
+                      <Link
+                        href={notice.href}
+                        onClick={() => markAttemptNoticeRead(item.attempt_id)}
+                        className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                      >
+                        {notice.kind === 'ticket' ? (
+                          <>
+                            <Ticket size={16} strokeWidth={1.75} aria-hidden />
+                            Ver boleto
+                          </>
+                        ) : (
+                          <>
+                            <CreditCard size={16} strokeWidth={1.75} aria-hidden />
+                            Revisar pago
+                          </>
+                        )}
+                      </Link>
+                    )}
+
                     {(showEnvios || showMotivo) && comprobante && (
                       <div className="mt-4 rounded-[10px] bg-[#f1f5f9] px-4 py-3 text-sm">
                         <p className="text-[11px] font-medium uppercase text-brand-muted">
@@ -958,6 +1087,11 @@ export default function MisComprasPage() {
                     {esReintentoDisponible(item) && (
                       <Link
                         href={`${COMPRAS_PATH}/${item.attempt_id}/payment`}
+                        onClick={
+                          notice
+                            ? () => markAttemptNoticeRead(item.attempt_id)
+                            : undefined
+                        }
                         className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                       >
                         <RefreshCw size={16} strokeWidth={1.75} aria-hidden />
@@ -1004,6 +1138,11 @@ export default function MisComprasPage() {
                         {esBoletoDisponible(item) && (
                           <Link
                             href={`${COMPRAS_PATH}/${item.attempt_id}/ticket`}
+                            onClick={
+                              notice
+                                ? () => markAttemptNoticeRead(item.attempt_id)
+                                : undefined
+                            }
                             className="mt-3 inline-flex items-center gap-1.5 rounded-[10px] bg-brand-cyan px-4 py-2 text-xs font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                           >
                             <Ticket size={16} strokeWidth={1.75} aria-hidden />

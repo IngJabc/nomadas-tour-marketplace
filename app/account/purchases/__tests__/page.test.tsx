@@ -15,12 +15,14 @@ import { formatDateTimeShort } from '@/lib/timezone';
 import {
   checkoutApi,
   reviewsApi,
+  type CustomerNotificationDto,
   type PurchaseHistoryView,
   type PurchaseItemDto,
   type ReviewItemDto,
   type ReviewItemState,
 } from '@/lib/api';
 import { subscribeToPurchaseHistory } from '@/lib/realtime/subscriptions';
+import { CustomerNotificationsProvider } from '@/components/notifications/CustomerNotificationsProvider';
 import MisComprasPage from '../page';
 
 const authState = vi.hoisted(() => ({
@@ -34,9 +36,13 @@ const authState = vi.hoisted(() => ({
 
 const realtime = vi.hoisted(() => {
   const cleanupRealtime = vi.fn();
+  const cleanupNotifications = vi.fn();
   return {
     cleanupRealtime,
+    cleanupNotifications,
     subscribeToPurchaseHistory: vi.fn(() => cleanupRealtime),
+    // Task 8G: el provider global de notificaciones se suscribe también.
+    subscribeToCustomerNotifications: vi.fn(() => cleanupNotifications),
   };
 });
 
@@ -52,12 +58,21 @@ vi.mock('@/lib/api', () => ({
   // (REV-001)" al final usa mockResolvedValueOnce/mockRejectedValueOnce
   // para no contaminar este default (`clearAllMocks` no borra
   // implementaciones, así que este default persiste).
-  reviewsApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
+  // Task 8G: notifications/markNotificationRead los consume el provider
+  // global (bloque final "notificaciones de pago"); por defecto, sin
+  // notificaciones para no alterar los tests previos.
+  reviewsApi: {
+    list: vi.fn().mockResolvedValue({ items: [] }),
+    notifications: vi.fn().mockResolvedValue({ items: [] }),
+    markNotificationRead: vi.fn().mockResolvedValue({ ok: true }),
+  },
 }));
 
 vi.mock('@/lib/realtime/subscriptions', () => realtime);
 
 const listPurchases = vi.mocked(checkoutApi.listPurchases);
+const mockedNotifications = vi.mocked(reviewsApi.notifications);
+const mockedMarkRead = vi.mocked(reviewsApi.markNotificationRead);
 
 const CUSTOMER = {
   user: {
@@ -1545,5 +1560,229 @@ describe('MisComprasPage — CTA de reseña (REV-001)', () => {
     expect(
       screen.queryByRole('link', { name: /Calificar viaje y agencia/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * PAY-NOTIFICATIONS Task 8G — notificaciones de pago SIN LEER sobre las
+ * compras. La página se monta DENTRO del provider global real (que a su vez
+ * consume el mock de `reviewsApi.notifications` y del canal Realtime).
+ *
+ * La asociación notificación → compra se hace por `action_url` validada
+ * (UUID de intento en la ruta); `entity_id` jamás se usa (Task 6).
+ */
+describe('MisComprasPage — notificaciones de pago sin leer (Task 8G)', () => {
+  // Intentos reales en formato UUID: `parsePaymentActionUrl` exige UUID.
+  const ATTEMPT_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ATTEMPT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  function paymentNotice(
+    overrides: Partial<CustomerNotificationDto> = {},
+  ): CustomerNotificationDto {
+    return {
+      id: 'n-1',
+      type: 'payment_verified',
+      title: 'Pago verificado',
+      body: 'Tu pago fue aprobado. Ya puedes ver el boleto.',
+      entity_type: 'reservation',
+      entity_id: '22222222-2222-4222-8222-222222222222',
+      action_url: `/account/purchases/${ATTEMPT_A}/ticket`,
+      read_at: null,
+      created_at: '2026-11-05T12:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function renderWithNotifications() {
+    return render(
+      <CustomerNotificationsProvider>
+        <MisComprasPage />
+      </CustomerNotificationsProvider>,
+    );
+  }
+
+  /** Deja asentado el fetch de notificaciones del provider en el DOM. */
+  async function settleNotifications() {
+    await waitFor(() => expect(mockedNotifications).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  beforeEach(() => {
+    mockedNotifications.mockResolvedValue({ items: [] });
+    mockedMarkRead.mockResolvedValue({ ok: true });
+  });
+
+  it('resalta la compra con payment_verified sin leer y ofrece el CTA al boleto', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          type: 'payment_verified',
+          action_url: `/account/purchases/${ATTEMPT_A}/ticket`,
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(view([makeItem({ attempt_id: ATTEMPT_A })]));
+
+    renderWithNotifications();
+
+    const pill = await screen.findByText('Notificación nueva');
+    // Indicador sutil en SU tarjeta (borde terracota del sistema).
+    expect(pill.closest('article')?.className).toContain('border-brand-cyan/50');
+    // El CTA nace de la action_url validada (no de entity_id).
+    expect(screen.getByRole('link', { name: /Ver boleto/ })).toHaveAttribute(
+      'href',
+      `/account/purchases/${ATTEMPT_A}/ticket`,
+    );
+  });
+
+  it('resalta payment_rejected sin leer con el CTA a la corrección de pago', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          id: 'n-rej',
+          type: 'payment_rejected',
+          title: 'Pago rechazado',
+          action_url: `/account/purchases/${ATTEMPT_A}/payment`,
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(
+      view([
+        makeItem({
+          attempt_id: ATTEMPT_A,
+          estado: 'en_revision',
+          status: 'under_review',
+        }),
+      ]),
+    );
+
+    renderWithNotifications();
+
+    expect(await screen.findByText('Notificación nueva')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Revisar pago/ })).toHaveAttribute(
+      'href',
+      `/account/purchases/${ATTEMPT_A}/payment`,
+    );
+  });
+
+  it('no resalta compras cuya notificación está leída o tiene action_url inválida', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          id: 'n-read',
+          action_url: `/account/purchases/${ATTEMPT_A}/ticket`,
+          read_at: '2026-11-05T10:00:00.000Z',
+        }),
+        paymentNotice({
+          id: 'n-ext',
+          action_url: 'https://evil.test/account/purchases/x/ticket',
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(view([makeItem({ attempt_id: ATTEMPT_A })]));
+
+    renderWithNotifications();
+
+    expect(await screen.findByText('Barquisimeto → Caracas')).toBeInTheDocument();
+    await settleNotifications();
+    expect(screen.queryByText('Notificación nueva')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Ver boleto/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('asocia la notificación a SU compra por action_url y no a las demás', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          id: 'n-b',
+          action_url: `/account/purchases/${ATTEMPT_B}/ticket`,
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(
+      view([
+        makeItem({ attempt_id: ATTEMPT_A }),
+        makeItem({ attempt_id: ATTEMPT_B }),
+      ]),
+    );
+
+    renderWithNotifications();
+
+    expect(await screen.findByText('Notificación nueva')).toBeInTheDocument();
+    // Solo UNA tarjeta resaltada, y su CTA apunta al intento de la URL.
+    expect(screen.getAllByText('Notificación nueva')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: /Ver boleto/ })).toHaveAttribute(
+      'href',
+      `/account/purchases/${ATTEMPT_B}/ticket`,
+    );
+  });
+
+  it('al abrir la compra resaltada se marca la notificación leída y el resaltado desaparece', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          id: 'n-cta',
+          action_url: `/account/purchases/${ATTEMPT_A}/ticket`,
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(view([makeItem({ attempt_id: ATTEMPT_A })]));
+
+    renderWithNotifications();
+
+    expect(await screen.findByText('Notificación nueva')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('link', { name: /Ver boleto/ }));
+
+    await waitFor(() => expect(mockedMarkRead).toHaveBeenCalledWith('n-cta'));
+    // El badge/resaltado baja apenas el provider confirma la lectura.
+    await waitFor(() =>
+      expect(screen.queryByText('Notificación nueva')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('el enlace de boleto existente también marca la notificación al hacer clic', async () => {
+    mockedNotifications.mockResolvedValue({
+      items: [
+        paymentNotice({
+          id: 'n-ok',
+          action_url: `/account/purchases/${ATTEMPT_A}/ticket`,
+        }),
+      ],
+    });
+    listPurchases.mockResolvedValue(
+      view([
+        makeItem({
+          attempt_id: ATTEMPT_A,
+          estado: 'reserva_confirmada',
+          status: 'confirmed',
+          reserva: {
+            id: 'res-1',
+            status: 'confirmed',
+            payment_status: 'fully_paid',
+            ticket_code: 'TCK-9',
+            created_at: '2026-10-15T10:05:00.000Z',
+          },
+        }),
+      ]),
+    );
+
+    renderWithNotifications();
+
+    expect(await screen.findByText('Notificación nueva')).toBeInTheDocument();
+    // El boleto existente CUBRE el destino: sin CTA duplicado.
+    const ticketLinks = screen.getAllByRole('link', { name: /Ver boleto/ });
+    expect(ticketLinks).toHaveLength(1);
+
+    fireEvent.click(ticketLinks[0]);
+
+    await waitFor(() => expect(mockedMarkRead).toHaveBeenCalledWith('n-ok'));
+    await waitFor(() =>
+      expect(screen.queryByText('Notificación nueva')).not.toBeInTheDocument(),
+    );
   });
 });

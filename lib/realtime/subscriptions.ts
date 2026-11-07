@@ -277,3 +277,83 @@ export function subscribeToTripCatalog(
     removeChannels(supabase, channels);
   };
 }
+
+// ── PAY-NOTIFICATIONS Task 8D: Realtime de customer_notifications ──────────
+
+/** Fila cruda de `customer_notifications` tal como la entrega Supabase. */
+export interface RealtimeCustomerNotificationRow {
+  id: string;
+  customer_id: string;
+  type: string;
+  title?: string | null;
+  body?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  action_url?: string | null;
+  read_at?: string | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+}
+
+export type CustomerNotificationInsertCallback = (
+  row: RealtimeCustomerNotificationRow,
+) => void;
+
+export type CustomerNotificationStatusCallback = (
+  status: string,
+  error: string | null,
+) => void;
+
+/**
+ * Suscribirse a los INSERT de `customer_notifications` del cliente
+ * autenticado.
+ *
+ * - Filtro `customer_id=eq.<id>` + validación extra en el callback: una fila
+ *   ajena o malformada jamás llega al caller (defensa en profundidad sobre
+ *   el filtro del canal y la RLS `customer_notifications_customer_read` de
+ *   098, que además limita la entrega a filas propias).
+ * - Solo INSERT: los cambios de `read_at` los resuelve el backend vía API.
+ * - `onStatus` expone los estados del canal (SUBSCRIBED / CHANNEL_ERROR /
+ *   TIMED_OUT / CLOSED) para que el caller los registre de forma
+ *   observable; los errores jamás rompen la aplicación.
+ *
+ * ADVERTENCIA (verificación de publicación): la migración 098 (Tour) NO
+ * agrega `customer_notifications` a la publicación `supabase_realtime` y no
+ * existe evidencia local de que otra migración lo haya hecho. Sin esa
+ * publicación la suscripción se conecta pero NO entrega eventos: el estado
+ * de notificaciones sigue vivo por REST (fetch/refresh) y este canal queda
+ * en silencio. Habilitarlo exige un `ALTER PUBLICATION` en la base Tour
+ * (requisito externo, fuera de este repo y de esta tarea).
+ */
+export function subscribeToCustomerNotifications(
+  customerId: string,
+  onInsert: CustomerNotificationInsertCallback,
+  onStatus?: CustomerNotificationStatusCallback,
+): CleanupFn {
+  if (!customerId) return () => {};
+  const supabase = createClient();
+
+  const channel = supabase
+    .channel(`customer_notifications:${customerId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'customer_notifications',
+        filter: `customer_id=eq.${customerId}`,
+      },
+      (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+        const row = payload.new as Record<string, unknown> | null;
+        if (!row?.id || row.customer_id !== customerId) return;
+        onInsert(row as unknown as RealtimeCustomerNotificationRow);
+      },
+    )
+    .subscribe((status, err) => {
+      onStatus?.(String(status), err?.message ?? null);
+    });
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
