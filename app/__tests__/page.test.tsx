@@ -14,10 +14,28 @@ vi.mock("@/components/home/SeccionProximosViajes", () => ({
   SeccionProximosViajes: () => <div data-testid="seccion-proximos-viajes" />,
 }));
 
+// Igual que la anterior: la sección de agencias hace fetch real.
+vi.mock("@/components/home/SeccionAgencias", () => ({
+  SeccionAgencias: () => <div data-testid="seccion-agencias" />,
+}));
+
 describe("Landing (/) — LND", () => {
   it("monta la sección de próximas salidas", () => {
     render(<HomePage />);
     expect(screen.getByTestId("seccion-proximos-viajes")).toBeInTheDocument();
+  });
+
+  it("monta la sección de agencias después de la de viajes", () => {
+    render(<HomePage />);
+    expect(screen.getByTestId("seccion-agencias")).toBeInTheDocument();
+
+    // Orden explícito: agencias inmediatamente después de los viajes.
+    const viajes = screen.getByTestId("seccion-proximos-viajes");
+    const agencias = screen.getByTestId("seccion-agencias");
+    expect(
+      viajes.compareDocumentPosition(agencias) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("el hero no promete confirmación inmediata (la compra requiere revisión del comprobante)", () => {

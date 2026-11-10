@@ -149,6 +149,26 @@ describe('Navbar', () => {
       'href',
       '/trips',
     );
+    expect(desktop.getByRole('link', { name: 'Agencias' })).toHaveAttribute(
+      'href',
+      '/agencies',
+    );
+  });
+
+  it('ofrece "Agencias" también con sesión iniciada', () => {
+    authState.value.user = {
+      id: 'user-me',
+      email: 'cliente@test.com',
+      role: 'customer',
+    };
+
+    render(<Navbar />);
+    const desktop = within(screen.getByRole('navigation', { name: 'Principal' }));
+
+    expect(desktop.getByRole('link', { name: 'Agencias' })).toHaveAttribute(
+      'href',
+      '/agencies',
+    );
   });
 
   it('ofrece "Explorar" y "Ayuda" también con sesión iniciada', () => {
@@ -311,6 +331,10 @@ describe('Navbar', () => {
       expect(mobile.getByRole('link', { name: 'Explorar' })).toHaveAttribute(
         'href',
         '/trips',
+      );
+      expect(mobile.getByRole('link', { name: 'Agencias' })).toHaveAttribute(
+        'href',
+        '/agencies',
       );
       expect(mobile.getByRole('link', { name: 'Ayuda' })).toHaveAttribute(
         'href',

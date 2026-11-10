@@ -148,6 +148,25 @@ describe('ViajesPage (MKT-002)', () => {
     expect(screen.getByText('1 viaje disponible')).toBeInTheDocument();
   });
 
+  it('hace clickeable el nombre de la agencia hacia su storefront sin tocar el CTA', async () => {
+    mockedTrips.mockResolvedValue({ trips: [trip] });
+
+    render(<ViajesPage />);
+    await screen.findByText('Barquisimeto → Ruta de prueba');
+
+    // El nombre enlaza al storefront público con el id que ya trae el viaje.
+    const agencyLink = screen.getByRole('link', { name: 'Bianchi travels' });
+    expect(agencyLink).toHaveAttribute('href', '/agencies/ag-1');
+
+    // El CTA de reserva sigue siendo un elemento distinto e intacto.
+    const reservar = screen.getByRole('link', { name: 'Reservar' });
+    expect(reservar).toHaveAttribute(
+      'href',
+      `/reservations/new?trip=${trip.id}`,
+    );
+    expect(agencyLink).not.toBe(reservar);
+  });
+
   it('marca el precio como "Precio por definir" y bloquea el CTA cuando el viaje no tiene seat_price', async () => {
     mockedTrips.mockResolvedValue({ trips: [{ ...trip, seat_price: null }] });
 
