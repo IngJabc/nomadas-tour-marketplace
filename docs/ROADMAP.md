@@ -4,7 +4,7 @@
 **Alcance:** Dirección de mediano plazo. No es un backlog técnico de sprint.
 **Ejecución operativa:** Ver [TASKS.md](../TASKS.md).
 
-**Última actualización:** 2026-10-30
+**Última actualización:** 2026-11-10
 
 > **Nota de convención (2026-10-30):** las fases 0–4 son las épicas técnicas
 > ya existentes (MKT-001…014, GUEST, RT). Las nuevas iniciativas de producto
@@ -33,23 +33,28 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | Checkout con revisión de comprobante (MKT-007, `checkout_attempts`) | ✅ Completado |
 | Panel de revisión de pagos (agencia, en repo tour, MKT-006) | ✅ Completado |
 | Historial de compras + boleto QR (`/account/purchases`) | ✅ Completado (RT-01…RT-03) |
-| Comisiones + primer viaje gratis | ⏳ Diseño aprobado (MKT-009 — roadmap orignal) |
-| Workers (T-1, comisiones, emails) | ⏳ Diseño aprobado (MKT-008…011) |
+| Comisiones + primer viaje gratis | ⏳ Diferido (MKT-009 comisiones — roadmap original; no cancelado) |
+| Workers (T-1, comisiones, emails) | 🟡 T-1 (MKT-008) integrado y desplegado, validación funcional pendiente; comisiones y emails diferidos (MKT-008…011) |
 | Panel superadmin marketplace (`/admin`) | ⏳ Planificado (MKT-012) |
 | Cuenta de cliente (`/account`) | ⏳ Planificado (MKT-013) |
-| Migraciones marketplace (074–094) | ✅ Aplicadas (074–080 verificado en vivo 2026-10-06; 085–087 posterior; 088–094 tour) |
-| **Landing dinámico (4 viajes próximos)** | ⏳ Planificado (Fase 5, **LND**) |
-| **Sistema de reputación y calificaciones** | ✅ Implementado REV (Fase 6, REV-001…006); ⏳ REP pendiente |
+| Migraciones marketplace (074–101) | ✅ Aplicadas (074–080 verificado en vivo 2026-10-06; 085–087 posterior; 088–101 confirmadas aplicadas 2026-11-10) |
+| **Landing dinámico (4 viajes próximos)** | ✅ Implementado e integrado en `main` (Fase 5, **LND**, PR #19 2026-10-30) |
+| **Sistema de reputación y calificaciones** | ✅ REV integrado en `main` (Fase 6, REV-001…006, PR #21 2026-11-02) + migraciones 097–099 aplicadas; ⏳ REP pendiente |
 | **Feedback del Marketplace** | ⏳ Planificado (Fase 7, **FDB**) |
-| **Atención al cliente por WhatsApp** | ⏳ Planificado (Fase 7, **SUP**) |
+| **Atención al cliente por WhatsApp** | 🟡 Parcial (Fase 7, **SUP**): `/help` integrada con el rediseño; SUP-001/002/003 pendientes |
 | **Marco legal y cumplimiento** | ⏳ Planificado (Fase 8, **LEG**) |
 
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
 Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 
-> **REV está implementado (código + pruebas, 2026-11-01; migraciones 097–099
-> escritas, SIN aplicar).** LND, REP, FDB, SUP y LEG siguen sin implementarse.
-> Nada se marca completado hasta existir código validado y desplegado.
+> **Estado de las iniciativas (2026-11-10):** **LND** implementado e
+> integrado en `main` (PR #19); **REV** implementado e integrado en `main`
+> (PR #21, 2026-11-02) con migraciones 097–099 **aplicadas** (confirmado);
+> **SUP** parcial (página `/help` con FAQ + contacto, desplegada con el
+> rediseño; botón flotante SUP-002 y número configurable SUP-001 sin
+> implementar). **REP, FDB y LEG siguen sin implementarse.** El despliegue
+> de LND/REV no está confirmado en esta sincronización (integrados en `main`
+> y migraciones aplicadas, sí). Nada se marca completado sin evidencia.
 
 ---
 
@@ -123,11 +128,17 @@ FASE 2 — Pagos                              ✅ Completada
              crean en la aprobación atómica. Sustituye el flujo anterior
              que creaba la reserva antes de la revisión.
 
-FASE 3 — Ciclo de vida                       ⏳ Planificada
+FASE 3 — Ciclo de vida                       🟡 En curso (parcial)
   MKT-008  T-1 cancelación por pasajero (worker)
-  MKT-009  Comisiones idempotentes + primer viaje gratis
-  MKT-010  Refunds (reservation_refunds)
-  MKT-011  Emails (outbox) con EMAIL_DELIVERY_MODE
+           — ✅ integrado en `main` y desplegado (migración 088 +
+             scheduler `marketplace-t1-scheduler`); validación
+             funcional LOCAL PENDIENTE (ver TASKS.md → MKT-008 T-1)
+  MKT-009  Comisiones idempotentes + primer viaje gratis → diferido
+  MKT-010  Refunds (reservation_refunds) → diferido (no cancelado)
+  MKT-011  Emails (outbox) con EMAIL_DELIVERY_MODE → diferido
+           — El naming drift documentado (MKT-010 ejecutado como
+             "expiración de checkout", integrado y desplegado) se
+             conserva; refunds sigue pendiente bajo Fase 3.
 
 FASE 4 — Panel admin + Cuenta                ⏳ Planificada (parcial ✅)
   MKT-012  /admin (sidebar) pagos, comisiones, viajes
@@ -136,12 +147,12 @@ FASE 4 — Panel admin + Cuenta                ⏳ Planificada (parcial ✅)
              (/account/purchases, RT-01…RT-03); perfil y mis reservas
              siguen pendientes
 
-FASE 5 — Experiencia pública                 ⏳ Planificada (2026-10-30)
-  LND-001  Landing dinámico: 4 viajes próximos desde endpoint público
-  LND-002  Estados de carga, error y ausencia de viajes + CTA catálogo
-  LND-003  Tarjetas preparadas para imagen/descripción futuros
+FASE 5 — Experiencia pública                 ✅ Integrada (2026-10-30, PR #19)
+  LND-001  ✅ Landing dinámico: 4 viajes próximos desde endpoint público
+  LND-002  ✅ Estados de carga, error y ausencia de viajes + CTA catálogo
+  LND-003  ✅ Tarjetas preparadas para imagen/descripción futuros
 
-FASE 6 — Confianza y reputación              ✅ REV implementado (2026-11-01)
+FASE 6 — Confianza y reputación              🟡 REV integrado (2026-11-02, PR #21)
   REV-001  ✅ Viaje completado elegible: trips.completed_at (trigger 097,
            ventana 48 h desde completed_at; nunca por hora de salida)
   REV-002  ✅ Datos: trip_reviews + agency_reviews separadas, 1 por
@@ -150,14 +161,19 @@ FASE 6 — Confianza y reputación              ✅ REV implementado (2026-11-01
            (RPC submit_reservation_reviews)
   REV-004  ✅ Integridad + moderación: RLS, RPCs service_role,
            audit_log (review.created / review.moderated, 099)
-  REP-001  Perfil público de agencia
+           — Migraciones 097–099 APLICADAS (confirmado 2026-11-10)
+  REP-001  Perfil público de agencia (implementación local sin commitear)
   REP-002  Ranking de confiabilidad (algoritmo: decisión pendiente)
 
-FASE 7 — Atención y mejora continua          ⏳ Planificada (2026-10-30)
+FASE 7 — Atención y mejora continua          🟡 Parcial (2026-11-10)
   FDB-001  Canal privado de feedback del Marketplace (modelo + estados)
   FDB-002  Interface administrativa de revisión de feedback
-  SUP-001  Apartado de ayuda + acceso visible a WhatsApp
-  SUP-002  Botón flotante de WhatsApp con mensajes predefinidos
+  SUP-001  Configuración del número (platform_config/env) → pendiente
+  SUP-002  Botón flotante de WhatsApp con mensajes predefinidos → pendiente
+  SUP-003  Plantillas de mensajes por categoría → pendiente
+  SUP-004  Página de ayuda con categorías → 🟡 parcial: `/help` (FAQ +
+           contacto con canales reales) integrada y desplegada con el
+           rediseño (2026-10-28)
 
 FASE 8 — Marco legal                        ⏳ Planificada (2026-10-30)
   LEG-001  Documentos legales (modelo dual, Venezuela)
@@ -206,7 +222,8 @@ No aplica — este repo inicia en Fase 0.
 
 Cada iniciativa sigue el formato: identificador, objetivo, problema, alcance
 MVP, fuera de alcance, dependencias, riesgos, criterios de aceptación, tareas,
-pruebas, estado y decisiones pendientes. **Ninguna está implementada.**
+pruebas, estado y decisiones pendientes. **LND y REV están implementados e
+integrados en `main`; SUP está parcial; REP, FDB y LEG siguen planificados.**
 
 Leyenda de tipos de decisión:
 - **[CONFIRMADA]** — decisión de negocio ya tomada.
@@ -268,11 +285,17 @@ ir al catálogo.
 - Unitarias del componente (mock de `publicApi.trips`).
 - Integración: home carga sección, ordena, recorta a 4, maneja 0 viajes.
 
-**Estado actual:** ⏳ Planificado (no implementado).
+**Estado actual:** ✅ Implementado e integrado en `main` (PR #19,
+2026-10-30 — `SeccionProximosViajes` + `TarjetaViajeDestacado` con tests;
+LND-001.1 cubre disponibilidad). Las decisiones de diseño pendientes
+(jerarquía de campos, mostrar siempre vs solo con viajes) se resolvieron en
+la implementación.
 
-**Decisiones pendientes:**
-- [PENDIENTE] Diseño exacto de la tarjeta y jerarquía de campos.
-- [PENDIENTE] ¿La sección aparece siempre o solo si hay ≥1 viaje?
+**Decisiones (cerradas con la implementación, 2026-10-30):**
+- [RESUELTA] Diseño exacto de la tarjeta y jerarquía de campos — definido en
+  `TarjetaViajeDestacado`.
+- [RESUELTA] ¿La sección aparece siempre o solo si hay ≥1 viaje? — siempre
+  visible; con 0 viajes muestra el empty state con CTA (criterio LND).
 
 ---
 
@@ -286,8 +309,9 @@ robustas.
 servicio ni de generar confianza entre clientes y agencias.
 
 **Estado:** ✅ **REV-001…REV-006 implementados** (2026-11-01, código +
-pruebas; migraciones `097`–`099` escritas en `../nomadas-tour/supabase/`,
-**SIN aplicar** a ninguna base de datos). REP sigue pendiente.
+pruebas) e **integrados en `main`** (PR #21, 2026-11-02; companion en
+`nomadas-tour` PR #172). Migraciones `097`–`099` **aplicadas** (confirmado
+2026-11-10). REP sigue pendiente.
 
 ### 3.1 Calificación del viaje (MVP)
 - Puntuación 1–5 estrellas.
@@ -388,13 +412,17 @@ pruebas; migraciones `097`–`099` escritas en `../nomadas-tour/supabase/`,
   doble envío, feedback de éxito/error, estados de sesión/rol/404
   (`app/account/reviews/__tests__` — 17 ✅).
 
-**Estado actual:** ✅ Implementado (2026-11-01). Migraciones `097`–`099`
-escritas SIN aplicar; sin deploy; sin commit. UI de moderación pendiente
-del panel `/admin` (MKT-012); rankings/distintivos = REP.
+**Estado actual:** ✅ Implementado (2026-11-01) e **integrado en `main`**
+(PR #21, 2026-11-02). Migraciones `097`–`099` **aplicadas** (confirmado
+2026-11-10); despliegue no confirmado en esta sincronización. UI de
+moderación pendiente del panel `/admin` (MKT-012); rankings/distintivos =
+REP.
 
-**Decisiones pendientes:**
-- [PENDIENTE] Definición exacta de "viaje completado" (campo/estado/lógica).
-- [PENDIENTE] Ventana de tiempo para evaluar tras completar.
+**Decisiones:**
+- [RESUELTA] Definición exacta de "viaje completado" → campo
+  `trips.completed_at`.
+- [RESUELTA] Ventana de tiempo para evaluar tras completar → 48 h desde
+  `completed_at` (nunca por hora de salida).
 - [PENDIENTE] Algoritmo de ranking (alternativas en REP).
 - [PENDIENTE] Política de moderación (términos, umbrales de ocultado).
 
@@ -439,7 +467,14 @@ sólidos (no solo estrellas aisladas) y ver quién presta el servicio.
 **Pruebas:**
 - Casos borde: 0 reseñas, 1 reseña 5★ vs 100 reseñas 4.8★, antigüedad.
 
-**Estado actual:** ⏳ Planificado.
+**Estado actual:** 🟡 **Parcial (2026-11-10):** existe implementación local
+del directorio y perfil público de agencias (`/agencies`,
+`/agencies/[agencyId]`, `backend/.../agency.service.ts`) **sin commitear —
+fuera de `main`, no integrada**; requiere decisión de integración para
+completar REP-001. **REP-002 (ranking de confiabilidad) no está
+implementado** — el orden del directorio es el del endpoint, sin ranking en
+frontend (por diseño: "jamás se inventa un ranking"). REP-003 depende de
+ambos.
 
 **Decisiones pendientes:**
 - [PENDIENTE] **Algoritmo exacto** — se deben documentar alternativas (p. ej.:
@@ -493,7 +528,10 @@ reporten problemas o sugieran mejoras sin confundirlo con reseñas públicas.
 
 **Pruebas:** backend (creación, estados), frontend (formulario, validación).
 
-**Estado actual:** ⏳ Planificado.
+**Estado actual:** ⏳ Planificado. **Sin evidencia de implementación
+(2026-11-10):** no existe modelo `marketplace_feedback` (ni en migraciones
+ni en código de ninguno de los dos repos), ni endpoint ni UI de envío o
+revisión.
 
 **Decisiones pendientes:**
 - [PENDIENTE] ¿Requiere autenticación o también guests?
@@ -543,7 +581,13 @@ para dudas o incidencias.
 
 **Pruebas:** apertura de wa.me con payload correcto, contextos con/sin reserva.
 
-**Estado actual:** ⏳ Planificado.
+**Estado actual:** 🟡 **Parcial (2026-11-10):** **SUP-004 parcial** — la
+página `/help` (FAQ con acordeones + contacto con canales reales) existe,
+integrada y desplegada con el rediseño (2026-10-28), y los enlaces
+`wa.me` de agencia existen en el flujo de reserva (MKT-007.4, derivados
+del teléfono publicado). **Pendientes:** SUP-001 (número de la plataforma
+configurable — no existe), SUP-002 (botón flotante global — no existe) y
+SUP-003 (plantillas de mensajes predefinidos por categoría — no existen).
 
 **Decisiones pendientes:**
 - [PENDIENTE] Número: env var o `platform_config`.
@@ -634,7 +678,9 @@ consentimiento cuando corresponda.
 | SUP | `platform_config` para número | Nada crítico |
 | LEG | Revisión jurídica externa | Recurso humano externo |
 
-Secuencia recomendada: **LND → REV → REP → FDB/SUP (paralelizables) → LEG**.
+Secuencia recomendada: **LND ✅ → REV ✅ → REP → FDB/SUP (paralelizables) → LEG**.
+REP queda como siguiente iniciativa de la secuencia de confianza (con su
+decisión de algoritmo pendiente y la integración del perfil público local).
 LEG debe iniciar su actividad de revisión jurídica en paralelo temprano por
 su dependencia de recursos externos.
 
@@ -643,7 +689,8 @@ su dependencia de recursos externos.
 # Decisiones pendientes consolidadas
 
 1. Algoritmo exacto de ranking de confiabilidad (REP) — con alternativas documentadas.
-2. Definición de "viaje completado" elegible para reseñas (REV).
+2. ~~Definición de "viaje completado" elegible para reseñas (REV)~~ —
+   **resuelta** (REV-001: `trips.completed_at` + ventana 48 h).
 3. Mínimo de evaluaciones para distintivos de confiabilidad.
 4. Número de WhatsApp: `platform_config` vs env var (SUP).
 5. Borradores legales iniciales y proveedor de revisión jurídica (LEG).

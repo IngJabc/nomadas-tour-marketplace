@@ -148,6 +148,7 @@ export function Navbar() {
         {/* Nav escritorio (>= sm) */}
         <nav aria-label="Principal" className="hidden items-center gap-6 sm:flex">
           {desktopLink("explorar", "/trips", "Explorar")}
+          {desktopLink("agencias", "/agencies", "Agencias")}
           {isCustomer &&
             desktopLink(
               "compras",
@@ -255,6 +256,11 @@ export function Navbar() {
           <motion.div variants={NAV_LINK_MOTION} transition={{ duration: 0.18 }}>
             <Link href="/trips" className={mobileLinkClass}>
               Explorar
+            </Link>
+          </motion.div>
+          <motion.div variants={NAV_LINK_MOTION} transition={{ duration: 0.18 }}>
+            <Link href="/agencies" className={mobileLinkClass}>
+              Agencias
             </Link>
           </motion.div>
           {isCustomer && (

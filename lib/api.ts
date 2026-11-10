@@ -144,11 +144,112 @@ export interface PublicTripAgencyRef {
   name: string;
 }
 
+// ── REP-001 · Directorio y perfil público de agencias ──────────────────────
+//
+// Solo datos públicos: identidad, branding, contactos públicos, viajes
+// publicados y estadísticas. JAMÁS email de acceso, métodos de pago ni datos
+// de clientes. Espejo de los DTOs de `backend/src/services/agency.service.ts`.
+
+/** Promedio redondeado a 1 decimal; `null` cuando no hay reseñas. */
+export interface AgencyRatingStat {
+  average: number | null;
+  count: number;
+}
+
+/**
+ * Las dos calificaciones SIEMPRE separadas: no existe un promedio
+ * combinado. `average: null` es válido (sin reseñas visibles, o tablas de
+ * reseñas aún sin aplicar) y se presenta como "sin calificar", nunca como 0.
+ */
+export interface AgencyRatings {
+  agency: AgencyRatingStat;
+  trip: AgencyRatingStat;
+}
+
+/** Fila pública del directorio (`GET /api/public/agencies`). */
+export interface PublicAgency {
+  id: string;
+  name: string;
+  subdomain: string;
+  logo_url: string | null;
+  primary_color: string | null;
+  secondary_color: string | null;
+  accent_color: string | null;
+  /** El backend ya devuelve las destacadas primero: el orden NO se reordena. */
+  is_featured: boolean;
+  featured_order: number;
+  ratings: AgencyRatings;
+  /** Viajes reservables hoy (active + publicado + salida futura). */
+  published_trips_count: number;
+}
+
+/** Perfil público (`GET /api/public/agencies/:agencyId`). */
+export interface PublicAgencyProfile extends PublicAgency {
+  /** Teléfono legado público de la agencia; fallback si no hay contactos. */
+  phone: string | null;
+  /** Phase 7 — presentación del storefront (solo en el perfil, no en el directorio). */
+  cover_url: string | null;
+  slogan: string | null;
+  description: string | null;
+  /** Solo contactos públicos, activos y no eliminados (091). */
+  contacts: AgencyPublicContact[];
+  /** Página de viajes según los filtros aplicados (filtrada en servidor). */
+  trips: PublicTrip[];
+  /** Total de viajes que matchean los filtros (no solo esta página). */
+  trips_total: number;
+}
+
+export interface PublicAgencyListParams {
+  limit?: number;
+  offset?: number;
+}
+
+export interface PublicAgencyProfileParams {
+  origin?: string;
+  destination?: string;
+  date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Normaliza los parámetros de query: `request` solo acepta strings y omite
+ * los vacíos, así un filtro sin texto viaja como "sin filtro".
+ */
+function toSearchParams(
+  params: Record<string, string | number | undefined>,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    out[key] = String(value);
+  }
+  return out;
+}
+
 export const publicApi = {
   trips: () => request<{ trips: PublicTrip[] }>('/public/trips'),
   tripDetail: (tripId: string) =>
     request<{ trip: PublicTripDetail }>(`/public/trips/${tripId}`),
-  agencies: () => request<{ agencies: unknown[] }>('/public/agencies'),
+  /**
+   * Directorio público paginado. El orden (destacadas primero, luego orden
+   * de exhibición y alfabético) lo decide el backend: jamás se reordena aquí.
+   */
+  agencies: (params: PublicAgencyListParams = {}) =>
+    request<{ agencies: PublicAgency[]; total: number }>('/public/agencies', {
+      params: toSearchParams({ limit: params.limit, offset: params.offset }),
+    }),
+  /** Perfil público con su página de viajes filtrada en el servidor. */
+  agencyDetail: (agencyId: string, params: PublicAgencyProfileParams = {}) =>
+    request<{ agency: PublicAgencyProfile }>(`/public/agencies/${agencyId}`, {
+      params: toSearchParams({
+        origin: params.origin,
+        destination: params.destination,
+        date: params.date,
+        limit: params.limit,
+        offset: params.offset,
+      }),
+    }),
 };
 
 // ── MKT-008 · Contactos públicos de agencia (091 agency_contacts) ────────────

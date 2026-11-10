@@ -19,14 +19,17 @@ import { motion } from "framer-motion";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { getApiErrorMessage } from "@/lib/errors/api-error";
 import { subscribeToTripCatalog } from "@/lib/realtime/subscriptions";
-import { isDepartureTimeInFuture, toBusinessDateString, BUSINESS_TIMEZONE } from "@/lib/timezone";
+import { isDepartureTimeInFuture, toBusinessDateString } from "@/lib/timezone";
+import {
+  precioMaximoDe,
+  viajePasaFiltros,
+} from "@/lib/trips/filters";
 import { TarjetaViaje } from "@/components/trips/TarjetaViaje";
 import { StateIcon } from "@/components/ui/StateIcon";
 import {
   FiltrosLateral,
   FILTROS_VIAJE_TODOS,
   type FiltrosViaje,
-  type FranjaHoraria,
 } from "@/components/trips/FiltrosLateral";
 import { RailLateral } from "@/components/trips/RailLateral";
 import { Reveal } from "@/components/ui/Reveal";
@@ -57,40 +60,8 @@ function tripMatches(trip: PublicTrip, filters: Filters): boolean {
   return true;
 }
 
-/** Franja horario de salida en la zona de negocio (America/Caracas). */
-function franjaDe(iso: string): FranjaHoraria {
-  const hora = Number(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: BUSINESS_TIMEZONE,
-      hour: "numeric",
-      hour12: false,
-    }).format(new Date(iso)),
-  ) % 24;
-  if (hora >= 12 && hora < 18) return "afternoon";
-  if (hora >= 18) return "night";
-  return "morning";
-}
-
-/**
- * Filtros laterales (horario, vehículo, agencia, precio). Listas vacías =
- * sin filtro; los viajes sin precio publicado nunca se descartan por precio.
- */
-function viajePasaFiltros(trip: PublicTrip, f: FiltrosViaje): boolean {
-  if (f.horarios.length > 0 && !f.horarios.includes(franjaDe(trip.departure_time))) {
-    return false;
-  }
-  if (f.vehiculos.length > 0 && !f.vehiculos.includes(trip.vehicle_type)) {
-    return false;
-  }
-  if (f.precioMax !== null && trip.seat_price !== null && trip.seat_price > f.precioMax) {
-    return false;
-  }
-  if (f.agencias.length > 0) {
-    const nombres = (trip.agencies ?? []).map((agency) => agency.name);
-    if (!nombres.some((nombre) => f.agencias.includes(nombre))) return false;
-  }
-  return true;
-}
+/** Franja horario y filtros laterales: ver `lib/trips/filters.ts`
+ *  (compartido con el catálogo del perfil de agencia). */
 
 /**
  * Filtros iniciales desde la query string (?origin=&destination=&date=)
@@ -264,12 +235,7 @@ export default function ViajesPage() {
       .map(([nombre, viajes]) => ({ nombre, viajes }))
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
   }, [trips]);
-  const precioDisponible = useMemo(() => {
-    const precios = trips
-      .map((trip) => trip.seat_price)
-      .filter((price): price is number => typeof price === "number");
-    return precios.length > 0 ? Math.max(...precios) : null;
-  }, [trips]);
+  const precioDisponible = useMemo(() => precioMaximoDe(trips), [trips]);
 
   const inputClass =
     "w-full rounded-[10px] border-[1.5px] border-[#e5e7eb] bg-white px-4 py-3 text-sm font-normal text-brand-navy outline-none transition-shadow placeholder:text-brand-muted focus:border-brand-cyan focus:shadow-[0_0_0_3px_rgba(212,98,43,0.15)]";

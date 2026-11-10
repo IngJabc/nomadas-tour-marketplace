@@ -72,7 +72,16 @@ export function TarjetaViaje({ trip, index = 0 }: TarjetaViajeProps) {
         {agencies.length > 0 ? (
           <p className="flex items-center gap-2">
             <Building2 size={16} strokeWidth={1.75} className="shrink-0" aria-hidden />
-            <span className="font-medium text-brand-navy">{agencies[0].name}</span>
+            {/* Nombre clickeable → storefront público de la agencia. Es un
+                hermano del CTA "Reservar" (no hay link envolvente en la
+                tarjeta), así que no interfiere con la navegación ni con la
+                reserva. */}
+            <Link
+              href={`/agencies/${agencies[0].id}`}
+              className="font-medium text-brand-navy underline-offset-2 transition-colors duration-200 hover:text-brand-cyan hover:underline"
+            >
+              {agencies[0].name}
+            </Link>
             {agencies.length > 1 && (
               <>
                 <span className="rounded-full bg-[#F5F1EC] px-2.5 py-0.5 text-[11px] font-semibold text-brand-muted">

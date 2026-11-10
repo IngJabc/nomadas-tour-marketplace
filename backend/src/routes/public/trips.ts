@@ -2,21 +2,17 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../../config/database.js';
 import { AppError, InternalError } from '../../errors/index.js';
 import { env } from '../../config/env.js';
+import {
+  mapPublicAgencyContact,
+  mapPublicTripRow,
+  type PublicAgencyContactDto,
+  type PublicAgencyContactWithAgencyRow,
+} from '../../services/public-trip.mapper.js';
 
 const router = Router();
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// MKT-008: contacto público de agencia (tabla 091 agency_contacts). Solo
-// se publican contactos con is_public=true, is_active=true y
-// deleted_at IS NULL; el teléfono es E.164 por CHECK de la migración.
-interface PublicAgencyContactDto {
-  id: string;
-  label: string;
-  phone: string;
-  channel: 'call' | 'whatsapp';
-}
 
 /**
  * GET /api/public/trips
@@ -48,33 +44,7 @@ router.get('/', async (_req, res, next) => {
       throw new InternalError('TRIPS_QUERY_ERROR', error.message);
     }
 
-    const trips = (data ?? []).map((row: any) => {
-      // Embed izquierdo (sin !inner): un viaje sin agencias se lista con la
-      // colección vacía, nunca se cae del catálogo. Un solo query, sin N+1.
-      const agencies = ((row.trip_agencies ?? []) as Array<any>)
-        .map((link) => link.agencies)
-        .filter((agency: any) => agency?.status === 'active')
-        .map((agency: any) => ({ id: agency.id, name: agency.name ?? '' }))
-        // Orden estable y determinista (sin depender de locale del runtime).
-        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-      // Disponibilidad REAL: solo los asientos en estado 'available' (los
-      // reservados, bloqueados, con lock o la guía no cuentan como libres).
-      const availableSeats = ((row.seats ?? []) as Array<any>).filter(
-        (seat: any) => seat?.status === 'available',
-      ).length;
-      return {
-        id: row.id,
-        departure_time: row.departure_time,
-        capacity: row.capacity,
-        vehicle_type: row.vehicle_type,
-        status: row.status,
-        seat_price: row.seat_price ?? null,
-        route: row.routes ?? { origin: '', destination: '' },
-        lock_ttl_seconds: env.LOCK_TTL_SECONDS,
-        agencies,
-        available_seats: availableSeats,
-      };
-    });
+    const trips = (data ?? []).map(mapPublicTripRow);
 
     res.json({ trips });
   } catch (error) {
@@ -180,21 +150,10 @@ router.get('/:id', async (req, res, next) => {
       agenciesWithMethods = new Set(
         (methodsResult.data ?? []).map((row: any) => String(row.agency_id)),
       );
-      for (const row of (contactsResult.data ?? []) as Array<{
-        id: unknown;
-        agency_id: unknown;
-        label: unknown;
-        phone: unknown;
-        channel: unknown;
-      }>) {
+      for (const row of (contactsResult.data ?? []) as PublicAgencyContactWithAgencyRow[]) {
         const agencyKey = String(row.agency_id);
         const list = contactsByAgency.get(agencyKey) ?? [];
-        list.push({
-          id: String(row.id),
-          label: String(row.label),
-          phone: String(row.phone),
-          channel: row.channel === 'call' ? 'call' : 'whatsapp',
-        });
+        list.push(mapPublicAgencyContact(row));
         contactsByAgency.set(agencyKey, list);
       }
     }

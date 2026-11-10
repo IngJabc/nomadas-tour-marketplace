@@ -1,6 +1,7 @@
 import { HeroSection } from "@/components/home/HeroSection";
 import { BuscadorViajes } from "@/components/home/BuscadorViajes";
 import { SeccionProximosViajes } from "@/components/home/SeccionProximosViajes";
+import { SeccionAgencias } from "@/components/home/SeccionAgencias";
 import { SeccionConfianza } from "@/components/home/SeccionConfianza";
 import { SeccionHistoria } from "@/components/home/SeccionHistoria";
 import { CTAFinal } from "@/components/home/CTAFinal";
@@ -20,6 +21,7 @@ export default function HomePage() {
 
       <SeccionConfianza />
       <SeccionProximosViajes />
+      <SeccionAgencias />
       <SeccionHistoria />
       <CTAFinal />
     </main>

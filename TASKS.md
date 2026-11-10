@@ -1,7 +1,8 @@
 # TASKS
 
 > Documento **operativo del sprint**. Una tarea activa a la vez; marcar `[x]` al completar.
-> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras), RT-03 (boleto QR)** completados + **RT-05 (reintento de pago)** y **MKT-009 (compras en paralelo)** implementados y validados localmente (pendiente staging). **Rutas en inglés (patrón tours) + filtros de Mis compras** completados (2026-10-26). Siguiente: **Fase 3 — Ciclo de vida (MKT-008 T-1)**. Migraciones marketplace 074–087 aplicadas.
+> **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras), RT-03 (boleto QR)** completados + **RT-05 (reintento de pago)** y **MKT-009 (compras en paralelo)** integrados en `main` y desplegados (RT-05 validado funcionalmente en staging). **Rutas en inglés (patrón tours) + filtros de Mis compras + margen 7xl + DatePicker + rediseño visual** completados, integrados y desplegados (2026-10-26…28). **LND** (PR #19, 2026-10-30) e **REV** (PR #21, 2026-11-02) integrados en `main`; migraciones 097–099 aplicadas. Siguiente: **MKT-008 (T-1) — validación funcional local** (integrado y desplegado; pendiente validar — ver sección MKT-008 T-1). Migraciones marketplace 074–101 aplicadas.
+> **Última sincronización de estados:** 2026-11-10
 > **Visión de producto:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 > **Contexto del proyecto:** [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md)
 > **Contrato con nomadas-tour:** [`docs/NOMADAS_TOUR_INTEGRATION.md`](docs/NOMADAS_TOUR_INTEGRATION.md)
@@ -433,10 +434,10 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   staging excluida) · `npx tsc --noEmit` ✓ · `next build` ✓ (ruta
   `ƒ /cuenta/compras/[attemptId]/pago`) · backend `npm run build` (tsc) ✓
   con `checkout.test.ts` **54/54** · `git diff --check` ✓ en ambos repos.
-- **Estado**: implementado y validado localmente; **pendiente de validación
-  funcional en staging**. Sin despliegue ni integración final. RT-05 no
-  requiere migraciones: ninguna migración remota se aplicó ni se marca como
-  aplicada.
+- **Estado**: implementado, **integrado en `main` y desplegado** (PR #15,
+  2026-10-27, con posterior en `main`) + **validación funcional en staging
+  completada**. RT-05 no requiere migraciones: ninguna migración remota se
+  aplicó ni se marca como aplicada.
 
 ---
 
@@ -489,7 +490,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   dev: wizard y Mis compras 200 (:3002), `api/public/trips` 200 (:3003).
 - **Estado**: implementado y validado localmente. **Sin migraciones nuevas
   (087 ya desplegada), sin variables de entorno nuevas ni cambios en Render**
-  — nada que encender. Sin despliegue.
+  — nada que encender. **Integrado en `main` y desplegado** (squash de la
+  rama, `db99a80` / PR #15, 2026-10-27).
 
 ---
 
@@ -530,8 +532,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   `npx tsc --noEmit` ✓ · `next build` ✓ · `git diff --check` ✓ · smoke dev:
   `/reservas/nueva?trip=…` y `/cuenta/compras/att-1/pago` 200 (:3002).
 - **Estado**: implementado y validado localmente. **Sin migraciones, sin
-  variables de entorno nuevas, sin cambios de backend ni de Render**. Sin
-  despliegue.
+  variables de entorno nuevas, sin cambios de backend ni de Render**.
+  **Integrado en `main` y desplegado** (`db99a80` / PR #15, 2026-10-27).
 
 ---
 
@@ -612,7 +614,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   `next build` ✓ en ambos fronts · `git diff --check` ✓ en ambos repos.
 - **Estado**: implementado y validado localmente. **Sin migraciones
   nuevas, sin variables de entorno nuevas, sin cambios en Render** — nada
-  que encender. Sin despliegue.
+  que encender. **Integrado en `main` y desplegado** (`db99a80` / PR #15,
+  2026-10-27).
 
 ---
 
@@ -665,7 +668,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   `git diff --check` ✓. **Sin commits.**
 - **Estado**: implementado y validado localmente. **Sin migraciones ni
   variables de entorno nuevas; sin cambios en Render** — nada que
-  encender. Sin despliegue.
+  encender. **Integrado en `main` y desplegado** (commits del 2026-10-27/28;
+  confirmado desplegado 2026-11-10).
 
 ---
 
@@ -721,7 +725,8 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   1280px/24px de padding en `/trips`, `/` y `/login`.
 - **Estado**: implementado y validado localmente. **Sin migraciones ni
   variables de entorno nuevas; sin cambios en Render** — nada que
-  encender. Sin despliegue.
+  encender. **Integrado en `main` y desplegado** (commits del 2026-10-27/28;
+  confirmado desplegado 2026-11-10).
 
 ---
 
@@ -837,27 +842,102 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   --noEmit` ✓ · `npm run build` ✓ · smoke en dev (:3002): landing,
   `/trips`, `/help`, `/login`, `/reservations/new` con márgenes
   consistentes y navbar sin tapar contenido, 0 errores de consola.
-- **Estado**: implementado y validado localmente. Sin migraciones ni
-  variables de entorno nuevas; sin cambios en Render.
+- **Estado**: implementado y validado localmente. **Integrado en `main` y
+  desplegado** (PR #17, 2026-10-28; confirmado desplegado 2026-11-10). Sin
+  migraciones ni variables de entorno nuevas; sin cambios en Render.
+
+---
+
+## MKT-008 (T-1) — Validación funcional local pendiente (2026-11-10)
+
+- [ ] **MKT-008-T1** — Validar funcionalmente la cancelación T-1 ya
+  integrada y desplegada.
+
+**Situación:** el código de **MKT-008 (T-1)** está **integrado en `main` y
+desplegado**: migración `088_t1_cancelations.sql` aplicada (RPC
+`schedule_marketplace_t1_cancellations`) y worker
+`backend/src/workers/marketplace-t1-scheduler.ts` en `nomadas-tour`. Lo que
+falta es la **validación funcional local** antes de cerrar el ticket.
+
+**Mecanismo existente (no inventar otro):**
+- Umbral **fijo** en SQL: `INTERVAL '24 hours'` en la RPC (088, selección
+  de pasajeros) y en el trigger `trg_ca_expired_emit_outbox` (evento
+  outbox). **No existe variable de entorno para el umbral** — no editar 088
+  para simularlo.
+- Worker Tour: env vars `MARKETPLACE_T1_CANCEL_VIA_WORKER` (default
+  `false` — hay que encenderla para probar), `MARKETPLACE_T1_CANCEL_POLL_MS`
+  (default 900000 ms) y `MARKETPLACE_T1_CANCEL_BATCH` (default 50).
+- La RPC cancela **pasajeros** (`cancel_reservation_passenger`) de reservas
+  `reserved` de origen `marketplace`, viaje `active` con salida en
+  `(ahora, ahora + 24 h]` y **saldo pendiente**
+  (`reservation_passenger_balance > 0`); el trigger de 088 recalcula
+  `payment_status` (0 activos → `cancelled`).
+
+**Cómo simular el umbral de 24 h:** crear datos de prueba cuya
+`departure_time` caiga dentro de las próximas 24 h (viaje de salida
+inminente), más un viaje de control con salida > 24 h. Nunca modificando el
+`INTERVAL` de 088.
+
+**Criterios de aceptación (5):**
+1. **Cancelación T-1:** con `MARKETPLACE_T1_CANCEL_VIA_WORKER=true` (o
+   invocando la RPC directamente), los pasajeros `active` con saldo
+   pendiente de reservas `reserved` (marketplace) con salida ≤ 24 h quedan
+   cancelados y la reserva deriva a `payment_status='cancelled'` cuando ya
+   no quedan pasajeros activos.
+2. **Asientos liberados:** los puestos de esos pasajeros quedan libres y
+   vuelven a ser seleccionables en el mapa de asientos.
+3. **Intactos:** pasajeros/reservas con saldo fully paid (balance 0),
+   reservas fuera de estado `reserved` y viajes con salida > 24 h **no**
+   se cancelan.
+4. **Worker + logs + idempotencia:** cada corrida del scheduler loguea
+   `scanned`/`cancelled`/`batch` sin errores; re-ejecutar la RPC sobre los
+   mismos datos no duplica cancelaciones (`already_cancelled`, conteo
+   estable); el polling respeta `MARKETPLACE_T1_CANCEL_POLL_MS` y el tope
+   `MARKETPLACE_T1_CANCEL_BATCH`.
+5. **Outbox de expiración:** al expirar un `checkout_attempt` con salida
+   ≤ 24 h se emite **exactamente un** evento
+   `checkout.expired_near_departure` (índice único parcial
+   `uq_outbox_checkout_expired` + `ON CONFLICT DO NOTHING`); con salida
+   > 24 h no se emite.
+
+**No confundir con:** la **expiración de checkout** (MKT-010, ventana
+`expires_at` de la intención de compra — ya desplegada) ni la expiración de
+la ventana de revisión del comprobante (MKT-007 / reintento RT-05). **T-1
+cancela pasajeros con saldo pendiente a ≤ 24 h de la salida del viaje.**
+
+**Nota de continuidad (vs staging 2026-10-15):** esa validación ya cubrió
+el trigger outbox = criterio 5 (re-verificar) y dejó «RPC T-1 pendiente
+hasta el flujo de abonos (MKT-010)». Aclaración: los criterios 1–4 **no
+dependen de abonos** — cancelar genera el refund `required` (RPC 079, estado
+inicial) y el procesamiento de refunds/abonos sigue **diferido** con
+MKT-010. Validar T-1 localmente ahora.
 
 ---
 
 ## Planificación de producto (2026-10-30)
 
 Nuevas iniciativas planificadas en [`docs/ROADMAP.md`](docs/ROADMAP.md)
-(Fases 5–8). **Todas Planificado — ninguna implementada**; este bloque es
-solo de referencia hasta que se abra el sprint correspondiente.
+(Fases 5–8). **Estado (2026-11-10): LND y REV implementados e integrados
+en `main`; SUP parcial; REP, FDB y LEG pendientes.** Este bloque es de
+referencia; el detalle y las decisiones están en el ROADMAP.
 
 - **LND** (Fase 5) — Landing dinámico: 4 viajes próximos desde
-  `GET /api/public/trips`. Tareas LND-001…006.
+  `GET /api/public/trips`. Tareas LND-001…006. ✅ **Implementado e
+  integrado** (PR #19, 2026-10-30).
 - **REV** (Fase 6) — Calificaciones de viajes y agencias (independientes,
-  reservas verificadas + viaje completado). Tareas REV-001…006.
+  reservas verificadas + viaje completado). Tareas REV-001…006. ✅
+  **Implementado e integrado** (PR #21, 2026-11-02; migraciones 097–099
+  aplicadas).
 - **REP** (Fase 6) — Ranking de confiabilidad y perfil público de agencia
   (algoritmo: decisión pendiente con alternativas). Tareas REP-001…003.
+  🟡 Perfil/directorio público implementados **localmente sin commitear**;
+  ranking sin implementar.
 - **FDB** (Fase 7) — Feedback privado del Marketplace (categorías + estados
-  `new|in_review|resolved|closed`). Tareas FDB-001…004.
+  `new|in_review|resolved|closed`). Tareas FDB-001…004. Sin evidencia de
+  implementación.
 - **SUP** (Fase 7) — Ayuda + botón flotante de WhatsApp con mensajes
-  predefinidos. Tareas SUP-001…004.
+  predefinidos. Tareas SUP-001…004. 🟡 Parcial: `/help` (SUP-004)
+  desplegada con el rediseño; SUP-001/002/003 pendientes.
 - **LEG** (Fase 8) — Documentos legales del modelo dual (Venezuela) +
   aceptación con versionado y trazabilidad. Revisión jurídica externa
   obligatoria. Tareas LEG-001…005.
@@ -875,18 +955,26 @@ Dependencias de `nomadas-tour` (solo lectura): ver
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
 | — | Fase 2 — Pagos (payments + allocations, panel agencia) | ✅ Completada |
-| — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | Planificada |
-| — | Fase 5 — Landing dinámico (**LND**) | Planificada (2026-10-30) |
-| — | Fase 6 — Reputación (**REV** + **REP**) | Planificada (2026-10-30) |
-| — | Fase 7 — Feedback + WhatsApp (**FDB** + **SUP**) | Planificada (2026-10-30) |
+| — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | 🟡 En curso — MKT-008 (T-1) integrado y desplegado, **validación funcional local pendiente** (sección MKT-008-T1); comisiones, refunds y emails **diferidos** (no cancelados) |
+| — | Fase 5 — Landing dinámico (**LND**) | ✅ Integrado en `main` (PR #19, 2026-10-30) |
+| — | Fase 6 — Reputación (**REV** + **REP**) | 🟡 Parcial — REV ✅ integrado (PR #21, 2026-11-02) + migraciones 097–099 aplicadas; REP pendiente (perfil local sin commitear, ranking sin decidir) |
+| — | Fase 7 — Feedback + WhatsApp (**FDB** + **SUP**) | 🟡 Parcial — SUP-004 (`/help`) ✅; SUP-001/002/003 y todo FDB pendientes |
 | — | Fase 8 — Marco legal (**LEG**) | Planificada (2026-10-30) |
 | — | Fase 4 — Panel admin + `/account` | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
-| — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | Pendiente (ver detalle abajo) |
+| — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | ✅ Integrado en `nomadas-tour` (PR #164, 2026-10-16) — ver detalle abajo (despliegue no confirmado) |
 | — | Gate `EMAIL_DELIVERY_MODE=disabled` antes de mandar emails reales | Recordatorio |
 | — | Migrar `middleware.ts` → `proxy` (deprecación Next 16; evaluar en ambos repos) | Deuda técnica |
 | — | MKT-014 — Suite E2E de realtime (asientos, pagos, rechazos, expiraciones) | Planificada |
 
-### MKT-007.1 — Modal WhatsApp de notificación de rechazo (Pendiente)
+### MKT-007.1 — Modal WhatsApp de notificación de rechazo (Integrado en `nomadas-tour`)
+
+> **Estado (2026-11-10):** implementado e **integrado en `main` de
+> `nomadas-tour`** (PR #164, 2026-10-16): modal «¿Desea notificar al
+> reservante por WhatsApp?» tras rechazar, `lib/whatsapp.ts`
+> (`whatsappHref` + `buildCheckoutRejectWhatsAppMessage`) y tests, en
+> `/agency/payments/attempts/[id]`. **Despliegue no confirmado** en esta
+> sincronización. El flujo de abajo se conserva como registro de diseño
+> (ya implementado allí).
 
 **Contexto:** La agencia ya puede rechazar un intento de compra desde
 `/agency/payments/attempts/[id]` (MKT-007), escribiendo un motivo de rechazo.
