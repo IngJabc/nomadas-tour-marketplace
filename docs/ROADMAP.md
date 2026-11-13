@@ -56,6 +56,20 @@ Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 > de LND/REV no está confirmado en esta sincronización (integrados en `main`
 > y migraciones aplicadas, sí). Nada se marca completado sin evidencia.
 
+> **Build de producción en Vercel (2026-11-13):** el deploy fallaba con
+> `Module not found: Can't resolve
+> '@vercel/turbopack-next/internal/font/google/font'` (Turbopack no
+> resolvía `next/font/google` — DM Sans / El Messiri — en el entorno de
+> Vercel). Corregido cambiando el script de build a `next build
+> --webpack` (una línea en `package.json`; **sin** `output:
+> 'standalone'`, sin tocar `next.config.ts` ni las fuentes). Validado:
+> build local en modo Webpack exitoso (`Next.js 16.3.8 (webpack)`),
+> `tsc --noEmit`, suite 518/522 y `git diff --check` en verde. **Sin
+> commitear, sin push, sin deploy** — el próximo deploy de Vercel usará
+> Webpack automáticamente (no hay `vercel.json` ni build command
+> personalizado). Detalle en [`../TASKS.md`](../TASKS.md) § *Build de
+> producción en Vercel: bundler Webpack (2026-11-13)*.
+
 ---
 
 ## Decisiones de negocio confirmadas (2026-10-30)
