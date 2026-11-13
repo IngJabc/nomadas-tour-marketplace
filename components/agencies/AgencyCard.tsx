@@ -6,6 +6,7 @@ import { ArrowRight, Bus, Star } from 'lucide-react';
 import type { PublicAgency } from '@/lib/api';
 import { AgencyLogo, safeHexColor } from './AgencyLogo';
 import { AgencyRatingsSummary } from './AgencyRatingsSummary';
+import { agencyBrandVars } from './branding';
 import { tripsSummaryLabel } from './tripsSummary';
 
 interface AgencyCardProps {
@@ -36,6 +37,10 @@ export function AgencyCard({ agency, index = 0 }: AgencyCardProps) {
         ease: 'easeOut',
       }}
       whileHover={{ y: -4 }}
+      // Colores de la agencia como variables AISLADAS en esta tarjeta: cada
+      // card del directorio porta solo sus colores (fallback a las tokens
+      // oficiales del Marketplace).
+      style={agencyBrandVars(agency)}
       className="relative flex flex-col overflow-hidden rounded-2xl border border-black/[0.06] bg-brand-surface p-6 pt-7 shadow-[0_1px_3px_rgba(0,0,0,0.06)] transition-shadow duration-200 hover:shadow-[0_6px_24px_rgba(212,98,43,0.12)]"
     >
       {/* Franja de marca: color público de la agencia (si lo publicó). */}
@@ -60,7 +65,7 @@ export function AgencyCard({ agency, index = 0 }: AgencyCardProps) {
               {agency.name}
             </h2>
             {agency.is_featured && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-cyan-bg)] px-2.5 py-0.5 text-[11px] font-semibold text-brand-cyan">
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--agency-accent,var(--color-cyan-bg))] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--agency-accent-ink,var(--color-brand-cyan))]">
                 <Star size={11} strokeWidth={2} fill="currentColor" aria-hidden />
                 Destacada
               </span>
@@ -74,7 +79,12 @@ export function AgencyCard({ agency, index = 0 }: AgencyCardProps) {
       </div>
 
       <p className="mt-3 flex items-center gap-2 text-sm">
-        <Bus size={16} strokeWidth={1.75} className="shrink-0 text-brand-cyan" aria-hidden />
+        <Bus
+          size={16}
+          strokeWidth={1.75}
+          className="shrink-0 text-[var(--agency-primary-text,var(--color-brand-cyan))]"
+          aria-hidden
+        />
         <span className="text-[15px] font-semibold text-brand-navy">
           {tripsSummaryLabel(trips, false)}
         </span>
@@ -84,7 +94,7 @@ export function AgencyCard({ agency, index = 0 }: AgencyCardProps) {
         <Link
           href={`/agencies/${agency.id}`}
           aria-label={`Ver perfil de ${agency.name}`}
-          className="block w-full rounded-[10px] bg-brand-cyan px-5 py-3 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+          className="block w-full rounded-[10px] bg-[var(--agency-primary,var(--color-brand-cyan))] px-5 py-3 text-center text-sm font-semibold text-[var(--agency-primary-ink,#fff)] transition-colors duration-200 hover:bg-[var(--agency-secondary,var(--color-brand-blue))] hover:text-[var(--agency-secondary-ink,#fff)]"
         >
           Ver perfil
         </Link>

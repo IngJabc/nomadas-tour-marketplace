@@ -34,6 +34,7 @@ import { precioMaximoDe, viajePasaFiltros } from '@/lib/trips/filters';
 import { AgencyContactLinks } from '@/components/booking/AgencyContactLinks';
 import { AgencyLogo, safeHexColor } from '@/components/agencies/AgencyLogo';
 import { AgencyRatingsSummary } from '@/components/agencies/AgencyRatingsSummary';
+import { agencyBrandVars } from '@/components/agencies/branding';
 import { tripsSummaryLabel } from '@/components/agencies/tripsSummary';
 import { TarjetaViaje } from '@/components/trips/TarjetaViaje';
 import {
@@ -88,7 +89,10 @@ const labelClass = 'mb-1.5 block text-xs font-medium uppercase text-brand-muted'
 const cardClass =
   'rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]';
 
-const sectionTitleClass = 'border-l-4 border-brand-cyan pl-3';
+// Barra de sección en el color primario de la AGENCIA (variable aislada
+// `--agency-primary` con fallback a la token del Marketplace).
+const sectionTitleClass =
+  'border-l-4 border-[var(--agency-primary,var(--color-brand-cyan))] pl-3';
 
 /** URL http(s) válida para logo/portada; cualquier otra se ignora. */
 function isValidImageUrl(value: string | null | undefined): value is string {
@@ -142,7 +146,12 @@ function ContactSection({ contacts, phone }: ContactSectionProps) {
         </p>
       )}
       <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-brand-navy">
-        <Phone size={16} strokeWidth={1.75} className="text-brand-cyan" aria-hidden />
+        <Phone
+          size={16}
+          strokeWidth={1.75}
+          className="text-[var(--agency-primary-text,var(--color-brand-cyan))]"
+          aria-hidden
+        />
         {phone}
       </p>
     </div>
@@ -287,7 +296,11 @@ export default function AgenciaPerfilPage() {
 
 
   return (
-    <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6">
+    <main
+      id="main"
+      className="mx-auto w-full max-w-7xl flex-1 px-4 pb-16 pt-24 sm:px-6"
+      style={agencyBrandVars(agency)}
+    >
       {/* Banner de identidad: base oscura de la marca con el color de la
           agencia superpuesto al 22% (cualquier color, incluso claro, mantiene
           contraste AA con el texto blanco) + franja superior en color pleno.
@@ -300,7 +313,7 @@ export default function AgenciaPerfilPage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.35, ease: 'easeOut' }}
         data-testid="agency-storefront"
-        className={`relative overflow-hidden rounded-2xl border-l-4 border-brand-cyan bg-brand-dark pb-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] ${
+        className={`relative overflow-hidden rounded-2xl border-l-4 border-[var(--agency-primary,var(--color-brand-cyan))] bg-brand-dark pb-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] ${
           coverUrl ? '' : 'pl-3 pr-4 pt-4 sm:pr-6 sm:pt-5'
         }`}
       >
@@ -569,7 +582,7 @@ export default function AgenciaPerfilPage() {
                   <div className="flex gap-2">
                     <button
                       type="submit"
-                      className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-[10px] bg-brand-cyan px-5 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue sm:w-auto"
+                      className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-[10px] bg-[var(--agency-primary,var(--color-brand-cyan))] px-5 py-3 text-sm font-semibold text-[var(--agency-primary-ink,#fff)] transition-colors duration-200 hover:bg-[var(--agency-secondary,var(--color-brand-blue))] hover:text-[var(--agency-secondary-ink,#fff)] sm:w-auto"
                     >
                       <Search size={16} strokeWidth={1.75} aria-hidden />
                       Buscar
