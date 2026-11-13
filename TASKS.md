@@ -914,6 +914,79 @@ MKT-010. Validar T-1 localmente ahora.
 
 ---
 
+## Colores de branding de agencia en el storefront público (2026-11-13)
+
+- [x] **AGB-001** — Aplicar `primary_color` / `secondary_color` /
+  `accent_color` de la agencia a los elementos existentes del perfil
+  público (`/agencies/[agencyId]`) y del directorio (`AgencyCard`), con
+  validación, fallback neutro y aislamiento estricto por agencia.
+  **Implementado sin commitear** (rama `features/agency-branding-colors`).
+
+**Alcance:** solo frontend Marketplace. **Sin cambio de backend ni de
+contrato**: `backend/src/services/agency.service.ts` ya expone los tres
+colores (`PROFILE_BRANDING_COLUMNS` → `agency_settings`) en
+`GET /api/public/agencies` y `/:agencyId`, y `lib/api.ts` ya los tipa en
+`PublicAgency` / `PublicAgencyProfile`. Sin editor de branding, sin
+migraciones, sin variables de entorno.
+
+**Mecanismo (nuevo módulo `components/agencies/branding.ts`):**
+- `agencyBrandVars()` emite variables CSS **aisladas por contenedor**
+  (`--agency-primary/secondary/accent` + derivados `-ink` y `-text`),
+  solo para valores que pasan `safeHexColor()` (reutilizado del logo;
+  sin nuevo validador de formato).
+- Cada consumidor las referencia con **fallback a la token oficial**:
+  `bg-[var(--agency-primary,var(--color-brand-cyan))]`. Fuera del
+  contenedor (o con la agencia sin colores) el aspecto no cambia.
+- `-ink` = tinta de máximo contraste (blanco / `#14181F`) para texto
+  sobre fondos sólidos; `-text` = versión con contraste AA (4.5:1) sobre
+  blanco para texto/iconos pequeños: un color claro de la agencia nunca
+  deja texto ilegible.
+
+**Elementos pintados (layout, tipografía, portada, slogan, descripción,
+contactos y calificaciones intactos):**
+- **Perfil:** variables en `<main>`; CTA "Buscar" (fondo primario /
+  hover secundario / tinta derivada), barra de las secciones y borde del
+  banner (primario), icono de teléfono (primario legible). La franja y
+  el tinte del banner + el logo ya usaban los colores (sin cambios).
+- **`TarjetaViaje` (compartida):** CTA "Reservar" (activo y
+  deshabilitado), hover del link de agencia e icono de salida, con la
+  misma cadena de fallback — así `/trips`, el landing y el resto de
+  contextos quedan visualmente idénticos.
+- **`AgencyCard` (directorio + landing):** variables por tarjeta, CTA
+  "Ver perfil", píldora "Destacada" (acento + tinta derivada) e icono de
+  viajes publicados.
+- **Fuera del alcance a propósito:** superficies oscuras (banner,
+  tarjeta de calificaciones) y CTAs genéricos del Marketplace
+  ("Reintentar", "Explorar todos los viajes", foco de inputs, badges
+  semánticos como "Disponible") conservan las tokens de marca.
+
+**Aislamiento:** cada agencia solo emite sus variables en su propio
+contenedor (`<main>` del perfil o `<article>` de la tarjeta del
+directorio), nunca en un ancestro compartido.
+
+**Validación (2026-11-13):**
+- Tests nuevos: `app/agencies/[agencyId]/__tests__/branding.test.tsx`
+  (6) + `components/agencies/__tests__/AgencyCard.branding.test.tsx` (3)
+  — aplicación de colores, ausentes/inválidos → fallback neutro,
+  adaptación de contraste, aislamiento entre dos agencias, preservación
+  del render existente y `TarjetaViaje` fuera de scope con tokens
+  neutras. **9/9 en verde.**
+- Suite completa `npm test`: **518 pass / 4 fail (522)** — los 4 fallos
+  son **preexistentes** en `app/agencies/[agencyId]/__tests__/page.test.tsx`
+  (copy "Ver viajes" / "Ver todo el catálogo" y párrafo generado de
+  "Sobre la agencia"); idénticos al baseline de HEAD **antes** de este
+  cambio. No se tocaron: corregirlos implica cambiar copy/CTA del
+  storefront, fuera del alcance de este incremento.
+- `tsc --noEmit` ✅ · `npm run build` ✅ · `git diff --check` ✅.
+- CSS compilado verificado a mano: las clases `var(--agency-*, token)`
+  generan `background-color` / `border-color` / `color` correctos.
+
+**Pendiente:** commitear / PR; decidir el tratamiento de los 4 tests
+preexistentes (copy del storefront vs specs); opcional: extender el
+patrón a otros contextos si el producto lo pide.
+
+---
+
 ## Planificación de producto (2026-10-30)
 
 Nuevas iniciativas planificadas en [`docs/ROADMAP.md`](docs/ROADMAP.md)

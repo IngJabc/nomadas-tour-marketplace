@@ -163,6 +163,7 @@ FASE 6 — Confianza y reputación              🟡 REV integrado (2026-11-02, 
            audit_log (review.created / review.moderated, 099)
            — Migraciones 097–099 APLICADAS (confirmado 2026-11-10)
   REP-001  Perfil público de agencia (implementación local sin commitear)
+           + colores de branding de la agencia (2026-11-13, sin commitear)
   REP-002  Ranking de confiabilidad (algoritmo: decisión pendiente)
 
 FASE 7 — Atención y mejora continua          🟡 Parcial (2026-11-10)
@@ -475,6 +476,17 @@ completar REP-001. **REP-002 (ranking de confiabilidad) no está
 implementado** — el orden del directorio es el del endpoint, sin ranking en
 frontend (por diseño: "jamás se inventa un ranking"). REP-003 depende de
 ambos.
+
+**Incremento (2026-11-13):** colores de branding de la agencia
+(`primary_color` / `secondary_color` / `accent_color`) aplicados a los
+elementos existentes del perfil público y de las tarjetas del directorio:
+variables CSS aisladas por contenedor, validadas con `safeHexColor`,
+derivados de contraste (tinta sobre color / AA sobre blanco) y fallback a
+las tokens oficiales del Marketplace (`--color-brand-cyan` /
+`--color-brand-blue`). Solo frontend: **sin cambio de contrato, sin
+migraciones, sin variables de entorno**. Detalle y validación en
+[`../TASKS.md`](../TASKS.md) § *Colores de branding de agencia en el
+storefront público (2026-11-13)*. **Sin commitear.**
 
 **Decisiones pendientes:**
 - [PENDIENTE] **Algoritmo exacto** — se deben documentar alternativas (p. ej.:

@@ -62,7 +62,7 @@ export function TarjetaViaje({ trip, index = 0 }: TarjetaViajeProps) {
         <CalendarDays
           size={18}
           strokeWidth={1.75}
-          className="shrink-0 text-brand-cyan"
+          className="shrink-0 text-[var(--agency-primary-text,var(--color-brand-cyan))]"
           aria-hidden
         />
         {formatDateTimeShort(trip.departure_time)}
@@ -78,7 +78,7 @@ export function TarjetaViaje({ trip, index = 0 }: TarjetaViajeProps) {
                 reserva. */}
             <Link
               href={`/agencies/${agencies[0].id}`}
-              className="font-medium text-brand-navy underline-offset-2 transition-colors duration-200 hover:text-brand-cyan hover:underline"
+              className="font-medium text-brand-navy underline-offset-2 transition-colors duration-200 hover:text-[var(--agency-primary-text,var(--color-brand-cyan))] hover:underline"
             >
               {agencies[0].name}
             </Link>
@@ -135,7 +135,7 @@ export function TarjetaViaje({ trip, index = 0 }: TarjetaViajeProps) {
               type="button"
               disabled
               aria-disabled="true"
-              className="block w-full cursor-not-allowed rounded-[10px] bg-brand-cyan px-5 py-3 text-center text-sm font-semibold text-white opacity-40"
+              className="block w-full cursor-not-allowed rounded-[10px] bg-[var(--agency-primary,var(--color-brand-cyan))] px-5 py-3 text-center text-sm font-semibold text-[var(--agency-primary-ink,#fff)] opacity-40"
             >
               Reservar
             </button>
@@ -151,7 +151,7 @@ export function TarjetaViaje({ trip, index = 0 }: TarjetaViajeProps) {
                 // (/reservations/new?trip=): el catálogo nunca deriva a
                 // /trips/[id] para elegir agencia.
                 href={`/reservations/new?trip=${trip.id}`}
-                className="block w-full rounded-[10px] bg-brand-cyan px-5 py-3 text-center text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                className="block w-full rounded-[10px] bg-[var(--agency-primary,var(--color-brand-cyan))] px-5 py-3 text-center text-sm font-semibold text-[var(--agency-primary-ink,#fff)] transition-colors duration-200 hover:bg-[var(--agency-secondary,var(--color-brand-blue))] hover:text-[var(--agency-secondary-ink,#fff)]"
               >
                 Reservar
               </Link>
