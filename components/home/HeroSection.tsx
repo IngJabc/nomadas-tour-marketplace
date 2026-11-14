@@ -23,10 +23,16 @@ const HERO_ITEM = {
 /**
  * Hero de página con fondo oscuro de marca (tinta) y motivo de ruta.
  * Acepta un slot para el widget de búsqueda u otro contenido.
+ *
+ * Sin `overflow-hidden`: el popover del DatePicker del buscador se desborda
+ * por abajo del hero y ese recorte lo cortaba. `z-10` garantiza que todo el
+ * hero (incluido el calendario) pinte por encima de las secciones siguientes.
+ * El fondo decorativo no se desborda (capas `absolute inset-0`) y el SVG
+ * recorta su propio contenido, así que el recorte de sección era redundante.
  */
 export function HeroSection({ eyebrow, title, subtitle, children }: HeroSectionProps) {
   return (
-    <section className="relative overflow-hidden bg-brand-dark text-white">
+    <section data-testid="hero-section" className="relative z-10 bg-brand-dark text-white">
       {/* Capa de fondo: gradiente cálido + motivo topográfico sutil */}
       <div
         aria-hidden

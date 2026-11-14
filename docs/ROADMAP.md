@@ -41,20 +41,34 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | **Landing dinámico (4 viajes próximos)** | ✅ Implementado e integrado en `main` (Fase 5, **LND**, PR #19 2026-10-30) |
 | **Sistema de reputación y calificaciones** | ✅ REV integrado en `main` (Fase 6, REV-001…006, PR #21 2026-11-02) + migraciones 097–099 aplicadas; ⏳ REP pendiente |
 | **Feedback del Marketplace** | ⏳ Planificado (Fase 7, **FDB**) |
-| **Atención al cliente por WhatsApp** | 🟡 Parcial (Fase 7, **SUP**): `/help` integrada con el rediseño; SUP-001/002/003 pendientes |
+| **Atención al cliente por WhatsApp** | 🟡 Parcial (Fase 7, **SUP**): `/help` (SUP-004) integrada; SUP-001/002/003 implementados en código 2026-11-13, **pendiente configurar el número en despliegue** |
 | **Marco legal y cumplimiento** | ⏳ Planificado (Fase 8, **LEG**) |
 
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
 Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 
-> **Estado de las iniciativas (2026-11-10):** **LND** implementado e
+> **Estado de las iniciativas (2026-11-13):** **LND** implementado e
 > integrado en `main` (PR #19); **REV** implementado e integrado en `main`
 > (PR #21, 2026-11-02) con migraciones 097–099 **aplicadas** (confirmado);
-> **SUP** parcial (página `/help` con FAQ + contacto, desplegada con el
-> rediseño; botón flotante SUP-002 y número configurable SUP-001 sin
-> implementar). **REP, FDB y LEG siguen sin implementarse.** El despliegue
-> de LND/REV no está confirmado en esta sincronización (integrados en `main`
-> y migraciones aplicadas, sí). Nada se marca completado sin evidencia.
+> **SUP** completo en código desde 2026-11-13 (número configurable
+> SUP-001, botón flotante global SUP-002 y plantillas contextuales
+> SUP-003, además de `/help` ya desplegada con el rediseño) — **pendiente
+> configurar `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` en Vercel** para que
+> el botón aparezca en producción. **REP, FDB y LEG siguen sin
+> implementarse.** El despliegue de LND/REV no está confirmado en esta
+> sincronización (integrados en `main` y migraciones aplicadas, sí).
+> Nada se marca completado sin evidencia.
+>
+> **Soporte por WhatsApp — configuración de despliegue (2026-11-13):**
+> SUP-001/002/003 implementados en código. El número oficial de soporte
+> se configura con la env var pública
+> `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` (formato `+58412…` o `0412…`) en
+> el proyecto de Vercel del frontend. **Sin ella el botón flotante no se
+> renderiza** (comportamiento esperado: sin enlaces rotos). Es una env
+> var de build: cambiar el número exige redeploy. Nunca meter aquí
+> secretos — solo el número público de WhatsApp. Detalle en
+> [`../TASKS.md`](../TASKS.md) § *Soporte WhatsApp (SUP-001/002/003):
+> botón flotante con contexto (2026-11-13)*.
 
 > **Build de producción en Vercel (2026-11-13):** el deploy fallaba con
 > `Module not found: Can't resolve
@@ -165,6 +179,11 @@ FASE 5 — Experiencia pública                 ✅ Integrada (2026-10-30, PR #1
   LND-001  ✅ Landing dinámico: 4 viajes próximos desde endpoint público
   LND-002  ✅ Estados de carga, error y ausencia de viajes + CTA catálogo
   LND-003  ✅ Tarjetas preparadas para imagen/descripción futuros
+  — Fix UI (2026-11-14, sin commitear): el calendario del DatePicker del
+    hero ya no sale cortado → `HeroSection` sin `overflow-hidden` +
+    `z-10` (test de regresión en `app/__tests__/page.test.tsx`;
+    detalle en TASKS.md § *Fix: calendario del buscador recortado en el
+    home*)
 
 FASE 6 — Confianza y reputación              🟡 REV integrado (2026-11-02, PR #21)
   REV-001  ✅ Viaje completado elegible: trips.completed_at (trigger 097,
@@ -180,12 +199,18 @@ FASE 6 — Confianza y reputación              🟡 REV integrado (2026-11-02, 
            + colores de branding de la agencia (2026-11-13, sin commitear)
   REP-002  Ranking de confiabilidad (algoritmo: decisión pendiente)
 
-FASE 7 — Atención y mejora continua          🟡 Parcial (2026-11-10)
+FASE 7 — Atención y mejora continua          🟡 Parcial (2026-11-13)
   FDB-001  Canal privado de feedback del Marketplace (modelo + estados)
   FDB-002  Interface administrativa de revisión de feedback
-  SUP-001  Configuración del número (platform_config/env) → pendiente
-  SUP-002  Botón flotante de WhatsApp con mensajes predefinidos → pendiente
-  SUP-003  Plantillas de mensajes por categoría → pendiente
+  SUP-001  Configuración del número (env var
+           NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER) → ✅ implementado
+           (2026-11-13); falta configurarlo en Vercel
+  SUP-002  Botón flotante de WhatsApp con mensajes predefinidos → ✅
+           implementado (2026-11-13): solo el logo oficial, a la derecha,
+           con animación hover/click; "volver arriba" global en páginas
+           altas con la misma animación
+  SUP-003  Plantillas de mensajes por categoría → ✅ implementado
+           (2026-11-13)
   SUP-004  Página de ayuda con categorías → 🟡 parcial: `/help` (FAQ +
            contacto con canales reales) integrada y desplegada con el
            rediseño (2026-10-28)
@@ -607,17 +632,30 @@ para dudas o incidencias.
 
 **Pruebas:** apertura de wa.me con payload correcto, contextos con/sin reserva.
 
-**Estado actual:** 🟡 **Parcial (2026-11-10):** **SUP-004 parcial** — la
+**Estado actual:** 🟡 **Casi completo (2026-11-13):** **SUP-004 parcial** — la
 página `/help` (FAQ con acordeones + contacto con canales reales) existe,
 integrada y desplegada con el rediseño (2026-10-28), y los enlaces
 `wa.me` de agencia existen en el flujo de reserva (MKT-007.4, derivados
-del teléfono publicado). **Pendientes:** SUP-001 (número de la plataforma
-configurable — no existe), SUP-002 (botón flotante global — no existe) y
-SUP-003 (plantillas de mensajes predefinidos por categoría — no existen).
+del teléfono publicado). **SUP-001/002/003 implementados (2026-11-13):**
+el número vive en la env var `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` (sin
+hardcode, sin migraciones ni cambios en `platform_config`); el botón
+flotante global está montado en `app/layout.tsx` (esquina inferior
+derecha, **solo el glifo oficial de WhatsApp**, `aria-label`, `z-40`,
+animación hover/click) junto a un **"volver arriba" global** que aparece
+solo en páginas altas, apilado arriba del FAB; y las plantillas
+cubren general/reserva/pago/agencia/sugerencia con identificadores
+(boleto, reserva, compra) **solo** cuando la pantalla los aporta y son
+relevantes. **Pendiente:** configurar el número en Vercel para que el
+botón aparezca en producción (sin env var se oculta); la categoría
+`sugerencia` está lista en el helper pero aún no hay pantalla que la
+active (candidata: `/help` o la landing, decisión de producto).
 
-**Decisiones pendientes:**
-- [PENDIENTE] Número: env var o `platform_config`.
-- [PENDIENTE] ¿Mensajes en español, inglés o ambos? (Venezuela → español por defecto, [CONFIRMADA] mercado VE).
+**Decisiones:**
+- [RESUELTA 2026-11-13] Número: **env var** `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER`
+  (convención `NEXT_PUBLIC_*` del frontend; sin migraciones ni
+  `platform_config`). Implica redeploy para cambiar el número.
+- [RESUELTA] ¿Mensajes en español, inglés o ambos? → español ([CONFIRMADA]
+  mercado VE).
 
 ---
 
@@ -704,7 +742,8 @@ consentimiento cuando corresponda.
 | SUP | `platform_config` para número | Nada crítico |
 | LEG | Revisión jurídica externa | Recurso humano externo |
 
-Secuencia recomendada: **LND ✅ → REV ✅ → REP → FDB/SUP (paralelizables) → LEG**.
+Secuencia recomendada: **LND ✅ → REV ✅ → REP → FDB/SUP (SUP ✅ 2026-11-13
+en código; FDB pendiente) → LEG**.
 REP queda como siguiente iniciativa de la secuencia de confianza (con su
 decisión de algoritmo pendiente y la integración del perfil público local).
 LEG debe iniciar su actividad de revisión jurídica en paralelo temprano por
@@ -718,7 +757,9 @@ su dependencia de recursos externos.
 2. ~~Definición de "viaje completado" elegible para reseñas (REV)~~ —
    **resuelta** (REV-001: `trips.completed_at` + ventana 48 h).
 3. Mínimo de evaluaciones para distintivos de confiabilidad.
-4. Número de WhatsApp: `platform_config` vs env var (SUP).
+4. ~~Número de WhatsApp: `platform_config` vs env var (SUP)~~ —
+   **resuelta** (SUP-001: env var `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER`,
+   2026-11-13).
 5. Borradores legales iniciales y proveedor de revisión jurídica (LEG).
 6. Momento y bloqueo de la aceptación legal (LEG).
 7. Si el feedback requiere autenticación (FDB).

@@ -29,6 +29,7 @@ import { subscribeToPurchaseTicket } from '@/lib/realtime/subscriptions';
 import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort } from '@/lib/timezone';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
+import { useSupportMessage } from '@/components/support/SupportMessageProvider';
 import { PaymentMethodSection } from '@/components/booking/PaymentMethodSection';
 import { ProofUploader } from '@/components/booking/ProofUploader';
 
@@ -203,6 +204,14 @@ export default function ReintentoPagoPage() {
 
   const params = useParams<{ attemptId: string }>();
   const attemptId = params?.attemptId ?? '';
+
+  // SUP-003: esta pantalla aporta su contexto (pago de una compra) al
+  // botón flotante de soporte, con el identificador del intento cuando
+  // existe. Sin intento no se agrega línea alguna al mensaje.
+  useSupportMessage({
+    category: 'payment',
+    identifiers: { purchaseId: attemptId || null },
+  });
 
   const [attempt, setAttempt] = useState<CheckoutAttemptView | null>(null);
   const [trip, setTrip] = useState<PublicTripDetail | null>(null);

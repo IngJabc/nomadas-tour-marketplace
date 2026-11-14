@@ -144,6 +144,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_API_URL=http://localhost:3003/api
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_LOCK_TTL_SECONDS=900  # solo display; el TTL real lo decide el server
+NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER=   # opcional (SUP-001): número oficial de
+                                       # soporte en formato +58412…/0412….
+                                       # Sin él el botón flotante de WhatsApp
+                                       # NO se renderiza (a propósito).
 ```
 
 Backend (`backend/.env`, ver `backend/.env-example`):

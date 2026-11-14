@@ -3,6 +3,8 @@ import { DM_Sans, El_Messiri } from "next/font/google";
 import { Navbar } from "@/components/ui/Navbar";
 import { ToastProvider } from "@/components/ui/ToastProvider";
 import { RootProviders } from "@/components/auth/RootProviders";
+import { WhatsAppSupportButton } from "@/components/support/WhatsAppSupportButton";
+import { BackToTopButton } from "@/components/ui/BackToTopButton";
 import { MotionConfig } from "framer-motion";
 import "./globals.css";
 import "./design-tokens.css";
@@ -51,6 +53,9 @@ export default function RootLayout({
             <Navbar />
             {children}
             <ToastProvider />
+            {/* SUP-002: FAB de soporte + "volver arriba" global. */}
+            <WhatsAppSupportButton />
+            <BackToTopButton />
           </MotionConfig>
         </RootProviders>
       </body>
