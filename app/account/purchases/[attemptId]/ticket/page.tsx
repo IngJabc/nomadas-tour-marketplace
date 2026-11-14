@@ -18,6 +18,7 @@ import { subscribeToPurchaseTicket } from '@/lib/realtime/subscriptions';
 import { formatSeatPrice } from '@/lib/price';
 import { formatDateTimeShort } from '@/lib/timezone';
 import { useOptionalAuthUser } from '@/components/auth/AuthProvider';
+import { useSupportMessage } from '@/components/support/SupportMessageProvider';
 import { PurchaseTicket } from '@/components/compras/PurchaseTicket';
 
 const COMPRAS_PATH = '/account/purchases';
@@ -51,6 +52,17 @@ export default function BoletoPage() {
   const attemptId = params?.attemptId ?? '';
 
   const [ticket, setTicket] = useState<CheckoutTicketView | null>(null);
+
+  // SUP-003: el boleto aporta su contexto (reserva) al botón flotante de
+  // soporte. Los identificadores solo existen cuando el backend ya
+  // respondió: antes del load el mensaje no lleva ninguna línea extra.
+  useSupportMessage({
+    category: 'reservation',
+    identifiers: {
+      ticketCode: ticket?.ticket_code ?? null,
+      reservationId: ticket?.reservation_id ?? null,
+    },
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** true cuando el backend respondió 404: boleto no disponible. */

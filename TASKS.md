@@ -1042,6 +1042,131 @@ el siguiente deploy de Vercel termine sin el error de Turbopack.
 
 ---
 
+## Soporte WhatsApp (SUP-001/002/003): botón flotante con contexto (2026-11-13)
+
+- [x] **SUP-001** — Número de soporte configurable. Vive en la env var
+  pública `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` (misma convención
+  `NEXT_PUBLIC_*` que `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_SUPABASE_URL`).
+  **Nunca** hardcodeado en componentes; sin secretos; sin migraciones ni
+  cambios de base de datos; sin `platform_config` (decisión RESUELTA: env
+  var). Normalización reutilizando `whatsappHref` de
+  `lib/booking/whatsapp.ts` (`0412…` → `58412…`, `+58 …` → E.164). Si la
+  env var falta, está en blanco o el número no valida → `null` y el botón
+  **no se renderiza** (sin enlaces rotos).
+- [x] **SUP-002** — Botón flotante global. `WhatsAppSupportButton` se
+  monta una sola vez en `app/layout.tsx` (aparece en toda la app).
+  Esquina inferior **derecha** (`bottom-6 right-6`), con `z-40` por
+  debajo del navbar y los modales (`z-50`): no estorba navegación,
+  checkout, formularios ni controles móviles. **Solo el logo** — glifo
+  oficial de WhatsApp (SVG real, sin texto visible; Lucide no incluye
+  iconos de marca) — en círculo de 48px. Accesible: `<a>` con
+  `aria-label`, foco visible, `target="_blank"
+  rel="noopener noreferrer"`. **Animación** en hover (scale 1.08 +
+  sombra) y click (scale 0.9) con `FAB_MOTION`
+  (`components/ui/fab-motion.ts`), spring ~180 ms y
+  `reducedMotion="user"` del layout.
+- [x] **Extensión — "volver arriba" global.** El botón que antes vivía
+  solo en Mis compras ahora es `components/ui/BackToTopButton.tsx`,
+  montado en `app/layout.tsx`: aparece en TODA página cuyo alto supere
+  una pantalla scrolleable (rango ≥ 1 viewport, ~2 pantallas de
+  contenido) y solo tras bajar medio viewport; en páginas cortas o
+  arriba del todo no renderiza nada. **Misma animación** `FAB_MOTION`
+  que el FAB y posición `bottom-24 right-6` (apilado ARRIBA del FAB de
+  WhatsApp: nunca se solapan). Se eliminó el botón local de
+  `app/account/purchases/page.tsx` (state `showTop`, listener de scroll
+  y JSX) para no duplicar instancias.
+- [x] **SUP-003** — Plantillas contextuales. `buildSupportMessage`
+  cubre **general, reservas, pagos, agencias y sugerencias** (español,
+  mercado VE). El botón deriva la categoría de la ruta por defecto
+  (`/reservations*`, `/account/purchases*` → reserva; `…/payment` →
+  pago; `/agencies*` → agencia; resto → general) y cualquier pantalla
+  puede sobreescribirla con `useSupportMessage({ category, identifiers
+  })` (provider en `RootProviders`). Identificadores (**Boleto**,
+  **Reserva**, **Compra**) se agregan **solo** si la pantalla los trae y
+  solo en categorías donde son relevantes (reserva/pago): nunca líneas
+  vacías ni "Reserva: undefined". Enlace `https://wa.me/<número>?text=<mensaje>`
+  con `encodeURIComponent`. **No** se agregó API de WhatsApp, bot, backend
+  de envíos ni dependencias nuevas.
+
+**Archivos:**
+
+- `lib/support/whatsapp-support.ts` (número, plantillas, href, categoría
+  por ruta) + `lib/support/__tests__/whatsapp-support.test.ts`.
+- `components/support/WhatsAppSupportButton.tsx` +
+  `components/support/SupportMessageProvider.tsx` (contexto + hook
+  `useSupportMessage`) + `components/support/__tests__/WhatsAppSupportButton.test.tsx`.
+- Montaje: `app/layout.tsx` (FAB + `BackToTopButton`) y
+  `components/auth/RootProviders.tsx` (provider). Contexto con
+  identificadores en
+  `app/account/purchases/[attemptId]/payment/page.tsx` (pago +
+  `attemptId`) y `app/account/purchases/[attemptId]/ticket/page.tsx`
+  (reserva + `ticket_code` / `reservation_id`, solo cuando el backend ya
+  respondió).
+- `components/ui/BackToTopButton.tsx` + `components/ui/fab-motion.ts`
+  (animación compartida de los dos FAB) +
+  `components/ui/__tests__/BackToTopButton.test.tsx`; y
+  `app/account/purchases/page.tsx` dejó de montar su "volver arriba"
+  local (su test documenta que ya no lo renderiza).
+- `app/help/page.tsx` (SUP-004) **no se tocó**: sin duplicar `/help`.
+
+**Validación (2026-11-13):**
+- Tests nuevos: **33** (config del número con/sin env var inválida,
+  generación y URL-encodeo de mensajes, identificadores con/sin valor,
+  categoría por ruta, botón global accesible y oculto sin número, logo
+  oficial sin texto, contexto de pantalla por encima de la ruta, y 6
+  del "volver arriba" global: página corta oculta, página alta arriba
+  oculta, aparece al bajar, click con scroll suave, se oculta al
+  subir y apilado `bottom-24`).
+- `npm test` → **551 pass / 4 fail (555)**: los mismos 4 fallos
+  preexistentes de `app/agencies/[agencyId]/__tests__/page.test.tsx`
+  (sin tocar); +33 tests nuevos sobre el baseline 518/522.
+- `npx tsc --noEmit` → exit 0.
+- `npm run build` → exit 0 (`▲ Next.js 16.3.8 (webpack)`, TypeScript OK).
+- `git diff --check` → exit 0.
+
+**Configuración de despliegue requerida (pendiente del operador):**
+agregar en **Vercel → proyecto del frontend → Settings → Environment
+Variables** (producción):
+`NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER=+58XXXXXXXXXX` (formato
+`+58412…`/`0412…`). Es env var de **build**: sin ella el botón no aparece
+en producción (oculto a propósito) y cambiar el número exige redeploy.
+No es un secreto: es el número público de WhatsApp de soporte.
+
+**Estado:** implementado y validado en local; **sin commitear, sin push,
+sin deploy** (a pedido). Pendiente del producto: (1) configurar la env
+var en Vercel; (2) decidir qué pantalla activa la categoría
+`sugerencia` (helper y plantilla ya listos).
+
+---
+
+## Fix: calendario del buscador recortado en el home (2026-11-14)
+
+- **Problema:** en `/`, al abrir el `DatePicker` del buscador del hero el
+  popover del calendario salía **cortado** por el contenido.
+- **Causa:** `HeroSection` (`components/home/HeroSection.tsx`) tenía
+  `overflow-hidden`, que recorta el popover absoluto (`z-50`) al
+  desbordarse por debajo del hero; además el hero no creaba contexto de
+  apilamiento, así que las secciones siguientes le podían tapar el
+  popover aunque no estuviera recortado.
+- **Fix:** quitar `overflow-hidden` (redundante: las capas decorativas
+  son `absolute inset-0` y el SVG `preserveAspectRatio` recorta su
+  propio contenido) y añadir `relative z-10` para que hero + calendario
+  pinten por encima de las secciones siguientes. Verificado que ningún
+  otro ancestro recorta: `main` y el resto del home no tienen overflow;
+  en `/agencies/[agencyId]` el `overflow-hidden` vive en la card del
+  storefront (cierra antes del formulario de filtros), no sobre su
+  DatePicker; `/trips` y Mis compras no recortan.
+- **Test de regresión:** `app/__tests__/page.test.tsx` → "el hero no
+  recorta el popover del DatePicker del buscador" (sin `overflow-hidden`
+  y con `z-10`).
+
+**Validación (2026-11-14):** landing 4/4; suite **552 pass / 4 fail
+(556)** (los mismos 4 fallos preexistentes de `agencies/[agencyId]`,
+sin tocar); `npx tsc --noEmit` → exit 0; `npm run build` → exit 0;
+`git diff --check` → exit 0.
+
+---
+
 ## Planificación de producto (2026-10-30)
 
 Nuevas iniciativas planificadas en [`docs/ROADMAP.md`](docs/ROADMAP.md)
@@ -1064,8 +1189,13 @@ referencia; el detalle y las decisiones están en el ROADMAP.
   `new|in_review|resolved|closed`). Tareas FDB-001…004. Sin evidencia de
   implementación.
 - **SUP** (Fase 7) — Ayuda + botón flotante de WhatsApp con mensajes
-  predefinidos. Tareas SUP-001…004. 🟡 Parcial: `/help` (SUP-004)
-  desplegada con el rediseño; SUP-001/002/003 pendientes.
+  predefinidos. Tareas SUP-001…004. 🟡 Casi completo: `/help` (SUP-004)
+  desplegada con el rediseño; SUP-001/002/003 **implementados 2026-11-13**
+  (número por env var `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER`, botón
+  flotante global y plantillas contextuales). Pendiente: configurar el
+  número en Vercel y elegir la pantalla de `sugerencia`. Detalle en §
+  *Soporte WhatsApp (SUP-001/002/003): botón flotante con contexto
+  (2026-11-13)*.
 - **LEG** (Fase 8) — Documentos legales del modelo dual (Venezuela) +
   aceptación con versionado y trazabilidad. Revisión jurídica externa
   obligatoria. Tareas LEG-001…005.
@@ -1086,7 +1216,7 @@ Dependencias de `nomadas-tour` (solo lectura): ver
 | — | Fase 3 — Ciclo de vida (T-1, comisiones, refunds, emails) | 🟡 En curso — MKT-008 (T-1) integrado y desplegado, **validación funcional local pendiente** (sección MKT-008-T1); comisiones, refunds y emails **diferidos** (no cancelados) |
 | — | Fase 5 — Landing dinámico (**LND**) | ✅ Integrado en `main` (PR #19, 2026-10-30) |
 | — | Fase 6 — Reputación (**REV** + **REP**) | 🟡 Parcial — REV ✅ integrado (PR #21, 2026-11-02) + migraciones 097–099 aplicadas; REP pendiente (perfil local sin commitear, ranking sin decidir) |
-| — | Fase 7 — Feedback + WhatsApp (**FDB** + **SUP**) | 🟡 Parcial — SUP-004 (`/help`) ✅; SUP-001/002/003 y todo FDB pendientes |
+| — | Fase 7 — Feedback + WhatsApp (**FDB** + **SUP**) | 🟡 Parcial — SUP-004 (`/help`) ✅ y SUP-001/002/003 implementados 2026-11-13 (falta env var en Vercel); todo FDB pendientes |
 | — | Fase 8 — Marco legal (**LEG**) | Planificada (2026-10-30) |
 | — | Fase 4 — Panel admin + `/account` | Parcial (historial + boleto ✅ RT-01…03; perfil, mis reservas y /admin pendientes) |
 | — | **MKT-007.1** — Modal WhatsApp de notificación de rechazo | ✅ Integrado en `nomadas-tour` (PR #164, 2026-10-16) — ver detalle abajo (despliegue no confirmado) |

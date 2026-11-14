@@ -45,4 +45,17 @@ describe("Landing (/) — LND", () => {
       screen.getByText(/la agencia revisa tu comprobante y recibes tu boleto digital/i),
     ).toBeInTheDocument();
   });
+
+  it("el hero no recorta el popover del DatePicker del buscador", () => {
+    render(<HomePage />);
+    const hero = screen.getByTestId("hero-section");
+
+    // Regresión: `overflow-hidden` en el hero cortaba el calendario del
+    // buscador (popover absoluto que se desborda por debajo del hero).
+    expect(hero).not.toHaveClass("overflow-hidden");
+
+    // Y debe pintar por encima de las secciones siguientes (SeccionConfianza…),
+    // si no, quedaría tapado aunque no esté recortado.
+    expect(hero).toHaveClass("z-10");
+  });
 });

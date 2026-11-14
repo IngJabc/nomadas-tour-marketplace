@@ -891,27 +891,18 @@ describe('MisComprasPage (RT-02)', () => {
     expect(screen.getByText('Barquisimeto → Caracas')).toBeInTheDocument();
   });
 
-  it('muestra el botón Subir cuando hay contenido arriba y hace scroll al inicio', async () => {
+  it('no monta su propio botón "volver arriba" (hoy es global)', async () => {
     listPurchases.mockResolvedValue(view([makeItem()]));
 
     render(<MisComprasPage />);
     expect(await screen.findByText('Barquisimeto → Caracas')).toBeInTheDocument();
 
+    // Extensión SUP-002 (2026-11-13): el botón vive en app/layout.tsx
+    // (BackToTopButton, solo en páginas altas y apilado sobre el FAB de
+    // WhatsApp). Esta pantalla ya no renderiza una segunda instancia.
     expect(
       screen.queryByRole('button', { name: 'Volver arriba' }),
     ).not.toBeInTheDocument();
-
-    Object.defineProperty(window, 'scrollY', {
-      value: 600,
-      writable: true,
-      configurable: true,
-    });
-    fireEvent.scroll(window);
-
-    const toTop = screen.getByRole('button', { name: 'Volver arriba' });
-    fireEvent.click(toTop);
-
-    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
   });
 });
 

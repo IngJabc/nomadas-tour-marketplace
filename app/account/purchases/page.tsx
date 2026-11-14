@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AlertTriangle,
-  ArrowUp,
   Building2,
   CalendarDays,
   CreditCard,
@@ -324,7 +323,6 @@ export default function MisComprasPage() {
   /** Modal de pasajeros: el intento cuya lista está abierta (o null). */
   const [passengersModalFor, setPassengersModalFor] =
     useState<PurchaseItemDto | null>(null);
-  const [showTop, setShowTop] = useState(false);
 
   /** Última secuencia iniciada: descarta respuestas viejas o de otra identidad. */
   const seqRef = useRef(0);
@@ -471,17 +469,6 @@ export default function MisComprasPage() {
       cancelled = true;
     };
   }, [authLoading, customerId, role]);
-
-  // Botón "Subir": aparece cuando hay contenido por encima del viewport.
-  useEffect(() => {
-    const onScroll = () => {
-      const next = window.scrollY > 400;
-      setShowTop((prev) => (prev === next ? prev : next));
-    };
-    onScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
 
   // El modal se cierra con Escape.
   useEffect(() => {
@@ -1279,17 +1266,6 @@ export default function MisComprasPage() {
             </button>
           </div>
         </div>
-      )}
-
-      {showTop && (
-        <button
-          type="button"
-          aria-label="Volver arriba"
-          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full bg-brand-cyan text-white shadow-lg transition-colors duration-200 hover:bg-brand-blue"
-        >
-          <ArrowUp size={20} strokeWidth={1.75} aria-hidden />
-        </button>
       )}
     </main>
   );
