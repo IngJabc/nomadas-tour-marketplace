@@ -4,7 +4,7 @@
 **Alcance:** Dirección de mediano plazo. No es un backlog técnico de sprint.
 **Ejecución operativa:** Ver [TASKS.md](../TASKS.md).
 
-**Última actualización:** 2026-11-10
+**Última actualización:** 2026-11-14 (prioridades de negocio acordadas)
 
 > **Nota de convención (2026-10-30):** las fases 0–4 son las épicas técnicas
 > ya existentes (MKT-001…014, GUEST, RT). Las nuevas iniciativas de producto
@@ -33,34 +33,41 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | Checkout con revisión de comprobante (MKT-007, `checkout_attempts`) | ✅ Completado |
 | Panel de revisión de pagos (agencia, en repo tour, MKT-006) | ✅ Completado |
 | Historial de compras + boleto QR (`/account/purchases`) | ✅ Completado (RT-01…RT-03) |
-| Comisiones + primer viaje gratis | ⏳ Diferido (MKT-009 comisiones — roadmap original; no cancelado) |
-| Workers (T-1, comisiones, emails) | 🟡 T-1 (MKT-008) integrado y desplegado, validación funcional pendiente; comisiones y emails diferidos (MKT-008…011) |
-| Panel superadmin marketplace (`/admin`) | ⏳ Planificado (MKT-012) |
+| Pagos de reserva en dos partes (depósito fijo + saldo restante) | ⏳ **Prioridad 1** (MKT-010.1) — planificado, no implementado (solo columnas `installment_*` en schema) |
+| Comisiones + primer viaje gratis | ⏳ **Prioridad 2** (MKT-009 extendido — criterio nuevo USD 0.30/pasajero completado; "primer viaje gratis" = decisión pendiente) |
+| Cancelación de reservas y reembolsos | ⏳ **Prioridad 3** (MKT-010.2) — planificado, no implementado (cancelación atómica + refund `required` existen, RPC 079; gestión de reembolsos pendiente) |
+| Marco legal venezolano | ⏳ **Prioridad 4** (LEG ↔ LEGAL-001…005) — investigación y revisión legal pendientes |
+| Cancelación de viajes con reservas existentes | ⏳ **Prioridad 5** (AS-TRIP-005, tour) — solo tras validar la prioridad 3; restricción actual `ERR_TRIP_HAS_RESERVATIONS` |
+| Workers (T-1, comisiones, emails) | 🟡 T-1 (MKT-008) integrado y desplegado, **validación funcional pendiente**; comisiones ahora **prioridad 2** y emails diferidos (MKT-008…011) |
+| Panel superadmin marketplace (`/admin`) | ❌ **Cancelado/deferido (MKT-012)** — la administración de plataforma se centraliza en Tour |
 | Cuenta de cliente (`/account`) | ⏳ Planificado (MKT-013) |
 | Migraciones marketplace (074–101) | ✅ Aplicadas (074–080 verificado en vivo 2026-10-06; 085–087 posterior; 088–101 confirmadas aplicadas 2026-11-10) |
 | **Landing dinámico (4 viajes próximos)** | ✅ Implementado e integrado en `main` (Fase 5, **LND**, PR #19 2026-10-30) |
-| **Sistema de reputación y calificaciones** | ✅ REV integrado en `main` (Fase 6, REV-001…006, PR #21 2026-11-02) + migraciones 097–099 aplicadas; ⏳ REP pendiente |
-| **Feedback del Marketplace** | ⏳ Planificado (Fase 7, **FDB**) |
-| **Atención al cliente por WhatsApp** | 🟡 Parcial (Fase 7, **SUP**): `/help` (SUP-004) integrada; SUP-001/002/003 implementados en código 2026-11-13, **pendiente configurar el número en despliegue** |
-| **Marco legal y cumplimiento** | ⏳ Planificado (Fase 8, **LEG**) |
+| **Sistema de reputación y calificaciones** | ✅ REV integrado en `main` (Fase 6, REV-001…006, PR #21 2026-11-02) + migraciones 097–099 aplicadas; ⏸️ **REP pausado** (perfil/directorio local sin commitear; ranking sin decidir) |
+| **Feedback del Marketplace** | ⏸️ **PAUSADO** (Fase 7, **FDB**) — sin evidencia de implementación |
+| **Atención al cliente por WhatsApp** | ✅ **SUP-001/002/003 integrados en `main` (PR #26, 2026-11-14)**; `/help` (SUP-004) integrada desde 2026-10-28; **pendiente configurar el número en despliegue** (env var `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` no configurada) |
+| **Marco legal y cumplimiento** | ⏳ **Prioridad 4** (Fase 8, **LEG**) — ver § Prioridades de negocio acordadas |
 
 Diseño aprobado (6 revisiones): [`business-rules.md`](business-rules.md).
 Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 
-> **Estado de las iniciativas (2026-11-13):** **LND** implementado e
+> **Estado de las iniciativas (2026-11-14):** **LND** implementado e
 > integrado en `main` (PR #19); **REV** implementado e integrado en `main`
 > (PR #21, 2026-11-02) con migraciones 097–099 **aplicadas** (confirmado);
-> **SUP** completo en código desde 2026-11-13 (número configurable
-> SUP-001, botón flotante global SUP-002 y plantillas contextuales
-> SUP-003, además de `/help` ya desplegada con el rediseño) — **pendiente
-> configurar `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` en Vercel** para que
-> el botón aparezca en producción. **REP, FDB y LEG siguen sin
-> implementarse.** El despliegue de LND/REV no está confirmado en esta
+> **SUP-001/002/003 integrados en `main` (PR #26, 2026-11-14)** (número
+> configurable SUP-001, botón flotante global SUP-002 y plantillas
+> contextuales SUP-003, además de `/help` ya desplegada con el rediseño)
+> — **pendiente configurar `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` en
+> Vercel** para que el botón aparezca en producción. **REP y FDB
+> PAUSADOS** (no se repriorizan); **LEG pendiente (prioridad 4)**; el
+> orden de ejecución regido por § *Prioridades de negocio acordadas
+> (2026-11-14)*. El despliegue de LND/REV/SUP no está confirmado en esta
 > sincronización (integrados en `main` y migraciones aplicadas, sí).
 > Nada se marca completado sin evidencia.
 >
-> **Soporte por WhatsApp — configuración de despliegue (2026-11-13):**
-> SUP-001/002/003 implementados en código. El número oficial de soporte
+> **Soporte por WhatsApp — configuración de despliegue (2026-11-14):**
+> SUP-001/002/003 implementados en código e **integrados en `main` (PR
+> #26, 2026-11-14)**. El número oficial de soporte
 > se configura con la env var pública
 > `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` (formato `+58412…` o `0412…`) en
 > el proyecto de Vercel del frontend. **Sin ella el botón flotante no se
@@ -83,6 +90,75 @@ Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 > Webpack automáticamente (no hay `vercel.json` ni build command
 > personalizado). Detalle en [`../TASKS.md`](../TASKS.md) § *Build de
 > producción en Vercel: bundler Webpack (2026-11-13)*.
+
+---
+
+## Prioridades de negocio acordadas (2026-11-14)
+
+Orden acordado para el trabajo pendiente. Este bloque es **idéntico** en
+`TASKS.md` y `docs/ROADMAP.md` de ambos repos (`nomadas-tour` y
+`nomadas-tour-marketplace`) para que no existan dos versiones de la misma
+prioridad; cada repo solo documenta su responsabilidad de implementación.
+Detalle operativo en [`TASKS.md`](../TASKS.md) → *Prioridades de negocio
+acordadas*.
+
+| # | Prioridad | IDs | Orden / dependencia | Dueño (responsabilidad de implementación) |
+| - | --------- | --- | ------------------- | ----------------------------------------- |
+| 1 | Pagos de reserva en dos partes: depósito fijo + saldo restante | **MKT-010.1** (extiende MKT-010) | Primera | Marketplace: flujo y estado de pago para el cliente · Tour: configuración del depósito y revisión · backend/DB: registros autoritativos |
+| 2 | Comisiones de plataforma: **USD 0.30 por pasajero que completa el viaje** | **MKT-009** extendido (comisiones, roadmap original) | Después de la 1 | Tour: visibilidad del adeudo en panel de agencia · backend/DB: cálculo y trazabilidad por viaje/pasajero elegible · Marketplace: aporta datos del pasajero |
+| 3 | Cancelación de reservas y reembolsos | **MKT-010.2** (extiende MKT-010) | Después de la 1; puede correr en paralelo con la 2 | Tour: cancelación y registro/gestión de reembolsos · Marketplace: visibilidad de estado para el cliente · backend/DB: cancelación + liberación de asientos atómicas y auditoría |
+| 4 | Marco legal venezolano | **LEG** (marketplace, coordinador) ↔ **LEGAL-001…005** (tour, Fase A) | En paralelo (la revisión externa requiere planificación anticipada) | Una sola investigación y revisión jurídica compartida; cada repo redacta solo su lado |
+| 5 | Cancelación de viajes con reservas existentes | **AS-TRIP-005** (tour) | Solo después de validar la prioridad 3 | Tour |
+
+Reglas de negocio (válidas para todos los ítems):
+
+- **Nada de este bloque está implementado**: todo está planificado. No se
+  marca ninguna de estas tareas como completada.
+- **Prioridad 1 — MKT-010.1:** dos pagos exactos por asiento. La agencia
+  configura el monto del depósito y las fechas; el sistema calcula el saldo
+  restante y muestra el porcentaje que representa cada monto. El segundo
+  pago vence generalmente un día antes de la salida o el día de la salida;
+  la agencia avisa al cliente por WhatsApp. Si el cliente no paga a tiempo,
+  la agencia decide cómo manejar la reserva: **sin cancelación automática**
+  basada solo en el saldo impago.
+- **Prioridad 2 — MKT-009 (extendido):** USD 0.30 por pasajero que
+  **completa** el viaje; **nada** por pasajeros cancelados o que no
+  viajan. El panel de agencia muestra el monto adeudado por viajes
+  completados; cada registro es trazable al viaje y a los pasajeros
+  elegibles. El criterio histórico "primer viaje gratis" queda como
+  **decisión pendiente** frente al nuevo criterio (no se borra el
+  historial).
+- **Prioridad 3 — MKT-010.2:** el cliente contacta a la agencia para
+  pedir la cancelación; la agencia la gestiona desde Tour. Cancelar libera
+  los asientos de la reserva en una operación **atómica**. Se registra el
+  reembolso: monto total, parcial o cero, motivo, agencia/usuario
+  responsable, fecha y estado. El dinero se mueve **fuera de la
+  plataforma** (la agencia devuelve); la agencia puede marcar el reembolso
+  como completado y adjuntar prueba opcional. Marketplace muestra el estado
+  al cliente. Auditoría completa. **No** se construye procesamiento de
+  pagos ni transferencias automáticas.
+- **Prioridad 4 — LEG/LEGAL:** investigar los requisitos venezolanos
+  aplicables y buscar plantillas o referencias autoritativas adaptables;
+  **no** asumir que existe un documento universal utilizable sin cambios;
+  registrar la necesidad de **revisión legal cualificada antes de
+  publicar**. Se conservan los IDs LEG/LEGAL existentes; el trabajo legal
+  solapado entre ambos repos se **reconcilia, no se duplica**.
+- **Prioridad 5 — AS-TRIP-005:** solo después de que los reembolsos de la
+  prioridad 3 estén disponibles y validados. Cancelar un viaje debe cubrir
+  todas las reservas afectadas, sus reembolsos, la liberación de asientos,
+  las notificaciones al cliente y los registros de auditoría. **Se
+  conservan las restricciones y reglas de autorización actuales**
+  (`ERR_TRIP_HAS_RESERVATIONS` al cancelar un viaje con reservas vivas)
+  hasta entonces.
+- **MKT-012** (panel `/admin` separado del Marketplace) queda
+  **cancelado/deferido**: la administración de la plataforma se
+  centraliza en Tour. El historial del ticket se conserva.
+- **REP** y **FDB** permanecen **pausados**: no se inician ni se
+  repriorizan.
+- **Estados que se conservan exactos:** MKT-008 con validación funcional
+  pendiente; SUP con su integración real y su env var
+  `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` pendiente de configurar (no se
+  afirma que esté configurada).
 
 ---
 
@@ -161,8 +237,12 @@ FASE 3 — Ciclo de vida                       🟡 En curso (parcial)
            — ✅ integrado en `main` y desplegado (migración 088 +
              scheduler `marketplace-t1-scheduler`); validación
              funcional LOCAL PENDIENTE (ver TASKS.md → MKT-008 T-1)
-  MKT-009  Comisiones idempotentes + primer viaje gratis → diferido
-  MKT-010  Refunds (reservation_refunds) → diferido (no cancelado)
+  MKT-010  (reservado refunds/abonos) → PRIORIDAD 1 = MKT-010.1 pagos en
+           dos partes · PRIORIDAD 3 = MKT-010.2 cancelación + reembolsos
+  MKT-009  Comisiones USD 0.30 por pasajero completado → PRIORIDAD 2
+           — extendido desde "comisiones idempotentes + primer viaje
+             gratis"; el "primer viaje gratis" queda como decisión
+             pendiente
   MKT-011  Emails (outbox) con EMAIL_DELIVERY_MODE → diferido
            — El naming drift documentado (MKT-010 ejecutado como
              "expiración de checkout", integrado y desplegado) se
@@ -170,6 +250,8 @@ FASE 3 — Ciclo de vida                       🟡 En curso (parcial)
 
 FASE 4 — Panel admin + Cuenta                ⏳ Planificada (parcial ✅)
   MKT-012  /admin (sidebar) pagos, comisiones, viajes
+           — ❌ CANCELADO/DEFERIDO (2026-11-14): la administración de
+             plataforma se centraliza en Tour; historial conservado
   MKT-013  /account (mis reservas, boletos, perfil)
            — ✅ 2026-10-20: historial de compras + boleto QR
              (/account/purchases, RT-01…RT-03); perfil y mis reservas
@@ -179,11 +261,11 @@ FASE 5 — Experiencia pública                 ✅ Integrada (2026-10-30, PR #1
   LND-001  ✅ Landing dinámico: 4 viajes próximos desde endpoint público
   LND-002  ✅ Estados de carga, error y ausencia de viajes + CTA catálogo
   LND-003  ✅ Tarjetas preparadas para imagen/descripción futuros
-  — Fix UI (2026-11-14, sin commitear): el calendario del DatePicker del
-    hero ya no sale cortado → `HeroSection` sin `overflow-hidden` +
-    `z-10` (test de regresión en `app/__tests__/page.test.tsx`;
-    detalle en TASKS.md § *Fix: calendario del buscador recortado en el
-    home*)
+  — Fix UI (2026-11-14, integrado en `main` con PR #26): el calendario
+    del DatePicker del hero ya no sale cortado → `HeroSection` sin
+    `overflow-hidden` + `z-10` (test de regresión en
+    `app/__tests__/page.test.tsx`; detalle en TASKS.md § *Fix:
+    calendario del buscador recortado en el home*)
 
 FASE 6 — Confianza y reputación              🟡 REV integrado (2026-11-02, PR #21)
   REV-001  ✅ Viaje completado elegible: trips.completed_at (trigger 097,
@@ -204,13 +286,15 @@ FASE 7 — Atención y mejora continua          🟡 Parcial (2026-11-13)
   FDB-002  Interface administrativa de revisión de feedback
   SUP-001  Configuración del número (env var
            NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER) → ✅ implementado
-           (2026-11-13); falta configurarlo en Vercel
+           (2026-11-13) e integrado (PR #26, 2026-11-14); falta
+           configurarlo en Vercel (aún sin configurar)
   SUP-002  Botón flotante de WhatsApp con mensajes predefinidos → ✅
-           implementado (2026-11-13): solo el logo oficial, a la derecha,
+           implementado (2026-11-13) e integrado (PR #26, 2026-11-14):
+           solo el logo oficial, a la derecha,
            con animación hover/click; "volver arriba" global en páginas
            altas con la misma animación
   SUP-003  Plantillas de mensajes por categoría → ✅ implementado
-           (2026-11-13)
+           (2026-11-13) e integrado (PR #26, 2026-11-14)
   SUP-004  Página de ayuda con categorías → 🟡 parcial: `/help` (FAQ +
            contacto con canales reales) integrada y desplegada con el
            rediseño (2026-10-28)
@@ -220,6 +304,9 @@ FASE 8 — Marco legal                        ⏳ Planificada (2026-10-30)
   LEG-002  Mecanismo de aceptación con versionado y trazabilidad
   LEG-003  Política de privacidad y cookies
   LEG-004  Revisión jurídica externa antes de publicar
+           — PRIORIDAD 4 (2026-11-14): ver lista completa LEG-001…005 en
+             § LEG; en `nomadas-tour` viven los IDs LEGAL-001…005 (Fase A).
+             Una sola investigación/revisión compartida entre ambos repos.
 ```
 
 ### Relación de fases con la propuesta original (A–D)
@@ -440,7 +527,9 @@ pruebas) e **integrados en `main`** (PR #21, 2026-11-02; companion en
   notificación interna `customer_notifications` (sin email).
 - **REV-006** ✅ — Moderación superadmin: `GET /api/admin/reviews` +
   `PATCH /api/admin/reviews/:reviewType/:reviewId` (hide/reject/restore),
-  cada acción auditada. UI del panel queda para MKT-012 (`/admin`).
+  cada acción auditada. UI del panel queda para MKT-012 (`/admin`) →
+  **MKT-012 cancelado/deferido (2026-11-14)**: la administración de la
+  plataforma se centraliza en Tour, donde vivirá esta UI de moderación.
 
 **Pruebas necesarias:**
 - Backend: ✅ unicidad, autoría, estado del viaje, ventana de 48 h,
@@ -455,8 +544,9 @@ pruebas) e **integrados en `main`** (PR #21, 2026-11-02; companion en
 **Estado actual:** ✅ Implementado (2026-11-01) e **integrado en `main`**
 (PR #21, 2026-11-02). Migraciones `097`–`099` **aplicadas** (confirmado
 2026-11-10); despliegue no confirmado en esta sincronización. UI de
-moderación pendiente del panel `/admin` (MKT-012); rankings/distintivos =
-REP.
+moderación pendiente de un panel de administración — MKT-012
+cancelado/deferido: la administración de plataforma se centraliza en
+Tour (decisión 2026-11-14); rankings/distintivos = REP.
 
 **Decisiones:**
 - [RESUELTA] Definición exacta de "viaje completado" → campo
@@ -507,7 +597,8 @@ sólidos (no solo estrellas aisladas) y ver quién presta el servicio.
 **Pruebas:**
 - Casos borde: 0 reseñas, 1 reseña 5★ vs 100 reseñas 4.8★, antigüedad.
 
-**Estado actual:** 🟡 **Parcial (2026-11-10):** existe implementación local
+**Estado actual:** ⏸️ **PAUSADO (decisión 2026-11-14: no se reprioriza).**
+🟡 **Parcial (2026-11-10):** existe implementación local
 del directorio y perfil público de agencias (`/agencies`,
 `/agencies/[agencyId]`, `backend/.../agency.service.ts`) **sin commitear —
 fuera de `main`, no integrada**; requiere decisión de integración para
@@ -560,7 +651,9 @@ reporten problemas o sugieran mejoras sin confundirlo con reseñas públicas.
 **Dependencias:**
 - Auth de cliente (opcional pero recomendado para trazabilidad).
 - Nuevo modelo/tabla de feedback.
-- Panel admin (MKT-012) para la interface administrativa.
+- Panel de administración — MKT-012 cancelado/deferido: la
+  administración de plataforma se centraliza en Tour (FDB-004 queda
+  pendiente de decisión de hosting; FDB sigue pausado).
 
 **Riesgos:**
 - Duplicidad conceptual con SUP o con REV si no se delimita bien.
@@ -579,7 +672,8 @@ reporten problemas o sugieran mejoras sin confundirlo con reseñas públicas.
 
 **Pruebas:** backend (creación, estados), frontend (formulario, validación).
 
-**Estado actual:** ⏳ Planificado. **Sin evidencia de implementación
+**Estado actual:** ⏸️ **PAUSADO (decisión 2026-11-14: no se reprioriza).**
+⏳ Planificado. **Sin evidencia de implementación
 (2026-11-10):** no existe modelo `marketplace_feedback` (ni en migraciones
 ni en código de ninguno de los dos repos), ni endpoint ni UI de envío o
 revisión.
@@ -636,7 +730,8 @@ para dudas o incidencias.
 página `/help` (FAQ con acordeones + contacto con canales reales) existe,
 integrada y desplegada con el rediseño (2026-10-28), y los enlaces
 `wa.me` de agencia existen en el flujo de reserva (MKT-007.4, derivados
-del teléfono publicado). **SUP-001/002/003 implementados (2026-11-13):**
+del teléfono publicado). **SUP-001/002/003 implementados (2026-11-13) e
+integrados en `main` (PR #26, 2026-11-14):**
 el número vive en la env var `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` (sin
 hardcode, sin migraciones ni cambios en `platform_config`); el botón
 flotante global está montado en `app/layout.tsx` (esquina inferior
@@ -719,9 +814,20 @@ consentimiento cuando corresponda.
 - **LEG-004** — Redacción inicial de borradores (con revisión jurídica externa posterior).
 - **LEG-005** — Panel superadmin para gestionar versiones (básico).
 
+> **Reconciliación LEG ↔ LEGAL (prioridad 4, 2026-11-14):** en
+> `nomadas-tour` viven los IDs **LEGAL-001…005** (Fase A) para el marco
+> legal del SaaS. Existe solapamiento temático (documentos, aceptación,
+> revisión jurídica). **No se duplica trabajo:** una sola investigación de
+> requisitos venezolanos y una sola revisión legal cualificada sirven a
+> ambos repos; cada uno redacta solo su lado (marketplace: documentos del
+> modelo dual y aceptación; tour: LEGAL de agencia/SaaS). Esta iniciativa
+> **LEG** es la coordinadora. No se asume un documento universal
+> utilizable sin cambios.
+
 **Pruebas:** persistencia de aceptación, re-aceptación tras cambio de versión, trazabilidad.
 
-**Estado actual:** ⏳ Planificado.
+**Estado actual:** ⏳ Planificado — **prioridad 4** (2026-11-14); ver
+reconciliación LEG ↔ LEGAL más arriba.
 
 **Decisiones pendientes:**
 - [LEGAL] Proveedor/abogado para revisión.
@@ -737,17 +843,23 @@ consentimiento cuando corresponda.
 | ---------- | ---------- | ------------- |
 | LND | Endpoint público existente | Nada (inmediato) |
 | REV | Definición de "viaje completado" | REV-001 |
-| REP | REV (datos de reseñas + volumen) | REV completado al menos parcialmente |
-| FDB | Auth cliente, panel admin futuro | MKT-012 (para interface admin completa) |
-| SUP | `platform_config` para número | Nada crítico |
+| REP | REV (datos de reseñas + volumen) | **Pausada** (no se reprioriza) |
+| FDB | Auth cliente, panel de administración (MKT-012 cancelado → Tour) | **Pausada** (no se reprioriza) |
+| SUP | `platform_config` para número | Nada crítico (integrada; env var de despliegue pendiente) |
 | LEG | Revisión jurídica externa | Recurso humano externo |
+| **Prioridad 1 — MKT-010.1** (pagos en dos partes) | Configuración del depósito en Tour + flujo de pago en Marketplace | Nada (primera prioridad) |
+| **Prioridad 2 — MKT-009** (comisiones) | Viajes completados + panel de agencia en Tour | Orden: después de la prioridad 1 |
+| **Prioridad 3 — MKT-010.2** (cancelación + reembolsos) | Cancelación atómica + registro de reembolsos (Tour/DB) | Orden: después de la prioridad 1 (paralela a la 2) |
+| **Prioridad 4 — LEG/LEGAL** | Investigación + revisión legal externa | En paralelo (no bloquea) |
+| **Prioridad 5 — AS-TRIP-005** (cancelar viaje con reservas) | Reembolsos disponibles y validados (prioridad 3) | Prioridad 3 validada |
 
-Secuencia recomendada: **LND ✅ → REV ✅ → REP → FDB/SUP (SUP ✅ 2026-11-13
-en código; FDB pendiente) → LEG**.
-REP queda como siguiente iniciativa de la secuencia de confianza (con su
-decisión de algoritmo pendiente y la integración del perfil público local).
-LEG debe iniciar su actividad de revisión jurídica en paralelo temprano por
-su dependencia de recursos externos.
+Secuencia recomendada (2026-11-14): **prioridad 1 (MKT-010.1) →
+prioridad 2 (MKT-009 comisiones) y prioridad 3 (MKT-010.2), que pueden
+correr en paralelo → prioridad 5 (AS-TRIP-005), solo tras validar los
+reembolsos**, con la **prioridad 4 (LEG/LEGAL) en paralelo temprano** por
+su dependencia de recursos externos. REP y FDB siguen **pausados** (no se
+repriorizan); LND, REV y SUP ya están integrados (SUP con su env var de
+despliegue pendiente de configurar).
 
 ---
 
@@ -763,6 +875,11 @@ su dependencia de recursos externos.
 5. Borradores legales iniciales y proveedor de revisión jurídica (LEG).
 6. Momento y bloqueo de la aceptación legal (LEG).
 7. Si el feedback requiere autenticación (FDB).
+8. **Criterio de comisiones (prioridad 2, MKT-009):** el histórico
+   "primer viaje gratis" (`agencies.first_marketplace_trip_completed_at`)
+   frente al nuevo criterio **USD 0.30 por pasajero que completa el
+   viaje** — decidir si uno sustituye al otro o coexisten; sin decisión,
+   no se implementa MKT-009.
 
 ---
 
@@ -795,3 +912,18 @@ su dependencia de recursos externos.
    algunas tablas (endpoints, estado de fases). **Resolución parcial:**
    PROJECT_CONTEXT se actualiza con filas de nuevas iniciativas; system-spec
    queda como referencia histórica y debe actualizarse al iniciar cada fase.
+
+7. **Drift de MKT-009 (preexistente):** en `TASKS.md`, la sección
+   `MKT-009` documenta "Compras independientes en paralelo" (ejecutada,
+   integrada y desplegada); en este roadmap, MKT-009 son las **comisiones
+   idempotentes** (diferidas). Con la nueva **prioridad 2** el ID de
+   comisiones se **extiende aquí** ("MKT-009 extendido") sin reasignar ni
+   tocar la sección ejecutada de TASKS. **Resolución:** se documenta el
+   drift; ningún ID ya usado se reutiliza para otro fin.
+
+8. **Cancelación de viajes con reservas (filas "Operativo"):** el roadmap
+   de `nomadas-tour` las marcaba como operativas, pero la migración 104
+   (`ERR_TRIP_HAS_RESERVATIONS`) bloquea cancelar un viaje con reservas
+   vivas. **Resolución:** corregido en `nomadas-tour/docs/ROADMAP.md`
+   (2026-11-14) y elevado a **prioridad 5** (AS-TRIP-005) tras validar los
+   reembolsos (prioridad 3).
