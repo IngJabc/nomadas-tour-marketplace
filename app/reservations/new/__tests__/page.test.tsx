@@ -16,6 +16,7 @@ import {
   type SubmitCheckoutProofResult,
 } from '@/lib/api';
 import { ApiError } from '@/lib/errors/api-error';
+import { formatSeatPrice } from '@/lib/price';
 import { subscribeToPurchaseTicket } from '@/lib/realtime/subscriptions';
 import NewReservationPage from '../page';
 
@@ -293,6 +294,15 @@ function createdAttempt(
     proof_count: 0,
     expires_at: futureExpiry(),
     idempotent: false,
+    // MKT-010.1: plan único por defecto (los tests two_stage lo pisan).
+    payment_plan: 'single',
+    deposit_cents: null,
+    total_cents: 4040,
+    balance_cents: 0,
+    deposit_pct: null,
+    balance_pct: null,
+    deposit_deadline: null,
+    balance_deadline: null,
     ...overrides,
   };
 }
@@ -325,6 +335,15 @@ function attemptView(
     created_at: '2026-10-04T11:00:00.000Z',
     closed_at: null,
     verified_at: null,
+    // MKT-010.1: plan único por defecto (los tests two_stage lo pisan).
+    payment_plan: 'single',
+    deposit_cents: null,
+    total_cents: 4040,
+    balance_cents: 0,
+    deposit_pct: null,
+    balance_pct: null,
+    deposit_deadline: null,
+    balance_deadline: null,
     ...overrides,
   };
 }
@@ -4680,5 +4699,88 @@ describe('Compras independientes en paralelo (MKT-009)', () => {
     expect(
       screen.getByRole('heading', { name: 'Elige tus asientos' }),
     ).toBeInTheDocument();
+  });
+});
+
+// ── MKT-010.1 · Desglose del plan en dos partes en el wizard ─────────────────
+//
+// El intento llega del SERVIDOR con el plan congelado (RPC 106 vía
+// createAttempt); el wizard SOLO lo pinta en el paso de pago.
+
+describe('Wizard de reserva — plan de pago en dos partes (MKT-010.1)', () => {
+  beforeEach(() => {
+    resetCheckoutTest();
+  });
+
+  const TWO_STAGE = {
+    payment_plan: 'two_stage' as const,
+    // En dos partes el importe del intento es el DEPOSITO (server-side).
+    amount_cents: 1010,
+    deposit_cents: 1010,
+    total_cents: 4040,
+    balance_cents: 3030,
+    deposit_pct: 25,
+    balance_pct: 75,
+    deposit_deadline: '2026-12-30T00:00:00.000Z',
+    balance_deadline: '2026-12-31T00:00:00.000Z',
+  };
+
+  async function startAttemptWithPlan() {
+    mockedCreate.mockResolvedValue(createdAttempt(TWO_STAGE));
+    seedLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+    const view = await renderWizard();
+    await createAttemptViaUi(view);
+    return view;
+  }
+
+  it('pinta etapas, porcentajes, montos y total del plan server-side', async () => {
+    await startAttemptWithPlan();
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent('Plan de pago en dos partes');
+    expect(block).toHaveTextContent('Depósito (etapa 1) · 25%');
+    expect(block).toHaveTextContent('Saldo (etapa 2) · 75%');
+    expect(block).toHaveTextContent(formatSeatPrice(1010));
+    expect(block).toHaveTextContent(formatSeatPrice(3030));
+    expect(block).toHaveTextContent('Total');
+    expect(block).toHaveTextContent(formatSeatPrice(4040));
+    // Los montos NO se recalculan en el cliente: coinciden con lo devuelto
+    // por createAttempt (depósito + saldo = total).
+    expect(1010 + 3030).toBe(4040);
+  });
+
+  it('muestra ambos vencimientos y explica que los asientos permanecen reservados', async () => {
+    await startAttemptWithPlan();
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent('Depósito: vence el');
+    expect(block).toHaveTextContent('Saldo: vence el');
+    expect(block).toHaveTextContent(
+      'Primero pagas el depósito y la agencia lo revisa',
+    );
+    expect(block).toHaveTextContent(
+      'Tus asientos permanecen reservados mientras tanto.',
+    );
+    // Copia de flujo único: el saldo se paga después desde Mis compras.
+    expect(block).toHaveTextContent('el saldo se paga después desde Mis compras');
+  });
+
+  it('el plan único jamás renderiza el desglose de dos partes', async () => {
+    seedLock();
+    mockedTripDetail.mockResolvedValue({ trip: buildTrip() });
+    mockedLocks.mockResolvedValue(serverLocks());
+
+    const view = await renderWizard();
+    await createAttemptViaUi(view);
+
+    expect(await screen.findByText('Compra iniciada')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('plan-dos-partes'),
+    ).not.toBeInTheDocument();
+    // El importe de siempre sigue en su fila.
+    expect(screen.getByText('Importe')).toBeInTheDocument();
+    expect(screen.getByText(/por 2 asientos/)).toBeInTheDocument();
   });
 });

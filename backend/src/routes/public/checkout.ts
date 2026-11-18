@@ -7,6 +7,7 @@ import { assertAllowedGuestOrigin } from '../../services/guest-session.service.j
 import {
   cancelCheckoutAttempt,
   createCheckoutAttempt,
+  getBalanceProgress,
   getCheckoutAttempt,
   getCheckoutPaymentMethods,
   getCheckoutTicket,
@@ -16,6 +17,7 @@ import {
   PURCHASE_HISTORY_MAX_LIMIT,
   PURCHASE_HISTORY_MAX_OFFSET,
   selectCheckoutPaymentMethod,
+  submitBalancePayment,
   submitCheckoutProof,
   type CreateCheckoutAttemptInput,
 } from '../../services/checkout.service.js';
@@ -360,6 +362,79 @@ router.patch('/attempts/:attemptId/payment-method', submitLimiter, auth, async (
     });
 
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/checkout/attempts/:attemptId/balance (MKT-010.1)
+ * Progreso de pago en dos partes para el DUEÑO del intento: montos
+ * server-side (total, depósito, pagado, saldo restante), porcentajes,
+ * vencimientos en vivo, pagos con su etapa y el canal de WhatsApp de
+ * la agencia. La identidad sale de la sesión; el reservation_id se
+ * deriva en el servidor (nunca llega del cliente).
+ *
+ * - 404 uniforme: intento inexistente o de otra persona.
+ * - 409 BALANCE_NOT_AVAILABLE: intento propio sin saldo (no
+ *   verificado o plan único). Un saldo ya saldado responde 200 con
+ *   balance_cents = 0.
+ */
+router.get('/attempts/:attemptId/balance', auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { attemptId } = parseOrThrow(
+      z.object({ attemptId: uuidSchema }),
+      req.params,
+    );
+
+    const result = await getBalanceProgress({
+      attemptId,
+      customerId: req.ctx!.userId,
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/public/checkout/attempts/:attemptId/balance (MKT-010.1)
+ * Somete el comprobante del SALDO (etapa 2) de una compra en dos
+ * partes. Mismo contrato multipart que /proof: UN archivo "proof" +
+ * payment_reference, bank_origin y payment_datetime; header
+ * Idempotency-Key obligatorio (UUID).
+ *
+ * - El importe lo calcula el SERVIDOR en la RPC (total − pagos
+ *   verificados): el cliente nunca envía dinero.
+ * - Idempotencia por clave `mkt010_1:{reserva}:{clave}` y un solo
+ *   saldo pendiente a la vez (409 BALANCE_PAYMENT_PENDING).
+ * - 201 en envío fresco, 200 en reintento idempotente.
+ */
+router.post('/attempts/:attemptId/balance', submitLimiter, auth, async (req, res, next) => {
+  try {
+    assertAllowedGuestOrigin(req);
+    requireCustomer(req);
+
+    const { attemptId } = parseOrThrow(
+      z.object({ attemptId: uuidSchema }),
+      req.params,
+    );
+    const idempotencyKey = readIdempotencyKey(req.headers['idempotency-key']);
+
+    const proof = await parseCheckoutProofUpload(req);
+
+    const result = await submitBalancePayment({
+      attemptId,
+      customerId: req.ctx!.userId,
+      idempotencyKey,
+      proof,
+    });
+
+    res.status(result.idempotent ? 200 : 201).json(result);
   } catch (error) {
     next(error);
   }

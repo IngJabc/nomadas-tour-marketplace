@@ -327,8 +327,14 @@ invitación por reserva.
 ### 11.6 Pendiente fuera de este cambio
 
 - Aplicar `097`–`099` en Supabase (revisión de impacto §8 regla 1 +
-  rollout; siguiente prefijo libre: **100**).
-- UI de moderación (panel `/admin`, MKT-012); rankings/distintivos (REP).
+  rollout). **Actualización (2026-11-17):** el siguiente prefijo libre ya
+  no es `100` — el histórico tiene `100`–`106`: `104`/`105` aplicadas el
+  2026-11-12, `097`–`099` **sin aplicar**, `106` (pagos en dos partes)
+  **creada sin aplicar**; revisar el estado de `100`–`103` antes de
+  tocar nada (§8 regla 1).
+- UI de moderación: **centralizada en Tour** — el Marketplace no necesita
+  panel de administración propio (**MKT-012 cancelado**, 2026-11-14);
+  rankings/distintivos (REP).
 
 ### 11.7 Ronda de auditoría independiente y correcciones (2026-11-02)
 
@@ -388,3 +394,98 @@ real y varios nits, corregidos a continuación:
 
 Sin variables de entorno nuevas (`REVIEW_WINDOW_HOURS=48` es constante en
 SQL y TS) → **sin cambios de Render**.
+
+---
+
+## 12. MKT-010.1 — Pagos en dos partes (2026-11-17)
+
+Flujo de **dos etapas exactas** por compra, sin terceras etapas ni
+cuotas:
+
+1. **Depósito** fijo por pasajero: monto y deadline los configura la
+   agencia desde Tour.
+2. **Saldo** restante: el servidor calcula `total − pagos verificados`
+   (deadline generalmente el día antes o el día de la salida). Cada
+   etapa muestra importe y porcentaje del total.
+
+El saldo vencido es **solo informativo**: la agencia decide cómo
+manejar la reserva, **nunca hay cancelación automática**, y los asientos
+permanecen `reserved` a la espera del saldo. `payment_status` solo
+llega a `fully_paid` cuando **ambas** etapas están verificadas.
+
+**Estado: implementado localmente en ambos repos (2026-11-17), sin
+commit, sin despliegue y sin aplicar la migración.**
+
+### 12.1 Migración (historia única de tour, SIN aplicar)
+
+`../nomadas-tour/supabase/migrations/106_two_part_payments.sql` —
+**creada, no aplicada en ninguna BD; sin rollback**. Se aplica en orden
+estricto con la historia única (`097`→`106`); antes, revisar el estado
+real de `097`–`103` (`104`/`105` ya aplicadas el 2026-11-12).
+
+- **Columnas:** `trips.payment_plan` (`single` default | `two_stage`) +
+  `trips.deposit_deadline` / `balance_deadline` (CHECK
+  `trips_payment_deadlines_check`: `single` sin deadlines, `two_stage`
+  exige ambos); `checkout_attempts.payment_plan` + `deposit_cents`;
+  `payments.stage` (`full` default | `deposit` | `balance`) — el default
+  preserva los registros existentes y el flujo de pago único.
+- **RPCs nuevas (solo `service_role`):** `set_trip_payment_plan`
+  (config de la agencia; valida `ERR_PAYMENT_PLAN_*`, actor desde
+  `public.users`, audita `trip.updated`),
+  `submit_reservation_balance_payment` (UN solo DML sobre `payments`,
+  importe/porcentajes server-side, idempotencia
+  `mkt010_1:<reservation_id>:<key>`, comprobante bajo
+  `{reservation_id}/`), `reservation_payment_progress` (solo lectura:
+  ownership, montos, deadlines, `seats_held`, overdue informativo, cero
+  DML).
+- **RPCs redefinidas:** `create_checkout_attempt` /
+  `verify_checkout_attempt` (plan `two_stage` →
+  `payment_status='partial'` + `stage='deposit'`),
+  `verify_marketplace_payment` / `reject_marketplace_payment` (un
+  rechazo cancela la reserva **solo** si el pago es `stage='full'` y no
+  hay otro pago verificado).
+- **Auditoría:** `audit_log` ampliado a **32 acciones** (+
+  `payment.submitted`) con guard `ERR_106_ACTION_GUARD`.
+
+### 12.2 API pública (Marketplace backend)
+
+| Método | Ruta | Descripción |
+| ------ | ---- | ----------- |
+| GET | `/api/public/checkout/attempts/:attemptId/balance` | Progreso server-side: plan, montos, porcentajes, deadlines, pagos |
+| POST | `/api/public/checkout/attempts/:attemptId/balance` | Comprobante del saldo: multipart `proof` + conciliación; `Idempotency-Key` UUID; `201` nuevo / `200` idempotente |
+
+El intento se resuelve a su reserva vía
+`payments.idempotency_key = 'mkt007:<attemptId>:verify'`; el
+`reservation_id` **nunca** viaja desde el cliente. Sin teléfono
+publicado por la agencia no se ofrece el botón de WhatsApp (nunca se
+inventan datos de contacto).
+
+### 12.3 Frontend (Marketplace)
+
+- `/account/purchases/[attemptId]/balance` — progreso del saldo,
+  uploader genérico `ProofUploader` con `submit` propio y estados
+  `BALANCE_PAYMENT_PENDING` / `BALANCE_ALREADY_SETTLED` /
+  `BALANCE_NOT_AVAILABLE`.
+- `/account/purchases` — bloque `plan` (etapas + porcentajes) y acción
+  **Pagar saldo**.
+- `/reservations/new` — desglose depósito/saldo cuando el viaje está en
+  `two_stage`.
+- WhatsApp: `buildBalanceWhatsAppMessage` + `whatsappMessageHref`
+  (`lib/booking/whatsapp.ts`).
+
+### 12.4 Tour (parte de agencia)
+
+- Backend: `PATCH /api/agency/trips/:tripId/payment-plan` →
+  `agencyTripController.updatePaymentPlan` →
+  `payment-plan.service.ts` → RPC `set_trip_payment_plan`.
+- Frontend: `TripPaymentPlanModal` (monto + fechas del plan) y revisión
+  de pagos con etapa (`deposit`/`balance`) en `/agency/payments`.
+
+### 12.5 Pendientes
+
+- Aplicar `106` (junto con la historia previa pendiente) y desplegar
+  web + backend en ambos repos. **Hasta aplicarla, los endpoints nuevos
+  fallan en runtime**: el código exige las columnas y RPCs de 106.
+- **Sin variables de entorno nuevas → sin cambios de Render.**
+- Seguimiento: el envío del saldo **no emite notificación** (outbox
+  `customer_notifications`); queda como follow-up.

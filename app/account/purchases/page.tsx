@@ -85,6 +85,15 @@ function esReintentoDisponible(item: PurchaseItemDto): boolean {
   return item.estado === 'rechazado' && item.puede_reenviar_comprobante;
 }
 
+/**
+ * MKT-010.1 · Pago del SALDO (etapa 2): la acción la decide el BACKEND
+ * (`accion: 'pagar_saldo'`, solo en dos partes con reserva y saldo > 0).
+ * Esta pantalla no calcula nada: solo pinta el enlace mientras exista.
+ */
+function esSaldoDisponible(item: PurchaseItemDto): boolean {
+  return item.accion === 'pagar_saldo';
+}
+
 interface EstadoMeta {
   label: string;
   className: string;
@@ -1012,6 +1021,109 @@ export default function MisComprasPage() {
                       {item.mensaje}
                     </p>
 
+                    {/* ── MKT-010.1: progreso del plan en dos partes ──
+                        Montos, porcentajes y vencimientos llegan ya
+                        calculados por el servidor (RPC o snapshot del
+                        intento); aquí SOLO se pintan. Los flags de retraso
+                        son informativos: nunca implican cancelación. */}
+                    {item.plan.payment_plan === 'two_stage' && (
+                      <div
+                        className="mt-4 rounded-[10px] bg-[#f1f5f9] px-4 py-3 text-sm"
+                        data-testid="plan-dos-partes"
+                      >
+                        <p className="text-[11px] font-medium uppercase text-brand-muted">
+                          Plan de pago en dos partes
+                        </p>
+                        <div className="mt-2 space-y-1.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-brand-muted">
+                              Depósito (etapa 1)
+                              {item.plan.deposit_pct != null
+                                ? ` · ${item.plan.deposit_pct}%`
+                                : ''}
+                            </span>
+                            <span className="font-semibold text-brand-navy">
+                              {item.plan.deposit_cents != null
+                                ? formatSeatPrice(item.plan.deposit_cents)
+                                : '—'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-brand-muted">
+                              Saldo (etapa 2)
+                              {item.plan.balance_pct != null
+                                ? ` · ${item.plan.balance_pct}%`
+                                : ''}
+                            </span>
+                            <span className="font-semibold text-brand-navy">
+                              {item.plan.saldo_cents != null
+                                ? formatSeatPrice(item.plan.saldo_cents)
+                                : '—'}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 border-t border-black/[0.06] pt-1.5">
+                            <span className="font-semibold text-brand-navy">
+                              Pagado
+                            </span>
+                            <span className="font-semibold text-[#059669]">
+                              {formatSeatPrice(item.plan.paid_cents)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-brand-navy">
+                              Falta saldar
+                            </span>
+                            <span className="text-[17px] font-extrabold leading-none text-brand-navy">
+                              {formatSeatPrice(item.plan.pendiente_cents)}
+                            </span>
+                          </div>
+                        </div>
+                        {item.plan.deposit_verified_at ? (
+                          <p className="mt-2 text-xs text-brand-muted">
+                            Depósito aprobado el{' '}
+                            {formatDateTimeShort(item.plan.deposit_verified_at)}
+                          </p>
+                        ) : item.plan.deposit_deadline ? (
+                          <p className="mt-2 text-xs text-brand-muted">
+                            Depósito: vence el{' '}
+                            {formatDateTimeShort(item.plan.deposit_deadline)}
+                          </p>
+                        ) : null}
+                        {item.plan.pendiente_cents > 0 &&
+                          item.plan.balance_deadline && (
+                            <p className="text-xs text-brand-muted">
+                              Saldo: vence el{' '}
+                              {formatDateTimeShort(item.plan.balance_deadline)}
+                            </p>
+                          )}
+                        {item.plan.balance_overdue &&
+                          item.plan.pendiente_cents > 0 && (
+                            <p className="mt-2 rounded-[10px] bg-[#fffbeb] px-3 py-2 text-xs font-medium text-[#92400e]">
+                              El plazo del saldo venció. La agencia decide
+                              sobre este pago: tus asientos siguen reservados.
+                            </p>
+                          )}
+                        {item.plan.seats_held === true && (
+                          <p className="mt-2 text-xs font-medium text-[#176B62]">
+                            Asientos reservados a la espera del saldo.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* MKT-010.1: CTA principal mientras quede saldo por
+                        saldar (decisión server-side). La página del saldo
+                        revalida progreso y elegibilidad contra el backend. */}
+                    {esSaldoDisponible(item) && (
+                      <Link
+                        href={`${COMPRAS_PATH}/${item.attempt_id}/balance`}
+                        className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
+                      >
+                        <CreditCard size={16} strokeWidth={1.75} aria-hidden />
+                        Pagar saldo
+                      </Link>
+                    )}
+
                     {/* Task 8G: CTA de la notificación SIN LEER cuando las
                         acciones existentes de la tarjeta no cubren su
                         destino (boleto aún no disponible / reintento no
@@ -1092,6 +1204,12 @@ export default function MisComprasPage() {
                           Pago
                         </p>
                         <p className="mt-1 text-brand-navy">
+                          {/* MKT-010.1: etapa del pago (server-side). */}
+                          {item.pago.stage === 'deposit'
+                            ? 'Depósito · '
+                            : item.pago.stage === 'balance'
+                              ? 'Saldo · '
+                              : ''}
                           {PAGO_ESTADO_LABELS[item.pago.estado] ??
                             `Pago ${item.pago.estado}`}{' '}
                           · {formatSeatPrice(item.pago.amount_cents)}
@@ -1162,7 +1280,14 @@ export default function MisComprasPage() {
                         Importe total
                       </span>
                       <span className="text-[17px] font-extrabold leading-none text-brand-navy">
-                        {formatSeatPrice(item.monto.amount_cents)}
+                        {/* MKT-010.1: en dos partes `monto.amount_cents` es
+                            solo el depósito (snapshot del intento); el total
+                            real de la compra lo da el plan server-side. */}
+                        {formatSeatPrice(
+                          item.plan.payment_plan === 'two_stage'
+                            ? item.plan.total_cents
+                            : item.monto.amount_cents,
+                        )}
                       </span>
                     </div>
                   </article>

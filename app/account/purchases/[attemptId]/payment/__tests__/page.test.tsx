@@ -125,6 +125,15 @@ function makeAttempt(
     created_at: '2020-01-01T09:00:00.000Z',
     closed_at: null,
     verified_at: null,
+    // MKT-010.1: plan único por defecto (los tests two_stage lo pisan).
+    payment_plan: 'single',
+    deposit_cents: null,
+    total_cents: 4040,
+    balance_cents: 0,
+    deposit_pct: null,
+    balance_pct: null,
+    deposit_deadline: null,
+    balance_deadline: null,
     ...overrides,
   };
 }

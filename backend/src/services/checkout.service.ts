@@ -550,6 +550,39 @@ function mapRpcError(error: { message: string }): AppError {
         409,
         'CHECKOUT_SEATS_LOST',
       );
+    // ── MKT-010.1: saldo (etapa 2) + progreso de pago ──────────────────────
+    case 'ERR_BALANCE_NOT_AVAILABLE':
+      return checkoutError(
+        'Esta compra aún no tiene saldo disponible para pagar',
+        409,
+        'BALANCE_NOT_AVAILABLE',
+      );
+    case 'ERR_BALANCE_ALREADY_SETTLED':
+      return checkoutError('Esta reserva ya está saldada', 409, 'BALANCE_ALREADY_SETTLED');
+    case 'ERR_BALANCE_PAYMENT_PENDING':
+      return checkoutError(
+        'Ya tienes un comprobante de saldo esperando revisión',
+        409,
+        'BALANCE_PAYMENT_PENDING',
+      );
+    case 'ERR_PAYMENT_RECONCILIATION':
+      return checkoutError(
+        'Revisa los datos del pago (referencia, banco y fecha)',
+        400,
+        'PAYMENT_RECONCILIATION_INVALID',
+      );
+    case 'ERR_PAYMENT_IDEMPOTENCY_CONFLICT':
+      return checkoutError(
+        'La clave de idempotencia ya se usó con otro envío',
+        409,
+        'PAYMENT_IDEMPOTENCY_CONFLICT',
+      );
+    // Ownership/inexistencia de la reserva bajo el saldo: mismo 404
+    // uniforme para no filtrar existencia ni estado interno.
+    case 'ERR_PAYMENT_RESERVATION_NOT_FOUND':
+    case 'ERR_PAYMENT_NOT_OWNER':
+    case 'ERR_PAYMENT_PROGRESS_NOT_FOUND':
+      return checkoutError('Compra no encontrada', 404, 'BALANCE_NOT_FOUND');
     default:
       return checkoutError(
         'No se pudo procesar la compra. Intenta de nuevo',
@@ -583,6 +616,21 @@ export interface CreateCheckoutAttemptResult {
   proof_count: number;
   expires_at: string;
   idempotent: boolean;
+  // ── MKT-010.1: plan de pago (passthrough del RPC 106, server-side) ──
+  /** 'single' = pago único (legado); 'two_stage' = depósito + saldo. */
+  payment_plan: string;
+  /** Depósito total (etapa 1) en cents; NULL en plan único. */
+  deposit_cents: number | null;
+  /** Total de la compra (unit_price × pasajeros). */
+  total_cents: number;
+  /** Etapa 2 = total − depósito (0 en plan único). */
+  balance_cents: number;
+  /** Porcentajes server-side; NULL en plan único. */
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  /** Vencimientos EN VIVO del viaje; NULL en plan único. */
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
 }
 
 /**
@@ -1214,6 +1262,99 @@ export interface CheckoutAttemptView {
   created_at: string;
   closed_at: string | null;
   verified_at: string | null;
+  // ── MKT-010.1: plan de pago del intento (server-side) ──
+  /** 'single' | 'two_stage'. Congelado en la creación del intento. */
+  payment_plan: string;
+  /** Depósito total (etapa 1); NULL en plan único. */
+  deposit_cents: number | null;
+  /** Total de la compra (unit_price × pasajeros). */
+  total_cents: number;
+  /** Etapa 2 = total − depósito (0 en plan único). */
+  balance_cents: number;
+  /** Porcentajes server-side; NULL en plan único. */
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  /** Vencimientos EN VIVO del viaje; NULL en plan único. */
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+}
+
+/**
+ * MKT-010.1: campos del plan derivados SERVER-SIDE para un intento.
+ *
+ * - Total = unit_price × pasajeros (el MISMO snapshot que valida la RPC
+ *   `verify_checkout_attempt`; jamás se lee trips.seat_price).
+ * - Porcentajes con la MISMA fórmula `ROUND(depósito × 100 / total)` que
+ *   la RPC 106 (entero; balance = 100 − depósito).
+ * - `balance_cents` espeja la RPC: total − depósito (0 en plan único);
+ *   un two_stage sin depósito snapshotado (dato corrupto) muestra el
+ *   total completo en lugar de un falso "saldado".
+ * - Los vencimientos se leen EN VIVO del viaje: la agencia puede
+ *   ajustarlos (p. ej. al postergar la salida) y el cliente siempre ve
+ *   el valor actual. NULL en plan único, igual que la RPC.
+ */
+async function deriveAttemptPlanFields(row: {
+  payment_plan?: string | null;
+  deposit_cents?: number | null;
+  unit_price: number;
+  seat_ids: string[];
+  trip_id: string;
+}): Promise<{
+  payment_plan: string;
+  deposit_cents: number | null;
+  total_cents: number;
+  balance_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+}> {
+  const paymentPlan = row.payment_plan === 'two_stage' ? 'two_stage' : 'single';
+  const totalCents = row.unit_price * row.seat_ids.length;
+  const depositCents = paymentPlan === 'two_stage' ? (row.deposit_cents ?? null) : null;
+  const depositPct =
+    depositCents != null && depositCents > 0 && totalCents > 0
+      ? Math.round((depositCents * 100) / totalCents)
+      : null;
+
+  let depositDeadline: string | null = null;
+  let balanceDeadline: string | null = null;
+
+  if (paymentPlan === 'two_stage') {
+    const { data: trip, error } = await supabaseAdmin
+      .from('trips')
+      .select('deposit_deadline, balance_deadline')
+      .eq('id', row.trip_id)
+      .maybeSingle();
+
+    if (error) {
+      throw checkoutError(
+        'No se pudo cargar la compra. Intenta de nuevo',
+        500,
+        'CHECKOUT_ERROR',
+      );
+    }
+    depositDeadline = (trip?.deposit_deadline as string | null) ?? null;
+    balanceDeadline = (trip?.balance_deadline as string | null) ?? null;
+  }
+
+  const balanceCents =
+    paymentPlan === 'single'
+      ? 0
+      : depositCents != null
+        ? totalCents - depositCents
+        : totalCents;
+
+  return {
+    payment_plan: paymentPlan,
+    deposit_cents: depositCents,
+    total_cents: totalCents,
+    balance_cents: balanceCents,
+    deposit_pct: depositPct,
+    balance_pct: depositPct != null ? 100 - depositPct : null,
+    deposit_deadline: depositDeadline,
+    balance_deadline: balanceDeadline,
+  };
 }
 
 /**
@@ -1237,6 +1378,7 @@ export async function getCheckoutAttempt(input: {
       .from('checkout_attempts')
       .select(
         'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, ' +
+          'payment_plan, deposit_cents, ' +
           'proof_count, payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
           'review_started_at, rejection_reason, rejection_count, history, expires_at, ' +
           'created_at, closed_at, verified_at',
@@ -1292,6 +1434,15 @@ export async function getCheckoutAttempt(input: {
 
   const proofCount = row.proof_count;
 
+  // MKT-010.1: plan server-side (total, porcentajes y vencimientos en vivo).
+  const planFields = await deriveAttemptPlanFields({
+    payment_plan: row.payment_plan as string | null,
+    deposit_cents: row.deposit_cents as number | null,
+    unit_price: row.unit_price as number,
+    seat_ids: row.seat_ids,
+    trip_id: row.trip_id as string,
+  });
+
   return {
     attempt_id: row.id as string,
     status: row.status as string,
@@ -1317,6 +1468,7 @@ export async function getCheckoutAttempt(input: {
     created_at: row.created_at as string,
     closed_at: (row.closed_at as string | null) ?? null,
     verified_at: (row.verified_at as string | null) ?? null,
+    ...planFields,
   };
 }
 
@@ -1604,9 +1756,13 @@ export type PurchaseAccion =
   | 'enviar_comprobante'
   | 'reenviar_comprobante'
   | 'ver_reserva'
+  | 'pagar_saldo'
   | 'ninguna';
 
 export type PurchasePagoEstado = 'pendiente' | 'aprobado' | 'rechazado';
+
+/** Etapa del pago (MKT-010.1): 'full' = único legado, 'deposit'/'balance'. */
+export type PurchasePagoStage = 'full' | 'deposit' | 'balance';
 
 export interface PurchaseComprobanteDto {
   envios: number;
@@ -1625,6 +1781,8 @@ export interface PurchasePagoDto {
   amount_cents: number;
   currency: string;
   aprobado_en: string | null;
+  /** MKT-010.1: etapa del pago (nunca inventada: columna de la BD). */
+  stage: PurchasePagoStage;
 }
 
 export interface PurchaseReservaDto {
@@ -1633,6 +1791,40 @@ export interface PurchaseReservaDto {
   payment_status: string | null;
   ticket_code: string | null;
   created_at: string;
+}
+
+/**
+ * MKT-010.1: progreso del plan de pago de UNA compra.
+ *
+ * Todos los montos y porcentajes salen del SERVIDOR (snapshot del
+ * intento y, cuando la reserva ya existe en plan two_stage, de la RPC
+ * `reservation_payment_progress` — la autoridad monetaria). El cliente
+ * jamás calcula dinero.
+ *
+ * - `deposit_cents`/`saldo_cents`: etapa 1 y etapa 2 FIJAS del plan
+ *   (NULL en plan único). `saldo_cents` = total − depósito.
+ * - `paid_cents`: lo ya verificado por la agencia; `pendiente_cents`
+ *   = total − pagado (lo que falta HOY para saldar).
+ * - `*_deadline` se leen EN VIVO del viaje; `*_overdue` es SOLO
+ *   informativo: nunca implica cancelación automática (la agencia
+ *   decide) y `seats_held` dice si los asientos siguen reservados.
+ */
+export interface PurchasePlanDto {
+  payment_plan: 'single' | 'two_stage';
+  deposit_cents: number | null;
+  saldo_cents: number | null;
+  total_cents: number;
+  paid_cents: number;
+  pendiente_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+  deposit_overdue: boolean;
+  balance_overdue: boolean;
+  /** null cuando aún no existe reserva (intento no verificado). */
+  seats_held: boolean | null;
+  deposit_verified_at: string | null;
 }
 
 export interface PurchaseItemDto {
@@ -1663,6 +1855,8 @@ export interface PurchaseItemDto {
   comprobante: PurchaseComprobanteDto | null;
   pago: PurchasePagoDto | null;
   reserva: PurchaseReservaDto | null;
+  /** MKT-010.1: progreso de pago en dos partes (siempre presente). */
+  plan: PurchasePlanDto;
   ventana: { expires_at: string; vencida: boolean };
   created_at: string;
   closed_at: string | null;
@@ -1691,6 +1885,9 @@ interface PurchaseAttemptRow {
   }> | null;
   unit_price: number;
   amount_cents: number;
+  /** MKT-010.1: plan congelado en la creación del intento. */
+  payment_plan: string;
+  deposit_cents: number | null;
   proof_count: number;
   payment_reference: string | null;
   bank_origin: string | null;
@@ -1712,6 +1909,8 @@ interface PurchasePaymentRow {
   amount_cents: number;
   currency: string;
   verified_at: string | null;
+  /** MKT-010.1: etapa del pago ('full' | 'deposit' | 'balance'). */
+  stage: string;
 }
 
 interface PurchaseReservationRow {
@@ -1726,6 +1925,9 @@ interface PurchaseTripRow {
   id: string;
   route_id: string;
   departure_time: string;
+  /** MKT-010.1: vencimientos EN VIVO del viaje (null en plan único). */
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
 }
 
 interface PurchaseRouteRow {
@@ -1866,6 +2068,108 @@ function buildPurchaseEstado(input: {
 }
 
 /**
+ * MKT-010.1: bloque `plan` de UNA compra del historial.
+ *
+ * Tres fuentes, siempre server-side:
+ *  1. two_stage + reserva → la RPC `reservation_payment_progress` es la
+ *     autoridad: pagos verificados reales, porcentajes, vencimientos en
+ *     vivo, `seats_held` y flags de retraso (solo informativos).
+ *  2. two_stage sin reserva → snapshot del intento (depósito) + total
+ *     unit_price × pasajeros + vencimientos EN VIVO del viaje. Nada
+ *     verificado todavía: pagado 0, pendiente = total.
+ *  3. single → plan legado de un solo pago: sin etapas, sin porcentajes
+ *     ni vencimientos; pagado = pago verificado del intento (la RPC no
+ *     se invoca para planes únicos).
+ *
+ * El dinero NUNCA se calcula en el cliente.
+ */
+function buildPurchasePlan(input: {
+  row: PurchaseAttemptRow;
+  trip: PurchaseTripRow | undefined;
+  payment: PurchasePaymentRow | null;
+  reservation: PurchaseReservationRow | null;
+  progress: ReservationPaymentProgressView | null;
+  now: number;
+}): PurchasePlanDto {
+  const { row, trip, payment, reservation, progress, now } = input;
+
+  const paymentPlan: 'single' | 'two_stage' =
+    row.payment_plan === 'two_stage' ? 'two_stage' : 'single';
+  const totalCents = row.unit_price * row.seat_ids.length;
+  const depositCents = paymentPlan === 'two_stage' ? (row.deposit_cents ?? null) : null;
+  const depositPct =
+    depositCents != null && depositCents > 0 && totalCents > 0
+      ? Math.round((depositCents * 100) / totalCents)
+      : null;
+
+  if (paymentPlan === 'two_stage') {
+    if (progress) {
+      const deposit = progress.deposit_cents;
+      return {
+        payment_plan: 'two_stage',
+        deposit_cents: deposit,
+        saldo_cents: deposit != null ? progress.total_cents - deposit : null,
+        total_cents: progress.total_cents,
+        paid_cents: progress.paid_cents,
+        pendiente_cents: progress.balance_cents,
+        deposit_pct: progress.deposit_pct,
+        balance_pct: progress.balance_pct,
+        deposit_deadline: progress.deposit_deadline,
+        balance_deadline: progress.balance_deadline,
+        deposit_overdue: progress.deposit_overdue,
+        balance_overdue: progress.balance_overdue,
+        seats_held: progress.seats_held,
+        deposit_verified_at: progress.deposit_verified_at,
+      };
+    }
+    if (reservation) {
+      // Inviolable: dos partes + reserva => la RPC se consultó arriba.
+      // Si llegamos aquí, el progreso no está disponible: mejor 500 que
+      // montos inventados.
+      throw purchaseHistoryError();
+    }
+
+    const depositDeadline = trip?.deposit_deadline ?? null;
+    const balanceDeadline = trip?.balance_deadline ?? null;
+    return {
+      payment_plan: 'two_stage',
+      deposit_cents: depositCents,
+      saldo_cents: depositCents != null ? totalCents - depositCents : null,
+      total_cents: totalCents,
+      paid_cents: 0,
+      pendiente_cents: totalCents,
+      deposit_pct: depositPct,
+      balance_pct: depositPct != null ? 100 - depositPct : null,
+      deposit_deadline: depositDeadline,
+      balance_deadline: balanceDeadline,
+      deposit_overdue: depositDeadline !== null && Date.parse(depositDeadline) < now,
+      balance_overdue: balanceDeadline !== null && Date.parse(balanceDeadline) < now,
+      seats_held: null,
+      deposit_verified_at: null,
+    };
+  }
+
+  // Plan único: un solo pago por el total (la RPC no se invoca).
+  const paidCents = payment !== null && payment.status === 'verified' ? payment.amount_cents : 0;
+  return {
+    payment_plan: 'single',
+    deposit_cents: null,
+    saldo_cents: null,
+    total_cents: totalCents,
+    paid_cents: paidCents,
+    pendiente_cents: Math.max(totalCents - paidCents, 0),
+    deposit_pct: null,
+    balance_pct: null,
+    deposit_deadline: null,
+    balance_deadline: null,
+    deposit_overdue: false,
+    balance_overdue: false,
+    seats_held: reservation !== null ? reservation.status === 'reserved' : null,
+    deposit_verified_at: null,
+  };
+}
+
+/**
  * Historial de compras del cliente autenticado (RT-01).
  *
  * Cada item es UN checkout_attempt del propio cliente, enriquecido con
@@ -1892,8 +2196,9 @@ export async function listPurchaseHistory(input: {
   const { data, error } = await supabaseAdmin
     .from('checkout_attempts')
     .select(
-      'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, proof_count, ' +
-        'payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
+      'id, status, trip_id, agency_id, seat_ids, passenger_data, unit_price, amount_cents, ' +
+        'payment_plan, deposit_cents, ' +
+        'proof_count, payment_reference, bank_origin, payment_datetime, proof_submitted_at, ' +
         'rejection_reason, rejection_count, expires_at, created_at, closed_at, verified_at',
     )
     .eq('customer_id', input.customerId)
@@ -1902,7 +2207,8 @@ export async function listPurchaseHistory(input: {
     // range es inclusivo: se pide una fila extra para conocer has_more.
     .range(input.offset, input.offset + input.limit);
 
-  if (error) throw purchaseHistoryError();
+  if (error) {
+    console.error('[checkout] checkout_attempts query failed:', error);throw purchaseHistoryError()};
 
   const rows = (data ?? []) as unknown as PurchaseAttemptRow[];
   const hasMore = rows.length > input.limit;
@@ -1919,15 +2225,26 @@ export async function listPurchaseHistory(input: {
 
   const [seatsResult, tripsResult, agenciesResult, paymentsResult] = await Promise.all([
     supabaseAdmin.from('seats').select('id, seat_code').in('id', seatIds),
-    supabaseAdmin.from('trips').select('id, route_id, departure_time').in('id', tripIds),
+    supabaseAdmin
+      .from('trips')
+      .select('id, route_id, departure_time, deposit_deadline, balance_deadline')
+      .in('id', tripIds),
     supabaseAdmin.from('agencies').select('id, name').in('id', agencyIds),
     supabaseAdmin
       .from('payments')
-      .select('id, reservation_id, idempotency_key, status, amount_cents, currency, verified_at')
+      .select(
+        'id, reservation_id, idempotency_key, status, amount_cents, currency, verified_at, stage',
+      )
       .in('idempotency_key', [...attemptIdByKey.keys()]),
   ]);
 
   if (seatsResult.error || tripsResult.error || agenciesResult.error || paymentsResult.error) {
+    console.error('[checkout] related queries failed:', {
+      seats: seatsResult.error,
+      trips: tripsResult.error,
+      agencies: agenciesResult.error,
+      payments: paymentsResult.error,
+    });
     throw purchaseHistoryError();
   }
 
@@ -1977,6 +2294,10 @@ export async function listPurchaseHistory(input: {
   ]);
 
   if (routesResult.error || reservationsResult.error) {
+    console.error('[checkout] routes/reservations queries failed:', {
+      routes: routesResult.error,
+      reservations: reservationsResult.error,
+    });
     throw purchaseHistoryError();
   }
 
@@ -1989,6 +2310,37 @@ export async function listPurchaseHistory(input: {
       row,
     ]),
   );
+
+  // ── MKT-010.1: progreso server-side de las compras en dos partes ──
+  // Solo los intentos two_stage CON reserva llaman a la RPC
+  // `reservation_payment_progress` (la autoridad monetaria: montos
+  // verificados, porcentajes, vencimientos y pagos). A lo sumo una
+  // llamada por item de la página (≤ limit). Un fallo aquí es un fallo
+  // real de base de datos: el historial entero responde 500 con el
+  // mismo contrato de error de siempre, nunca montos a medias.
+  const progressByAttemptId = new Map<string, ReservationPaymentProgressView>();
+  const progressTargets = page.filter(
+    (row) =>
+      row.payment_plan === 'two_stage' &&
+      (paymentByAttemptId.get(row.id)?.reservation_id ?? null) !== null,
+  );
+
+  if (progressTargets.length > 0) {
+    try {
+      await Promise.all(
+        progressTargets.map(async (row) => {
+          const reservationId = paymentByAttemptId.get(row.id)!.reservation_id;
+          const progress = await callPaymentProgress(reservationId, input.customerId);
+          progressByAttemptId.set(row.id, progress as unknown as ReservationPaymentProgressView);
+        }),
+      );
+    } catch (error) {
+      console.error('[checkout] progreso de pago no disponible en el historial', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw purchaseHistoryError();
+    }
+  }
 
   const now = Date.now();
   const items: PurchaseItemDto[] = page.map((row) => {
@@ -2008,12 +2360,43 @@ export async function listPurchaseHistory(input: {
       tieneReserva: reservation !== null,
     });
 
+    const plan = buildPurchasePlan({
+      row,
+      trip,
+      payment,
+      reservation,
+      progress: progressByAttemptId.get(row.id) ?? null,
+      now,
+    });
+
+    // MKT-010.1: en dos partes con reserva, la ACCION principal pasa a
+    // ser el saldo mientras falte saldar (o su revisión en curso); el
+    // estado sigue siendo `reserva_confirmada`. Con el saldo ya cubierto
+    // se recupera el mensaje normal de reserva confirmada.
+    let mensaje = estado.mensaje;
+    let accion = estado.accion;
+    if (plan.payment_plan === 'two_stage' && reservation) {
+      const saldoEnRevision = (progressByAttemptId.get(row.id)?.payments ?? []).some(
+        (p) => p.stage === 'balance' && p.status === 'pending',
+      );
+      if (estado.estado === 'reserva_confirmada') {
+        if (plan.pendiente_cents > 0) {
+          accion = 'pagar_saldo';
+          mensaje = saldoEnRevision
+            ? 'Reserva confirmada con depósito aprobado: tu comprobante de saldo está en revisión.'
+            : 'Reserva confirmada con depósito aprobado: falta saldar el saldo.';
+        } else {
+          mensaje = 'Reserva confirmada: tu pago está completo en su totalidad.';
+        }
+      }
+    }
+
     return {
       attempt_id: row.id,
       status: row.status,
       estado: estado.estado,
-      mensaje: estado.mensaje,
-      accion: estado.accion,
+      mensaje,
+      accion,
       puede_reenviar_comprobante: estado.puede_reenviar_comprobante,
       trip: {
         id: row.trip_id,
@@ -2055,6 +2438,12 @@ export async function listPurchaseHistory(input: {
             amount_cents: payment.amount_cents,
             currency: payment.currency,
             aprobado_en: payment.verified_at,
+            // Valor de la columna; cualquier forma desconocida cae a
+            // 'full' (el CHECK de 106 solo admite las tres etapas).
+            stage:
+              payment.stage === 'deposit' || payment.stage === 'balance'
+                ? payment.stage
+                : 'full',
           }
         : null,
       reserva: reservation
@@ -2066,6 +2455,7 @@ export async function listPurchaseHistory(input: {
             created_at: reservation.created_at,
           }
         : null,
+      plan,
       ventana: { expires_at: row.expires_at, vencida },
       created_at: row.created_at,
       closed_at: row.closed_at,
@@ -2396,5 +2786,265 @@ export async function getCheckoutTicket(input: {
     passengers,
     is_trip_completed: isTripCompleted,
     is_boarding_completed: isBoardingCompleted,
+  };
+}
+
+// ============================================================
+// 8) MKT-010.1 · Saldo (etapa 2) del plan en dos partes
+// ============================================================
+
+/** Un pago de la reserva tal como lo expone la RPC de progreso. */
+export interface ReservationPaymentDto {
+  id: string;
+  stage: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  external_reference: string | null;
+  bank_origin: string | null;
+  payment_datetime: string | null;
+  submitted_at: string | null;
+  verified_at: string | null;
+  rejection_reason: string | null;
+}
+
+/**
+ * Progreso de pago de UNA reserva (payload EXACTO de la RPC 106
+ * `reservation_payment_progress`). Montos y porcentajes server-side;
+ * `overdue` solo informativo (nunca cancela); `seats_held` indica si
+ * los asientos siguen reservados.
+ */
+export interface ReservationPaymentProgressView {
+  reservation_id: string;
+  reservation_status: string;
+  payment_status: string | null;
+  plan: 'single' | 'two_stage';
+  passenger_count: number;
+  total_cents: number;
+  deposit_cents: number | null;
+  deposit_verified_at: string | null;
+  paid_cents: number;
+  balance_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+  deposit_overdue: boolean;
+  balance_overdue: boolean;
+  seats_held: boolean;
+  payments: ReservationPaymentDto[];
+  agency: { id: string; name: string | null; whatsapp_phone: string | null };
+}
+
+/**
+ * Llama a `reservation_payment_progress` con el customer de la sesión:
+ * la RPC exige ownership cuando recibe `p_customer_id` (nunca se le
+ * pasa un id que no venga del token).
+ */
+async function callPaymentProgress(
+  reservationId: string,
+  customerId: string,
+): Promise<Record<string, unknown>> {
+  const { data, error } = (await callRpc('reservation_payment_progress', {
+    p_reservation_id: reservationId,
+    p_customer_id: customerId,
+  })) as RpcJson;
+
+  if (error) throw mapRpcError(error);
+  if (!data?.reservation_id) {
+    throw checkoutError(
+      'No se pudo cargar el progreso de pago. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+  return data;
+}
+
+function balanceNotAvailable(message: string): AppError {
+  return checkoutError(message, 409, 'BALANCE_NOT_AVAILABLE');
+}
+
+/**
+ * Resuelve un intento → reserva para el flujo del saldo.
+ *
+ * Cadena de autorización (el cliente NUNCA envía un reservation_id):
+ *   checkout_attempts (id + customer_id de sesión, status='verified',
+ *   payment_plan='two_stage')
+ *     → payments (idempotency_key = 'mkt007:{attempt}:verify')
+ *     → payments.reservation_id (pago de verificación aprobado).
+ *
+ * 404 uniforme (`CHECKOUT_ATTEMPT_NOT_FOUND`) para intento inexistente
+ * o ajeno: nada de eso se distingue para evitar enumeración. El propio
+ * intento sin saldo disponible (no verificado, plan único, sin reserva
+ * de verificación) responde 409 `BALANCE_NOT_AVAILABLE`.
+ */
+async function resolveBalanceAttempt(
+  attemptId: string,
+  customerId: string,
+): Promise<{ reservationId: string }> {
+  const { data: attempt, error } = await supabaseAdmin
+    .from('checkout_attempts')
+    .select('id, customer_id, status, payment_plan')
+    .eq('id', attemptId)
+    .eq('customer_id', customerId)
+    .maybeSingle();
+
+  if (error) {
+    throw checkoutError('No se pudo verificar la compra. Intenta de nuevo', 500, 'CHECKOUT_ERROR');
+  }
+  if (!attempt) {
+    throw checkoutError('Compra no encontrada', 404, 'CHECKOUT_ATTEMPT_NOT_FOUND');
+  }
+
+  const row = attempt as { status: string; payment_plan: string | null };
+
+  if (row.status !== 'verified') {
+    throw balanceNotAvailable('El depósito de esta compra aún no fue aprobado por la agencia');
+  }
+  if (row.payment_plan !== 'two_stage') {
+    throw balanceNotAvailable('Esta compra no tiene saldo pendiente de pago');
+  }
+
+  const { data: payment, error: paymentError } = await supabaseAdmin
+    .from('payments')
+    .select('id, reservation_id, status')
+    .eq('idempotency_key', `mkt007:${attemptId}:verify`)
+    .maybeSingle();
+
+  if (paymentError) {
+    throw checkoutError('No se pudo verificar la compra. Intenta de nuevo', 500, 'CHECKOUT_ERROR');
+  }
+
+  const verify = payment as { reservation_id: string | null; status: string } | null;
+  if (!verify || verify.status !== 'verified' || !verify.reservation_id) {
+    // Estado imposible (verified ⇒ su reserva de verificación existe):
+    // mismo 409 genérico, sin filtrar el detalle interno.
+    throw balanceNotAvailable('Esta compra aún no tiene saldo disponible para pagar');
+  }
+
+  return { reservationId: verify.reservation_id };
+}
+
+/**
+ * GET del progreso de saldo para el dueño del intento. Devuelve el
+ * payload completo de la RPC (montos, porcentajes, vencimientos en
+ * vivo, pagos con su etapa y el canal de WhatsApp de la agencia).
+ * Un saldo ya saldado responde 200 con `balance_cents = 0`: la página
+ * muestra el estado final en lugar de un error.
+ */
+export async function getBalanceProgress(input: {
+  attemptId: string;
+  customerId: string;
+}): Promise<ReservationPaymentProgressView> {
+  const { reservationId } = await resolveBalanceAttempt(input.attemptId, input.customerId);
+  return (await callPaymentProgress(
+    reservationId,
+    input.customerId,
+  )) as unknown as ReservationPaymentProgressView;
+}
+
+export interface SubmitBalancePaymentInput {
+  attemptId: string;
+  customerId: string;
+  idempotencyKey: string;
+  proof: ParsedCheckoutProof;
+}
+
+export interface SubmitBalancePaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  stage: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string | null;
+  /** Presentes solo en el envío fresco; null en respuestas idempotentes. */
+  total_cents: number | null;
+  paid_cents: number | null;
+  balance_cents: number | null;
+  idempotent: boolean;
+}
+
+/**
+ * Flujo del comprobante de SALDO (etapa 2), espejo del envío de
+ * comprobante del checkout pero resuelto contra la RESERVA:
+ *
+ *  1. Resolución intento → reserva (dueño + verified + two_stage).
+ *  2. Conciliación y magic bytes validados ANTES de subir.
+ *  3. Upload privado `{reservation_id}/{sha256}.{ext}` con `upsert`.
+ *  4. RPC `submit_reservation_balance_payment`: importe server-side
+ *     (total − allocations verificados), idempotencia por clave
+ *     `mkt010_1` y un solo saldo pendiente a la vez. NO escribe
+ *     reservations ni seats: los asientos siguen reservados.
+ *  5. Si el RPC falla, limpieza condicionada del objeto recién subido.
+ *
+ * Nunca hace UPDATE: todo vive dentro del RPC. La agencia revisa este
+ * pago desde el MISMO panel de pagos que siempre (stage='balance').
+ */
+export async function submitBalancePayment(
+  input: SubmitBalancePaymentInput,
+): Promise<SubmitBalancePaymentResult> {
+  const { reservationId } = await resolveBalanceAttempt(input.attemptId, input.customerId);
+
+  const reconciliation = parseReconciliation(input.proof.fields);
+  const file = validateProofFile(input.proof);
+
+  const digest = createHash('sha256').update(input.proof.buffer).digest('hex');
+  const proofPath = `${reservationId}/${digest}.${file.extension}`;
+
+  const { error: uploadError } = await supabaseAdmin.storage
+    .from(PROOF_BUCKET)
+    .upload(proofPath, input.proof.buffer, {
+      contentType: file.mimeType,
+      upsert: true,
+    });
+
+  if (uploadError) {
+    throw checkoutError(
+      'No se pudo almacenar el comprobante. Intenta de nuevo',
+      500,
+      'PAYMENT_STORAGE_ERROR',
+    );
+  }
+
+  const { data, error } = (await callRpc('submit_reservation_balance_payment', {
+    p_reservation_id: reservationId,
+    p_customer_id: input.customerId,
+    p_idempotency_key: input.idempotencyKey,
+    p_proof_path: proofPath,
+    p_payment_reference: reconciliation.payment_reference,
+    p_bank_origin: reconciliation.bank_origin,
+    p_payment_datetime: reconciliation.payment_datetime,
+  })) as RpcJson;
+
+  if (error) {
+    const mapped = mapRpcError(error);
+    await cleanupUploadedProof(proofPath);
+    throw mapped;
+  }
+
+  const row = data as Record<string, unknown> | null;
+  if (!row?.payment_id) {
+    await cleanupUploadedProof(proofPath);
+    throw checkoutError(
+      'No se pudo registrar el comprobante. Intenta de nuevo',
+      500,
+      'CHECKOUT_ERROR',
+    );
+  }
+
+  return {
+    payment_id: String(row.payment_id),
+    reservation_id: String(row.reservation_id ?? reservationId),
+    status: String(row.status ?? 'pending'),
+    stage: String(row.stage ?? 'balance'),
+    amount_cents: Number(row.amount_cents ?? 0),
+    currency: String(row.currency ?? 'COP'),
+    submitted_at: row.submitted_at != null ? String(row.submitted_at) : null,
+    total_cents: row.total_cents != null ? Number(row.total_cents) : null,
+    paid_cents: row.paid_cents != null ? Number(row.paid_cents) : null,
+    balance_cents: row.balance_cents != null ? Number(row.balance_cents) : null,
+    idempotent: row.idempotent === true,
   };
 }

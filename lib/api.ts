@@ -482,6 +482,21 @@ export interface CreateCheckoutAttemptResult {
   /** Ventana de revisión. El servidor la calcula; el cliente solo la lee. */
   expires_at: string;
   idempotent: boolean;
+  // ── MKT-010.1 · plan de pago (server-side, RPC) ──
+  /** 'single' = pago único; 'two_stage' = depósito + saldo. */
+  payment_plan: string;
+  /** Depósito total (etapa 1) en cents; null en plan único. */
+  deposit_cents: number | null;
+  /** Total de la compra (unit_price × pasajeros). */
+  total_cents: number;
+  /** Etapa 2 = total − depósito (0 en plan único). */
+  balance_cents: number;
+  /** Porcentajes server-side; null en plan único. */
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  /** Vencimientos EN VIVO del viaje; null en plan único. */
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
 }
 
 export interface SubmitCheckoutProofPayload {
@@ -587,7 +602,98 @@ export const checkoutApi = {
     request<CheckoutTicketView>(
       `/public/checkout/attempts/${encodeURIComponent(attemptId)}/ticket`,
     ),
+
+  // — MKT-010.1 · Saldo (etapa 2) del plan en dos partes —
+  // El reservation_id NUNCA viaja desde el cliente: el backend lo
+  // deriva del intento (dueño + verified + two_stage) y la RPC calcula
+  // el importe server-side (total − pagos verificados).
+  getBalanceProgress: (attemptId: string) =>
+    request<ReservationPaymentProgressView>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/balance`,
+    ),
+
+  submitBalanceProof: (
+    attemptId: string,
+    file: File,
+    reconciliation: SubmitCheckoutProofPayload,
+    idempotencyKey: string,
+  ) => {
+    const form = new FormData();
+    form.append('proof', file);
+    form.append('payment_reference', reconciliation.payment_reference);
+    form.append('bank_origin', reconciliation.bank_origin);
+    form.append('payment_datetime', reconciliation.payment_datetime);
+    return request<SubmitBalancePaymentResult>(
+      `/public/checkout/attempts/${encodeURIComponent(attemptId)}/balance`,
+      {
+        method: 'POST',
+        body: form,
+        headers: { 'Idempotency-Key': idempotencyKey },
+      },
+    );
+  },
 };
+
+// ── MKT-010.1 · Progreso de pago en dos partes ───────────────────────────────
+
+/** Un pago de la reserva con su etapa (payload de la RPC de progreso). */
+export interface ReservationPaymentDto {
+  id: string;
+  stage: string;
+  status: string;
+  amount_cents: number;
+  currency: string;
+  external_reference: string | null;
+  bank_origin: string | null;
+  payment_datetime: string | null;
+  submitted_at: string | null;
+  verified_at: string | null;
+  rejection_reason: string | null;
+}
+
+/**
+ * GET .../balance — progreso de pago de la reserva del intento.
+ * Montos y porcentajes server-side; `overdue` solo informativo (nunca
+ * cancela); incluye el canal de WhatsApp de la agencia para pedir el
+ * saldo y la lista de pagos con su etapa.
+ */
+export interface ReservationPaymentProgressView {
+  reservation_id: string;
+  reservation_status: string;
+  payment_status: string | null;
+  plan: 'single' | 'two_stage';
+  passenger_count: number;
+  total_cents: number;
+  deposit_cents: number | null;
+  deposit_verified_at: string | null;
+  paid_cents: number;
+  balance_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+  deposit_overdue: boolean;
+  balance_overdue: boolean;
+  seats_held: boolean;
+  payments: ReservationPaymentDto[];
+  agency: { id: string; name: string | null; whatsapp_phone: string | null };
+}
+
+/** POST .../balance — comprobante del saldo sometido. */
+export interface SubmitBalancePaymentResult {
+  payment_id: string;
+  reservation_id: string;
+  status: string;
+  stage: string;
+  amount_cents: number;
+  currency: string;
+  submitted_at: string | null;
+  /** Presentes solo en el envío fresco; null en respuestas idempotentes. */
+  total_cents: number | null;
+  paid_cents: number | null;
+  balance_cents: number | null;
+  idempotent: boolean;
+}
 
 // ── MKT-007.4 · Canales de pago (pago móvil) ────────────────────────────────
 
@@ -666,6 +772,16 @@ export interface CheckoutAttemptView {
   created_at: string;
   closed_at: string | null;
   verified_at: string | null;
+  // ── MKT-010.1 · plan de pago (server-side) ──
+  /** 'single' | 'two_stage'. Congelado en la creación del intento. */
+  payment_plan: string;
+  deposit_cents: number | null;
+  total_cents: number;
+  balance_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
 }
 
 // ── RT-01/RT-02 · Historial de compras (DTO de GET /public/checkout/attempts) ──
@@ -687,6 +803,7 @@ export type PurchaseAccion =
   | 'enviar_comprobante'
   | 'reenviar_comprobante'
   | 'ver_reserva'
+  | 'pagar_saldo'
   | 'ninguna';
 
 export interface PurchaseComprobanteDto {
@@ -706,6 +823,8 @@ export interface PurchasePagoDto {
   amount_cents: number;
   currency: string;
   aprobado_en: string | null;
+  /** MKT-010.1: etapa del pago ('full' | 'deposit' | 'balance'). */
+  stage: 'full' | 'deposit' | 'balance';
 }
 
 export interface PurchaseReservaDto {
@@ -714,6 +833,36 @@ export interface PurchaseReservaDto {
   payment_status: string | null;
   ticket_code: string | null;
   created_at: string;
+}
+
+/**
+ * MKT-010.1: progreso del plan de pago de UNA compra. Todos los montos
+ * y porcentajes los calcula el SERVIDOR (nunca el cliente).
+ *
+ * - `deposit_cents`/`saldo_cents`: etapas FIJAS del plan (null en
+ *   plan único); `saldo_cents` = total − depósito.
+ * - `paid_cents`: verificado por la agencia; `pendiente_cents` =
+ *   total − pagado (lo que falta HOY).
+ * - Los vencimientos van EN VIVO; `*_overdue` es solo informativo
+ *   (nunca implica cancelación) y `seats_held` dice si los asientos
+ *   siguen reservados.
+ */
+export interface PurchasePlanDto {
+  payment_plan: 'single' | 'two_stage';
+  deposit_cents: number | null;
+  saldo_cents: number | null;
+  total_cents: number;
+  paid_cents: number;
+  pendiente_cents: number;
+  deposit_pct: number | null;
+  balance_pct: number | null;
+  deposit_deadline: string | null;
+  balance_deadline: string | null;
+  deposit_overdue: boolean;
+  balance_overdue: boolean;
+  /** null cuando aún no existe reserva (intento no verificado). */
+  seats_held: boolean | null;
+  deposit_verified_at: string | null;
 }
 
 export interface PurchaseItemDto {
@@ -741,6 +890,8 @@ export interface PurchaseItemDto {
   comprobante: PurchaseComprobanteDto | null;
   pago: PurchasePagoDto | null;
   reserva: PurchaseReservaDto | null;
+  /** MKT-010.1: progreso de pago en dos partes (siempre presente). */
+  plan: PurchasePlanDto;
   ventana: { expires_at: string; vencida: boolean };
   created_at: string;
   closed_at: string | null;

@@ -44,9 +44,14 @@
   /* Focus ring */
   --color-focus-ring:       rgba(212,98,43,0.15);
 
-  /* Tipografía */
-  --font-heading:           'El Messiri', serif;
-  --font-body:              'DM Sans', sans-serif;
+  /* Tipografía: las familias CARGADAS las define next/font en
+     app/layout.tsx (clase variable en <html> → --font-heading /
+     --font-sans). Definir aquí literales ('El Messiri', serif /
+     'DM Sans', sans-serif) hacía que el :root ganara la cascada en dev
+     (Turbopack) y que el genérico cortara la lista ANTES de las
+     familias reales, así el texto nunca llegaba a El Messiri/DM Sans.
+     --font-body se alias a la familia DM Sans ya cargada. */
+  --font-body:              var(--font-sans);
 }
 
 /* Headings use El Messiri (loaded in layout.tsx) and body uses DM Sans */

@@ -867,3 +867,115 @@ describe('ProofUploader reintento (RT-05 · initialValues y onSubmitError)', () 
     expect(view).toBeTruthy();
   });
 });
+
+// ── MKT-010.1 · Override `submit` (endpoint …/balance del saldo) ──────────────
+//
+// El uploader genérico conserva validación, huella e Idempotency-Key; solo
+// cambia adónde viaja el resultado. El flujo por defecto (…/proof) jamás se
+// invoca cuando hay override.
+
+describe('ProofUploader — override submit (MKT-010.1)', () => {
+  const onSubmitError = vi.fn();
+  const customSubmit = vi.fn();
+
+  const BALANCE_RESULT = {
+    payment_id: 'pay-bal-1',
+    reservation_id: 'res-1',
+    status: 'pending',
+    stage: 'balance',
+    amount_cents: 2020,
+    currency: 'COP',
+    submitted_at: '2026-11-17T10:00:00.000Z',
+    total_cents: 4040,
+    paid_cents: 2020,
+    balance_cents: 2020,
+    idempotent: false,
+  };
+
+  async function renderWithSubmit() {
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(
+        <ProofUploader
+          attemptId="att-1"
+          remainingSubmissions={1}
+          onSubmitted={onSubmitted}
+          onAlreadySubmitted={onAlreadySubmitted}
+          onSubmitError={onSubmitError}
+          submit={customSubmit}
+        />,
+      );
+    });
+    return view;
+  }
+
+  beforeEach(() => {
+    customSubmit.mockReset();
+    onSubmitError.mockReset();
+  });
+
+  it('envía al endpoint alternativo con la misma huella e idempotencia', async () => {
+    customSubmit.mockResolvedValue(BALANCE_RESULT);
+    const view = await renderWithSubmit();
+    await prepareSubmission(view);
+
+    await clickSubmit();
+
+    expect(customSubmit).toHaveBeenCalledTimes(1);
+    const [file, reconciliation, key] = customSubmit.mock.calls[0];
+    expect(file).toBeInstanceOf(File);
+    expect(file.name).toBe('comprobante.png');
+    expect(reconciliation).toEqual({
+      payment_reference: RECONCILIATION.payment_reference,
+      bank_origin: RECONCILIATION.bank_origin,
+      payment_datetime: paymentDatetimeTarget().iso,
+    });
+    expect(key).toMatch(UUID_RE);
+    // El flujo por defecto (…/proof) jamás se invoca con override.
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+    // El resultado del endpoint alternativo llega tal cual a la pantalla.
+    expect(onSubmitted).toHaveBeenCalledWith(BALANCE_RESULT);
+    expect(onAlreadySubmitted).not.toHaveBeenCalled();
+    expect(onSubmitError).not.toHaveBeenCalled();
+  });
+
+  it('409 BALANCE_PAYMENT_PENDING dispara onAlreadySubmitted con override', async () => {
+    customSubmit.mockRejectedValue(
+      new ApiError('Ya hay un saldo en revisión', 'BALANCE_PAYMENT_PENDING', 409),
+    );
+    const view = await renderWithSubmit();
+    await prepareSubmission(view);
+
+    await clickSubmit();
+
+    expect(onAlreadySubmitted).toHaveBeenCalledTimes(1);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    // El error además llega a la pantalla para revalidar contra el backend.
+    expect(onSubmitError).toHaveBeenCalledTimes(1);
+    expect(onSubmitError.mock.calls[0][0]).toBeInstanceOf(ApiError);
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+    expect(view).toBeTruthy();
+  });
+
+  it('un error autoritativo del saldo llega a onSubmitError sin éxito falso', async () => {
+    const serverError = new ApiError(
+      'El saldo ya está saldado',
+      'BALANCE_ALREADY_SETTLED',
+      409,
+    );
+    customSubmit.mockRejectedValue(serverError);
+    const view = await renderWithSubmit();
+    await prepareSubmission(view);
+
+    await clickSubmit();
+
+    expect(onSubmitError).toHaveBeenCalledWith(serverError);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(onAlreadySubmitted).not.toHaveBeenCalled();
+    expect(mockedSubmitProof).not.toHaveBeenCalled();
+    // Copy honest del backend en la UI, sin tocar el flujo del wizard.
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('El saldo ya está saldado')).toBeInTheDocument();
+    expect(view).toBeTruthy();
+  });
+});

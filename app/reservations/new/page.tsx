@@ -26,6 +26,7 @@ import {
   publicApi,
   seatApi,
   type CheckoutAttemptStatus,
+  type CheckoutAttemptView,
   type CreateCheckoutAttemptResult,
   type PublicTripDetail,
   type PublicTripSeat,
@@ -76,6 +77,38 @@ type Phase = 'loading' | 'missing' | 'expired' | 'error' | 'ready';
 // así que "Confirmar y pagar" sobre un viaje sin precio termina aquí.
 const UNPRICED_MESSAGE =
   'Este viaje no tiene un precio configurado y no puede reservarse en este momento.';
+
+/**
+ * MKT-010.1: plan de pago en dos partes del intento, EXACTAMENTE como lo
+ * devuelve el servidor (create/getAttempt → RPC 106). El wizard solo lo
+ * pinta: montos, porcentajes y vencimientos los calcula el backend.
+ */
+type AttemptPlan = Pick<
+  CreateCheckoutAttemptResult,
+  | 'payment_plan'
+  | 'deposit_cents'
+  | 'total_cents'
+  | 'balance_cents'
+  | 'deposit_pct'
+  | 'balance_pct'
+  | 'deposit_deadline'
+  | 'balance_deadline'
+>;
+
+function planFromSource(
+  source: CreateCheckoutAttemptResult | CheckoutAttemptView,
+): AttemptPlan {
+  return {
+    payment_plan: source.payment_plan,
+    deposit_cents: source.deposit_cents,
+    total_cents: source.total_cents,
+    balance_cents: source.balance_cents,
+    deposit_pct: source.deposit_pct,
+    balance_pct: source.balance_pct,
+    deposit_deadline: source.deposit_deadline,
+    balance_deadline: source.balance_deadline,
+  };
+}
 
 
 function reconcilePassengers(
@@ -190,6 +223,11 @@ function NewReservationContent() {
   // crear/enviar comprobante y se limpia al cancelar o volver a cero.
   const [checkoutStatus, setCheckoutStatus] =
     useState<CheckoutAttemptStatus | null>(null);
+  // MKT-010.1: plan de pago del intento (server-side). Se rehidrata con
+  // `getAttempt` al restaurar y con `createAttempt` al crear; se limpia en
+  // los mismos puntos que checkoutStatus. Sin plan no se pinta ninguna
+  // cifra de dos partes (nunca se inventan montos en el cliente).
+  const [attemptPlan, setAttemptPlan] = useState<AttemptPlan | null>(null);
   // M-1: estado terminal REAL del intento, tomado del estado crudo
   // (getAttempt) y NO del marcador ni de remaining_submissions. El
   // rechazo por ventana vencida (Tour 090) deja rejected_final con
@@ -277,6 +315,7 @@ function NewReservationContent() {
         setAgencyMismatch(false);
         setVerifiedAt(null);
         setCheckoutStatus(null);
+        setAttemptPlan(null);
         setSelectedMethodId(null);
         setCoordinatedPayment(false);
         setPhase('ready');
@@ -387,6 +426,8 @@ function NewReservationContent() {
           setCreateError(null);
           setVerifiedAt(attempt.status === 'verified' ? (attempt.verified_at ?? '') : null);
           setCheckoutStatus(attempt.status);
+          // MKT-010.1: plan de pago server-side del intento restaurado.
+          setAttemptPlan(planFromSource(attempt));
           setPhase('ready');
           writeLockState({ ...restored, passengers: restored.passengers });
         } catch (e) {
@@ -654,6 +695,8 @@ function NewReservationContent() {
       setFieldErrors([]);
       setCreateError(null);
       setCheckoutStatus(result.status);
+      // MKT-010.1: el plan de pago lo devuelve la RPC de creación.
+      setAttemptPlan(planFromSource(result));
       // Nuevo intento: el canal de pago se re-hidrata desde el servidor en
       // PaymentMethodSection; no arrastramos la elección del intento previo.
       setSelectedMethodId(null);
@@ -741,6 +784,7 @@ function NewReservationContent() {
       setCreateError(null);
       setVerifiedAt(null);
       setCheckoutStatus(null);
+      setAttemptPlan(null);
       setSelectedMethodId(null);
       setCoordinatedPayment(false);
       setPhase((current) => (current === 'ready' ? 'ready' : 'missing'));
@@ -2090,6 +2134,73 @@ function NewReservationContent() {
                     : 'Precio no disponible'}
                 </span>
               </div>
+
+              {/* ── MKT-010.1: desglose del plan en dos partes ──
+                  Montos, porcentajes y vencimientos salen del SERVIDOR
+                  (RPC 106 vía create/getAttempt); aquí solo se pintan.
+                  El saldo se paga DESPUÉS de que la agencia apruebe el
+                  depósito, desde Mis compras. */}
+              {attemptPlan?.payment_plan === 'two_stage' && (
+                <div
+                  className="mt-3 rounded-[10px] border border-black/[0.06] bg-[#f8fafc] px-4 py-3"
+                  data-testid="plan-dos-partes"
+                >
+                  <p className="text-[11px] font-medium uppercase text-brand-muted">
+                    Plan de pago en dos partes
+                  </p>
+                  <div className="mt-2 space-y-1.5 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-brand-muted">
+                        Depósito (etapa 1)
+                        {attemptPlan.deposit_pct != null
+                          ? ` · ${attemptPlan.deposit_pct}%`
+                          : ''}
+                      </span>
+                      <span className="font-semibold text-brand-navy">
+                        {attemptPlan.deposit_cents != null
+                          ? formatSeatPrice(attemptPlan.deposit_cents)
+                          : '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-brand-muted">
+                        Saldo (etapa 2)
+                        {attemptPlan.balance_pct != null
+                          ? ` · ${attemptPlan.balance_pct}%`
+                          : ''}
+                      </span>
+                      <span className="font-semibold text-brand-navy">
+                        {formatSeatPrice(attemptPlan.balance_cents)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-black/[0.06] pt-1.5">
+                      <span className="font-semibold text-brand-navy">
+                        Total
+                      </span>
+                      <span className="font-extrabold text-brand-navy">
+                        {formatSeatPrice(attemptPlan.total_cents)}
+                      </span>
+                    </div>
+                  </div>
+                  {attemptPlan.deposit_deadline && (
+                    <p className="mt-2 text-xs text-brand-muted">
+                      Depósito: vence el{' '}
+                      {formatDateTimeShort(attemptPlan.deposit_deadline)}
+                    </p>
+                  )}
+                  {attemptPlan.balance_deadline && (
+                    <p className="text-xs text-brand-muted">
+                      Saldo: vence el{' '}
+                      {formatDateTimeShort(attemptPlan.balance_deadline)}
+                    </p>
+                  )}
+                  <p className="mt-2 text-xs text-brand-muted">
+                    Primero pagas el depósito y la agencia lo revisa; el saldo
+                    se paga después desde Mis compras. Tus asientos permanecen
+                    reservados mientras tanto.
+                  </p>
+                </div>
+              )}
 
               {/* MKT-007.4: canal de pago elegido ANTES del comprobante.
                   MKT-008: sin canales activos notifica coordinatedPayment y

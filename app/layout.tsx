@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { DM_Sans, El_Messiri } from "next/font/google";
+import localFont from "next/font/local";
 import { Navbar } from "@/components/ui/Navbar";
 import { ToastProvider } from "@/components/ui/ToastProvider";
 import { RootProviders } from "@/components/auth/RootProviders";
@@ -9,17 +9,22 @@ import { MotionConfig } from "framer-motion";
 import "./globals.css";
 import "./design-tokens.css";
 
-const dmSans = DM_Sans({
-  // reuse the existing CSS variable name to keep globals.css unchanged
+// Fuentes vendorizadas en app/fonts/ (subset latin, archivos variables de
+// Google Fonts). Evita la dependencia de red en dev y build y esquiva el bug
+// vercel/next.js#99114 de next/font/google con Turbopack en Next 16.3.x.
+// reuse the existing CSS variable name to keep globals.css unchanged
+const dmSans = localFont({
+  src: "./fonts/dm-sans.woff2",
+  weight: "100 1000",
+  display: "swap",
   variable: "--font-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
 });
 
-const elMessiri = El_Messiri({
+const elMessiri = localFont({
+  src: "./fonts/el-messiri.woff2",
+  weight: "400 700",
+  display: "swap",
   variable: "--font-heading",
-  subsets: ["latin"],
-  weight: ["600", "700"],
 });
 
 export const metadata: Metadata = {

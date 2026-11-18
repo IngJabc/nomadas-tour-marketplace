@@ -2,7 +2,7 @@
 
 > Documento **operativo del sprint**. Una tarea activa a la vez; marcar `[x]` al completar.
 > **Estado:** Fases 0–2 (Bootstrap, Catálogo+Reserva, Pagos) completadas + **RT-01/RT-02 (historial de compras), RT-03 (boleto QR)** completados + **RT-05 (reintento de pago)** y **MKT-009 (compras en paralelo)** integrados en `main` y desplegados (RT-05 validado funcionalmente en staging). **Rutas en inglés (patrón tours) + filtros de Mis compras + margen 7xl + DatePicker + rediseño visual** completados, integrados y desplegados (2026-10-26…28). **LND** (PR #19, 2026-10-30) e **REV** (PR #21, 2026-11-02) integrados en `main`; migraciones 097–099 aplicadas. Siguiente: **MKT-008 (T-1) — validación funcional local** (integrado y desplegado; pendiente validar — ver sección MKT-008 T-1). Migraciones marketplace 074–101 aplicadas.
-> **Prioridades de negocio acordadas (2026-11-14):** ver § *Prioridades de negocio acordadas* — 1) **MKT-010.1** pagos en dos partes, 2) **MKT-009 extendido** comisiones USD 0.30/pasajero completado, 3) **MKT-010.2** cancelación + reembolsos, 4) **LEG ↔ LEGAL-001…005** marco legal, 5) **AS-TRIP-005** (tour) cancelar viaje con reservas. **MKT-012 cancelado** (admin centralizada en Tour); **REP y FDB pausados**; **SUP-001/002/003 integrados (PR #26, 2026-11-14)**, env var de despliegue pendiente.
+> **Prioridades de negocio acordadas (2026-11-14):** ver § *Prioridades de negocio acordadas* — 1) **MKT-010.1** pagos en dos partes, 2) **MKT-015** comisiones (1.er viaje completado sin comisión; USD 0.30/pasajero desde el 2º viaje completado), 3) **MKT-010.2** cancelación + reembolsos, 4) **LEG ↔ LEGAL-001…005** marco legal, 5) **AS-TRIP-005** (tour) cancelar viaje con reservas. **MKT-012 cancelado** (admin centralizada en Tour); **REP y FDB pausados**; **SUP-001/002/003 integrados (PR #26, 2026-11-14)**, env var de despliegue pendiente.
 > **Última sincronización de estados:** 2026-11-14
 > **Visión de producto:** [`docs/ROADMAP.md`](docs/ROADMAP.md)
 > **Contexto del proyecto:** [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md)
@@ -747,7 +747,9 @@ Ver detalle en [`docs/ROADMAP.md`](docs/ROADMAP.md) § Fase 1.
   `--color-focus-ring`. `--background` apunta al lienzo cálido.
 - [x] **globals.css** actualizado: fallbacks legacy, selección de texto,
   scrollbar, referencias a los nuevos colores.
-- [x] **layout.tsx** carga El Messiri + DM Sans vía `next/font/google`.
+- [x] **layout.tsx** carga El Messiri + DM Sans (originalmente vía
+  `next/font/google`; desde 2026-11-17 con `next/font/local` + archivos
+  en `app/fonts/`, ver § *Fuentes vendorizadas*).
 - [x] **Todas las páginas** actualizadas (focus rings, hover shadows,
   backgrounds): `/`, `/trips`, `/login`, `/register`,
   `/reservations/new`, `/account/purchases`, boleto y pago.
@@ -1041,6 +1043,81 @@ flag `--webpack` es soportado oficialmente por Next 16 (`next build
 modificó producción. Pendiente: commitear este cambio y verificar que
 el siguiente deploy de Vercel termine sin el error de Turbopack.
 
+> **Actualización (2026-11-17):** las fuentes ya **no** pasan por
+> `next/font/google` — DM Sans y El Messiri están vendorizadas en
+> `app/fonts/` con `next/font/local` (ver § siguiente). El flag
+> `--webpack` se conserva por ahora; revertirlo queda como mejora
+> futura.
+
+---
+
+## Fuentes vendorizadas (`next/font/local`): fin del fallo de `next/font/google` (2026-11-17)
+
+- [x] **VRC-002** — Migrar DM Sans + El Messiri de `next/font/google` a
+  `next/font/local` con los `.woff2` dentro del repo (`app/fonts/`),
+  eliminando la dependencia de red con Google Fonts en dev **y** build.
+
+**Causa:** `next dev` (Turbopack, bundler por defecto en Next 16.3.8)
+fallaba en el módulo de fuentes con
+`next/font/google queries have exactly one entry` →
+`Module not found: Can't resolve
+'@vercel/turbopack-next/internal/font/google/font'` (HTTP 500 en
+`http://localhost:3002/`). Es el bug conocido
+[vercel/next.js#99114](https://github.com/vercel/next.js/issues/99114):
+Google Fonts responde ~1–2 % de las veces con URLs extensionless
+`fonts.gstatic.com/l/font?kit=…&skey=…` que contienen `&`; Turbopack
+parsea las opciones JSON del módulo como query string, el `&` la parte
+en 3 entradas y salta el invariant. **Ambos bundlers** fallan con esa
+respuesta (webpack: `TypeError … null '1'`), así que `--webpack` no
+protege. El fix real de Next llegó en 16.4.x; el repo está en 16.3.8.
+
+**Cambio:**
+
+- `app/fonts/dm-sans.woff2` (36 932 B) y `app/fonts/el-messiri.woff2`
+  (23 632 B): subset `latin` de Google Fonts, fuentes **variables**
+  (DM Sans eje `wght 100–1000`; El Messiri `400–700`), descargadas y
+  verificadas (magic `wOF2`) el 2026-11-17.
+- `app/layout.tsx`: `DM_Sans`/`El_Messiri` de `next/font/google` →
+  `localFont` de `next/font/local` con `src` + `weight` en rango,
+  `display: 'swap'` y **las mismas variables CSS** `--font-sans` /
+  `--font-heading` (el `className` de `<html>` no cambia).
+- `app/design-tokens.css` (2 líneas): se eliminó el literal
+  `--font-heading: 'El Messiri', serif` y `--font-body` pasa a
+  `var(--font-sans)`. **Issue preexistente** (no introducido por este
+  cambio): en dev el `:root` de design-tokens ganaba la cascada a la
+  variable de next/font (Turbopack ordenaba el CSS distinto que webpack
+  en el build) y los genéricos `serif`/`sans-serif` cortaban la lista
+  de familias ANTES de las cargadas — el texto nunca llegaba a El
+  Messiri/DM Sans (no instaladas en el sistema). Con una sola fuente de
+  verdad (la clase variable de `<html>`) dev y build quedan idénticos y
+  el resultado es orden-independiente.
+- Sin cambios en `next.config.ts`, `package.json`, dependencias ni
+  lockfile; **sin variables de entorno**. El script `build` sigue en
+  `next build --webpack` (VRC-001): con las fuentes locales el fallo de
+  Turbopack ya no puede ocurrir, así que revertir el flag queda como
+  mejora futura, no incluida aquí.
+
+**Validación (2026-11-17):**
+
+- Dev server (`next dev`, Turbopack, puerto 3002): HTTP **200** (antes
+  500), HTML sin ninguna referencia a `fonts.googleapis.com` /
+  `fonts.gstatic.com`; sirve `/_next/static/media/*.woff2`.
+- Navegador en vivo (dev): `document.fonts` con `dmSans` y `elMessiri`
+  en estado **loaded** (realmente renderizan), `--font-heading` y
+  `--font-body` resuelven a las familias cargadas, `<h1>`/`<p>` arrancan
+  por ellas y **0 errores de consola**.
+- `npx tsc --noEmit` → exit 0.
+- Suite completa `npm test`: **594 pass / 4 fail (598)** — mismos 4
+  preexistentes de `app/agencies/[agencyId]` (baseline intacto).
+- `npm run build` → exit 0; CSS del build con una sola definición de
+  `--font-heading`, 0 literales `'El Messiri'`/`'DM Sans'`,
+  `@font-face … font-weight:100 1000` (dmSans) y `400 700` (elMessiri)
+  + fallback métrico (`size-adjust`) generado desde el archivo.
+- `git diff --check` → exit 0.
+
+**Estado:** implementado localmente, **sin commitear, sin push, sin
+deploy** (a pedido).
+
 ---
 
 ## Soporte WhatsApp (SUP-001/002/003): botón flotante con contexto (2026-11-13)
@@ -1183,15 +1260,21 @@ Detalle de producto en [`docs/ROADMAP.md`](docs/ROADMAP.md) →
 | # | Prioridad | IDs | Orden / dependencia | Dueño (responsabilidad de implementación) |
 | - | --------- | --- | ------------------- | ----------------------------------------- |
 | 1 | Pagos de reserva en dos partes: depósito fijo + saldo restante | **MKT-010.1** (extiende MKT-010) | Primera | Marketplace: flujo y estado de pago para el cliente · Tour: configuración del depósito y revisión · backend/DB: registros autoritativos |
-| 2 | Comisiones de plataforma: **USD 0.30 por pasajero que completa el viaje** | **MKT-009** extendido (comisiones, roadmap original) | Después de la 1 | Tour: visibilidad del adeudo en panel de agencia · backend/DB: cálculo y trazabilidad por viaje/pasajero elegible · Marketplace: aporta datos del pasajero |
+| 2 | Comisiones de plataforma: **USD 0.30 por pasajero que completa el viaje** | **MKT-015** (tarea dedicada de comisiones; 1.er viaje completado sin comisión) | Después de la 1 | Tour: visibilidad del adeudo en panel de agencia · backend/DB: cálculo y trazabilidad por viaje/pasajero elegible · Marketplace: aporta datos del pasajero |
 | 3 | Cancelación de reservas y reembolsos | **MKT-010.2** (extiende MKT-010) | Después de la 1; puede correr en paralelo con la 2 | Tour: cancelación y registro/gestión de reembolsos · Marketplace: visibilidad de estado para el cliente · backend/DB: cancelación + liberación de asientos atómicas y auditoría |
 | 4 | Marco legal venezolano | **LEG** (marketplace, coordinador) ↔ **LEGAL-001…005** (tour, Fase A) | En paralelo (la revisión externa requiere planificación anticipada) | Una sola investigación y revisión jurídica compartida; cada repo redacta solo su lado |
 | 5 | Cancelación de viajes con reservas existentes | **AS-TRIP-005** (tour) | Solo después de validar la prioridad 3 | Tour |
 
 Reglas de negocio (válidas para todos los ítems):
 
-- **Nada de este bloque está implementado**: todo está planificado. No se
-  marca ninguna de estas tareas como completada.
+- **Estado (2026-11-17):** la **Prioridad 1 (MKT-010.1)** está
+  **implementada localmente en ambos repos**, con suites de pruebas y
+  builds de producción verificados; **sin commit, sin despliegue y sin
+  aplicar en base de datos** (la migración `106_two_part_payments.sql`
+  está creada, **no aplicada**). Las prioridades 2–5 siguen
+  **planificadas**: ninguna de estas tareas se marca como completada
+  hasta verificar el despliegue y la aplicación de migraciones en
+  producción.
 - **Prioridad 1 — MKT-010.1:** dos pagos exactos por asiento. La agencia
   configura el monto del depósito y las fechas; el sistema calcula el saldo
   restante y muestra el porcentaje que representa cada monto. El segundo
@@ -1199,13 +1282,17 @@ Reglas de negocio (válidas para todos los ítems):
   la agencia avisa al cliente por WhatsApp. Si el cliente no paga a tiempo,
   la agencia decide cómo manejar la reserva: **sin cancelación automática**
   basada solo en el saldo impago.
-- **Prioridad 2 — MKT-009 (extendido):** USD 0.30 por pasajero que
-  **completa** el viaje; **nada** por pasajeros cancelados o que no
-  viajan. El panel de agencia muestra el monto adeudado por viajes
-  completados; cada registro es trazable al viaje y a los pasajeros
-  elegibles. El criterio histórico "primer viaje gratis" queda como
-  **decisión pendiente** frente al nuevo criterio (no se borra el
-  historial).
+- **Prioridad 2 — MKT-015 (comisiones, criterio confirmado):** USD 0.30
+  por pasajero que **completa** el viaje; **nada** por pasajeros
+  cancelados o que no viajan. **Excepción confirmada:** el primer viaje
+  completado en el Marketplace de cada agencia es **sin comisión**; desde
+  el **segundo** viaje completado en adelante la plataforma gana USD 0.30
+  por pasajero que **realmente viajó**. El panel de agencia muestra el
+  monto adeudado por viajes completados; cada registro es trazable al
+  viaje y a los pasajeros elegibles. **Decisión resuelta (2026-11-14):**
+  sustituye a la "decisión pendiente" anterior sin borrar el historial.
+  **MKT-009 conserva su significado original** (compras independientes
+  en paralelo); las comisiones viven en **MKT-015**.
 - **Prioridad 3 — MKT-010.2:** el cliente contacta a la agencia para
   pedir la cancelación; la agencia la gestiona desde Tour. Cancelar libera
   los asientos de la reserva en una operación **atómica**. Se registra el
@@ -1238,8 +1325,8 @@ Reglas de negocio (válidas para todos los ítems):
   `NEXT_PUBLIC_WHATSAPP_SUPPORT_NUMBER` pendiente de configurar (no se
   afirma que esté configurada).
 
-**Tareas nuevas de este repo:** `MKT-010.1` (prioridad 1), `MKT-009`
-extendido (prioridad 2) y `MKT-010.2` (prioridad 3). `LEG` (prioridad 4)
+**Tareas nuevas de este repo:** `MKT-010.1` (prioridad 1), `MKT-015`
+(comisiones, prioridad 2) y `MKT-010.2` (prioridad 3). `LEG` (prioridad 4)
 se coordina con `LEGAL-001…005` de `nomadas-tour`; `AS-TRIP-005`
 (prioridad 5) vive en `nomadas-tour`. **No duplicar** estas tareas en el
 roadmap de tour.
@@ -1298,8 +1385,8 @@ Dependencias de `nomadas-tour` (solo lectura): ver
 
 | Orden | Tema | Estado |
 | ----- | ---- | ------ |
-| **1** | **MKT-010.1** — Pagos de reserva en dos partes (depósito fijo + saldo restante) | ⏳ **Prioridad 1 — planificado, no implementado** (extiende MKT-010; § Prioridades de negocio acordadas) |
-| **2** | **MKT-009 extendido** — Comisiones USD 0.30 por pasajero que completa el viaje | ⏳ **Prioridad 2 — planificado** (criterio histórico "primer viaje gratis" = decisión pendiente) |
+| **1** | **MKT-010.1** — Pagos de reserva en dos partes (depósito fijo + saldo restante) | ✅ **Implementado localmente (2026-11-17), sin commit ni despliegue** (extiende MKT-010; § Prioridades de negocio acordadas) — migración `106_two_part_payments.sql` creada, **no aplicada**; pendiente aplicar `106` (revisar estado de `097`–`103`; `104`/`105` ya aplicadas) y desplegar web+backend en ambos repos |
+| **2** | **MKT-015** - Comisiones USD 0.30 por pasajero que completa el viaje (1.er viaje completado de la agencia sin comisión) | ⏳ **Prioridad 2 - planificado** (criterio confirmado 2026-11-14: primer viaje gratis; desde el 2º viaje completado, USD 0.30 por pasajero que viajó) |
 | **3** | **MKT-010.2** — Cancelación de reservas y reembolsos | ⏳ **Prioridad 3 — planificado** (cancelación atómica + refund `required` ya existen, RPC 079; gestión de reembolsos pendiente) |
 | **4** | **LEG** ↔ **LEGAL-001…005** (tour) — Marco legal venezolano | ⏳ **Prioridad 4 — planificado** (investigación + revisión legal externa; reconciliado con tour, sin duplicar) |
 | **5** | **AS-TRIP-005** (tour) — Cancelación de viajes con reservas existentes | ⏳ **Prioridad 5 — bloqueada** hasta validar la prioridad 3 (implementación en `nomadas-tour`; restricción actual `ERR_TRIP_HAS_RESERVATIONS`) |
