@@ -70,3 +70,52 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 }
+
+// ── MKT-010.1 · Solicitud de pago del SALDO por WhatsApp ─────────────────────
+
+/**
+ * wa.me con mensaje pre-escrito (solo formato, nunca número inventado):
+ * si el teléfono no es válido devuelve `null` y la UI omite el enlace.
+ */
+export function whatsappMessageHref(
+  phone: string | null | undefined,
+  message: string,
+): string | null {
+  const base = whatsappHref(phone);
+  if (!base || !message.trim()) return null;
+  return `${base}?text=${encodeURIComponent(message)}`;
+}
+
+export interface BalanceWhatsAppInput {
+  /** Nombre de la agencia cuando existe (opcional en el saludo). */
+  agencyName?: string | null;
+  /** Ruta ya etiquetada, p. ej. "Caracas → Maracaibo". */
+  routeLabel?: string | null;
+  /** Fecha/salida ya formateada en la zona de negocio. */
+  departureLabel?: string | null;
+  /** Código de boleto/reserva cuando existe. */
+  ticketCode?: string | null;
+  /** Saldo pendiente ya formateado (el dinero lo decide el servidor). */
+  balanceAmount: string;
+}
+
+/**
+ * Mensaje de solicitud de pago del saldo (etapa 2). Solo incluye datos
+ * que el backend ya expuso para ESTA reserva: nunca se inventa un monto
+ * ni un destinatario. `balanceAmount` llega formateado desde la UI con el
+ * importe server-side; esta función solo compone texto.
+ */
+export function buildBalanceWhatsAppMessage(input: BalanceWhatsAppInput): string {
+  const lines = [
+    input.agencyName?.trim()
+      ? `Hola, quiero pagar el saldo de mi reserva con ${input.agencyName.trim()}.`
+      : 'Hola, quiero pagar el saldo de mi reserva.',
+  ];
+  const details: string[] = [];
+  if (input.routeLabel?.trim()) details.push(`Ruta: ${input.routeLabel.trim()}`);
+  if (input.departureLabel?.trim()) details.push(`Salida: ${input.departureLabel.trim()}`);
+  if (input.ticketCode?.trim()) details.push(`Reserva: ${input.ticketCode.trim()}`);
+  if (details.length > 0) lines.push('', ...details);
+  lines.push('', `Saldo pendiente: ${input.balanceAmount}`);
+  return lines.join('\n');
+}

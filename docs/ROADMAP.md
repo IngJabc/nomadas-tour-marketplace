@@ -33,8 +33,8 @@ verificación/rechazo vive en el panel de agencia de `nomadas-tour`.
 | Checkout con revisión de comprobante (MKT-007, `checkout_attempts`) | ✅ Completado |
 | Panel de revisión de pagos (agencia, en repo tour, MKT-006) | ✅ Completado |
 | Historial de compras + boleto QR (`/account/purchases`) | ✅ Completado (RT-01…RT-03) |
-| Pagos de reserva en dos partes (depósito fijo + saldo restante) | ⏳ **Prioridad 1** (MKT-010.1) — planificado, no implementado (solo columnas `installment_*` en schema) |
-| Comisiones + primer viaje gratis | ⏳ **Prioridad 2** (MKT-009 extendido — criterio nuevo USD 0.30/pasajero completado; "primer viaje gratis" = decisión pendiente) |
+| Pagos de reserva en dos partes (depósito fijo + saldo restante) | ✅ **Prioridad 1** (MKT-010.1) — implementado localmente (2026-11-17), sin commit ni despliegue; migración `106_two_part_payments.sql` creada, **no aplicada** (pendiente: aplicar `106` — revisar `097`–`103`, `104`/`105` ya aplicadas — y desplegar) |
+| Comisiones + primer viaje gratis | ⏳ **Prioridad 2** (MKT-015 - criterio confirmado: 1.er viaje completado sin comisión; desde el 2º viaje, USD 0.30/pasajero que viajó) |
 | Cancelación de reservas y reembolsos | ⏳ **Prioridad 3** (MKT-010.2) — planificado, no implementado (cancelación atómica + refund `required` existen, RPC 079; gestión de reembolsos pendiente) |
 | Marco legal venezolano | ⏳ **Prioridad 4** (LEG ↔ LEGAL-001…005) — investigación y revisión legal pendientes |
 | Cancelación de viajes con reservas existentes | ⏳ **Prioridad 5** (AS-TRIP-005, tour) — solo tras validar la prioridad 3; restricción actual `ERR_TRIP_HAS_RESERVATIONS` |
@@ -90,6 +90,14 @@ Contrato con tour: [`NOMADAS_TOUR_INTEGRATION.md`](NOMADAS_TOUR_INTEGRATION.md).
 > Webpack automáticamente (no hay `vercel.json` ni build command
 > personalizado). Detalle en [`../TASKS.md`](../TASKS.md) § *Build de
 > producción en Vercel: bundler Webpack (2026-11-13)*.
+>
+> **Actualización (2026-11-17):** DM Sans y El Messiri se migraron a
+> `next/font/local` con los `.woff2` vendorizados en `app/fonts/` — fin
+> de la dependencia de Google Fonts en dev y build y del bug
+> vercel/next.js#99114 que motivó el flag `--webpack` (se conserva por
+> ahora). Detalle en [`../TASKS.md`](../TASKS.md) § *Fuentes
+> vendorizadas (`next/font/local`): fin del fallo de `next/font/google`
+> (2026-11-17)*.
 
 ---
 
@@ -105,15 +113,21 @@ acordadas*.
 | # | Prioridad | IDs | Orden / dependencia | Dueño (responsabilidad de implementación) |
 | - | --------- | --- | ------------------- | ----------------------------------------- |
 | 1 | Pagos de reserva en dos partes: depósito fijo + saldo restante | **MKT-010.1** (extiende MKT-010) | Primera | Marketplace: flujo y estado de pago para el cliente · Tour: configuración del depósito y revisión · backend/DB: registros autoritativos |
-| 2 | Comisiones de plataforma: **USD 0.30 por pasajero que completa el viaje** | **MKT-009** extendido (comisiones, roadmap original) | Después de la 1 | Tour: visibilidad del adeudo en panel de agencia · backend/DB: cálculo y trazabilidad por viaje/pasajero elegible · Marketplace: aporta datos del pasajero |
+| 2 | Comisiones de plataforma: **USD 0.30 por pasajero que completa el viaje** | **MKT-015** (tarea dedicada de comisiones; 1.er viaje completado sin comisión) | Después de la 1 | Tour: visibilidad del adeudo en panel de agencia · backend/DB: cálculo y trazabilidad por viaje/pasajero elegible · Marketplace: aporta datos del pasajero |
 | 3 | Cancelación de reservas y reembolsos | **MKT-010.2** (extiende MKT-010) | Después de la 1; puede correr en paralelo con la 2 | Tour: cancelación y registro/gestión de reembolsos · Marketplace: visibilidad de estado para el cliente · backend/DB: cancelación + liberación de asientos atómicas y auditoría |
 | 4 | Marco legal venezolano | **LEG** (marketplace, coordinador) ↔ **LEGAL-001…005** (tour, Fase A) | En paralelo (la revisión externa requiere planificación anticipada) | Una sola investigación y revisión jurídica compartida; cada repo redacta solo su lado |
 | 5 | Cancelación de viajes con reservas existentes | **AS-TRIP-005** (tour) | Solo después de validar la prioridad 3 | Tour |
 
 Reglas de negocio (válidas para todos los ítems):
 
-- **Nada de este bloque está implementado**: todo está planificado. No se
-  marca ninguna de estas tareas como completada.
+- **Estado (2026-11-17):** la **Prioridad 1 (MKT-010.1)** está
+  **implementada localmente en ambos repos**, con suites de pruebas y
+  builds de producción verificados; **sin commit, sin despliegue y sin
+  aplicar en base de datos** (la migración `106_two_part_payments.sql`
+  está creada, **no aplicada**). Las prioridades 2–5 siguen
+  **planificadas**: ninguna de estas tareas se marca como completada
+  hasta verificar el despliegue y la aplicación de migraciones en
+  producción.
 - **Prioridad 1 — MKT-010.1:** dos pagos exactos por asiento. La agencia
   configura el monto del depósito y las fechas; el sistema calcula el saldo
   restante y muestra el porcentaje que representa cada monto. El segundo
@@ -121,13 +135,17 @@ Reglas de negocio (válidas para todos los ítems):
   la agencia avisa al cliente por WhatsApp. Si el cliente no paga a tiempo,
   la agencia decide cómo manejar la reserva: **sin cancelación automática**
   basada solo en el saldo impago.
-- **Prioridad 2 — MKT-009 (extendido):** USD 0.30 por pasajero que
-  **completa** el viaje; **nada** por pasajeros cancelados o que no
-  viajan. El panel de agencia muestra el monto adeudado por viajes
-  completados; cada registro es trazable al viaje y a los pasajeros
-  elegibles. El criterio histórico "primer viaje gratis" queda como
-  **decisión pendiente** frente al nuevo criterio (no se borra el
-  historial).
+- **Prioridad 2 — MKT-015 (comisiones, criterio confirmado):** USD 0.30
+  por pasajero que **completa** el viaje; **nada** por pasajeros
+  cancelados o que no viajan. **Excepción confirmada:** el primer viaje
+  completado en el Marketplace de cada agencia es **sin comisión**; desde
+  el **segundo** viaje completado en adelante la plataforma gana USD 0.30
+  por pasajero que **realmente viajó**. El panel de agencia muestra el
+  monto adeudado por viajes completados; cada registro es trazable al
+  viaje y a los pasajeros elegibles. **Decisión resuelta (2026-11-14):**
+  sustituye a la "decisión pendiente" anterior sin borrar el historial.
+  **MKT-009 conserva su significado original** (compras independientes
+  en paralelo); las comisiones viven en **MKT-015**.
 - **Prioridad 3 — MKT-010.2:** el cliente contacta a la agencia para
   pedir la cancelación; la agencia la gestiona desde Tour. Cancelar libera
   los asientos de la reserva en una operación **atómica**. Se registra el
@@ -239,10 +257,11 @@ FASE 3 — Ciclo de vida                       🟡 En curso (parcial)
              funcional LOCAL PENDIENTE (ver TASKS.md → MKT-008 T-1)
   MKT-010  (reservado refunds/abonos) → PRIORIDAD 1 = MKT-010.1 pagos en
            dos partes · PRIORIDAD 3 = MKT-010.2 cancelación + reembolsos
-  MKT-009  Comisiones USD 0.30 por pasajero completado → PRIORIDAD 2
-           — extendido desde "comisiones idempotentes + primer viaje
-             gratis"; el "primer viaje gratis" queda como decisión
-             pendiente
+  MKT-015  Comisiones USD 0.30 por pasajero completado → PRIORIDAD 2
+           - tarea dedicada; criterio confirmado (2026-11-14): primer
+             viaje completado de la agencia sin comisión y USD 0.30 por
+             pasajero que viajó desde el segundo en adelante; MKT-009
+             conserva "compras en paralelo"
   MKT-011  Emails (outbox) con EMAIL_DELIVERY_MODE → diferido
            — El naming drift documentado (MKT-010 ejecutado como
              "expiración de checkout", integrado y desplegado) se
@@ -848,13 +867,13 @@ reconciliación LEG ↔ LEGAL más arriba.
 | SUP | `platform_config` para número | Nada crítico (integrada; env var de despliegue pendiente) |
 | LEG | Revisión jurídica externa | Recurso humano externo |
 | **Prioridad 1 — MKT-010.1** (pagos en dos partes) | Configuración del depósito en Tour + flujo de pago en Marketplace | Nada (primera prioridad) |
-| **Prioridad 2 — MKT-009** (comisiones) | Viajes completados + panel de agencia en Tour | Orden: después de la prioridad 1 |
+| **Prioridad 2 - MKT-015** (comisiones) | Viajes completados + panel de agencia en Tour | Orden: después de la prioridad 1 |
 | **Prioridad 3 — MKT-010.2** (cancelación + reembolsos) | Cancelación atómica + registro de reembolsos (Tour/DB) | Orden: después de la prioridad 1 (paralela a la 2) |
 | **Prioridad 4 — LEG/LEGAL** | Investigación + revisión legal externa | En paralelo (no bloquea) |
 | **Prioridad 5 — AS-TRIP-005** (cancelar viaje con reservas) | Reembolsos disponibles y validados (prioridad 3) | Prioridad 3 validada |
 
 Secuencia recomendada (2026-11-14): **prioridad 1 (MKT-010.1) →
-prioridad 2 (MKT-009 comisiones) y prioridad 3 (MKT-010.2), que pueden
+prioridad 2 (MKT-015 comisiones) y prioridad 3 (MKT-010.2), que pueden
 correr en paralelo → prioridad 5 (AS-TRIP-005), solo tras validar los
 reembolsos**, con la **prioridad 4 (LEG/LEGAL) en paralelo temprano** por
 su dependencia de recursos externos. REP y FDB siguen **pausados** (no se
@@ -875,11 +894,14 @@ despliegue pendiente de configurar).
 5. Borradores legales iniciales y proveedor de revisión jurídica (LEG).
 6. Momento y bloqueo de la aceptación legal (LEG).
 7. Si el feedback requiere autenticación (FDB).
-8. **Criterio de comisiones (prioridad 2, MKT-009):** el histórico
-   "primer viaje gratis" (`agencies.first_marketplace_trip_completed_at`)
-   frente al nuevo criterio **USD 0.30 por pasajero que completa el
-   viaje** — decidir si uno sustituye al otro o coexisten; sin decisión,
-   no se implementa MKT-009.
+8. ~~**Criterio de comisiones (prioridad 2, MKT-009):**~~ - **resuelta
+   (2026-11-14):** coexisten y quedan confirmados. El **primer viaje
+   completado** de cada agencia en el Marketplace es **sin comisión**
+   (`agencies.first_marketplace_trip_completed_at`); desde el **segundo**
+   viaje completado en adelante la plataforma gana **USD 0.30 por
+   pasajero que realmente viajó**. La tarea dedicada pasa a **MKT-015**
+   (MKT-009 conserva su significado original: compras independientes en
+   paralelo).
 
 ---
 
@@ -915,11 +937,11 @@ despliegue pendiente de configurar).
 
 7. **Drift de MKT-009 (preexistente):** en `TASKS.md`, la sección
    `MKT-009` documenta "Compras independientes en paralelo" (ejecutada,
-   integrada y desplegada); en este roadmap, MKT-009 son las **comisiones
-   idempotentes** (diferidas). Con la nueva **prioridad 2** el ID de
-   comisiones se **extiende aquí** ("MKT-009 extendido") sin reasignar ni
-   tocar la sección ejecutada de TASKS. **Resolución:** se documenta el
-   drift; ningún ID ya usado se reutiliza para otro fin.
+   integrada y desplegada); en este roadmap, MKT-009 figuraba como las
+   **comisiones** (diferidas). **Resolución (2026-11-14):** las
+   comisiones pasan a la tarea dedicada **MKT-015**; `MKT-009` conserva
+   exclusivamente su significado original (compras en paralelo) y ningún
+   ID ya usado se reutiliza para otro fin.
 
 8. **Cancelación de viajes con reservas (filas "Operativo"):** el roadmap
    de `nomadas-tour` las marcaba como operativas, pero la migración 104

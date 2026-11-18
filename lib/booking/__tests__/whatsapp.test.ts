@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildBalanceWhatsAppMessage,
   contactTelHref,
   contactWhatsAppHref,
   normalizeE164Phone,
   whatsappHref,
+  whatsappMessageHref,
 } from '../whatsapp';
 
 describe('whatsappHref (MKT-007.4)', () => {
@@ -82,5 +84,109 @@ describe('contactTelHref (MKT-008)', () => {
     expect(contactTelHref('04121234567')).toBeNull();
     expect(contactTelHref('no-telefono')).toBeNull();
     expect(contactTelHref(null)).toBeNull();
+  });
+});
+
+// ── MKT-010.1 · Solicitud de pago del SALDO por WhatsApp ──────────────────────
+
+describe('whatsappMessageHref (MKT-010.1)', () => {
+  it('compone wa.me con el mensaje URL-encoded', () => {
+    const href = whatsappMessageHref(
+      '04121234567',
+      'Hola, quiero pagar el saldo de mi reserva.',
+    );
+    expect(href).toBe(
+      'https://wa.me/584121234567?text=' +
+        encodeURIComponent('Hola, quiero pagar el saldo de mi reserva.'),
+    );
+  });
+
+  it('codifica saltos de línea y caracteres especiales', () => {
+    const message = 'Saldo pendiente: 20.20 €\nRuta: Caracas → Maracaibo';
+    const href = whatsappMessageHref('+58 412 123 4567', message);
+    expect(href).toContain('https://wa.me/584121234567?text=');
+    expect(href).toBe(
+      `https://wa.me/584121234567?text=${encodeURIComponent(message)}`,
+    );
+    // El mensaje queda en un único parámetro text= (sin romper la URL).
+    expect(href!.split('?text=')).toHaveLength(2);
+  });
+
+  it('devuelve null si el teléfono no es válido (nunca inventa destinatario)', () => {
+    expect(whatsappMessageHref(null, 'Hola')).toBeNull();
+    expect(whatsappMessageHref('no-telefono', 'Hola')).toBeNull();
+    expect(whatsappMessageHref('123', 'Hola')).toBeNull();
+  });
+
+  it('devuelve null si el mensaje está vacío o solo espacios', () => {
+    expect(whatsappMessageHref('04121234567', '')).toBeNull();
+    expect(whatsappMessageHref('04121234567', '   \n  ')).toBeNull();
+  });
+});
+
+describe('buildBalanceWhatsAppMessage (MKT-010.1)', () => {
+  it('compone saludo con agencia + ruta + salida + reserva + saldo', () => {
+    const message = buildBalanceWhatsAppMessage({
+      agencyName: 'Rutas del Sol',
+      routeLabel: 'Caracas → Maracaibo',
+      departureLabel: '1 dic 2026, 08:00',
+      ticketCode: 'ABCD1234',
+      balanceAmount: 'Bs. 20,20',
+    });
+
+    expect(message).toBe(
+      [
+        'Hola, quiero pagar el saldo de mi reserva con Rutas del Sol.',
+        '',
+        'Ruta: Caracas → Maracaibo',
+        'Salida: 1 dic 2026, 08:00',
+        'Reserva: ABCD1234',
+        '',
+        'Saldo pendiente: Bs. 20,20',
+      ].join('\n'),
+    );
+  });
+
+  it('omite agencia y campos opcionales ausentes sin inventarlos', () => {
+    const message = buildBalanceWhatsAppMessage({
+      balanceAmount: 'Bs. 20,20',
+    });
+
+    expect(message).toBe(
+      ['Hola, quiero pagar el saldo de mi reserva.', '', 'Saldo pendiente: Bs. 20,20'].join(
+        '\n',
+      ),
+    );
+    expect(message).not.toContain('Ruta:');
+    expect(message).not.toContain('Salida:');
+    expect(message).not.toContain('Reserva:');
+    expect(message).not.toContain('con undefined');
+    expect(message).not.toContain('con null');
+  });
+
+  it('trimea valores opcionales en blanco (no emite líneas vacías de más)', () => {
+    const message = buildBalanceWhatsAppMessage({
+      agencyName: '   ',
+      routeLabel: '',
+      departureLabel: '  ',
+      ticketCode: '\n',
+      balanceAmount: 'Bs. 20,20',
+    });
+
+    expect(message).toBe(
+      ['Hola, quiero pagar el saldo de mi reserva.', '', 'Saldo pendiente: Bs. 20,20'].join(
+        '\n',
+      ),
+    );
+  });
+
+  it('el monto llega ya formateado desde el servidor (solo se compone texto)', () => {
+    const message = buildBalanceWhatsAppMessage({
+      agencyName: 'Rutas del Sol',
+      balanceAmount: 'Bs. 1.234,56',
+    });
+    expect(message).toContain('Saldo pendiente: Bs. 1.234,56');
+    // Nunca calcula ni reformatea el importe: es un string de entrada.
+    expect(message.match(/Saldo pendiente:/g)).toHaveLength(1);
   });
 });

@@ -20,16 +20,23 @@ const harness = vi.hoisted(() => {
     table: string;
     calls: Array<{ method: string; args: any[] }>;
   };
+  type RpcCall = { fn: string; args: any };
 
   const state: {
     queues: Record<string, QueryResult[]>;
     defaults: Record<string, QueryResult>;
     chains: ChainRecord[];
+    rpcQueues: Record<string, QueryResult[]>;
+    rpcDefaults: Record<string, QueryResult>;
+    rpcCalls: RpcCall[];
     getUser: (token: string) => Promise<any>;
   } = {
     queues: {},
     defaults: {},
     chains: [],
+    rpcQueues: {},
+    rpcDefaults: {},
+    rpcCalls: [],
     getUser: () =>
       Promise.resolve({ data: { user: null }, error: { message: 'anonymous' } }),
   };
@@ -80,18 +87,40 @@ const harness = vi.hoisted(() => {
     setDefault(table: string, result: QueryResult) {
       state.defaults[table] = result;
     },
+    // MKT-010.1: la RPC de progreso SOLO se invoca en compras two_stage
+    // con reserva. Sin configurar, el rpc sigue lanzando (los tests
+    // legados de plan único siguen demostrando que NO se invoca).
+    pushRpc(fn: string, result: QueryResult) {
+      (state.rpcQueues[fn] ||= []).push(result);
+    },
+    setRpcDefault(fn: string, result: QueryResult) {
+      state.rpcDefaults[fn] = result;
+    },
+    rpcCalls: () => state.rpcCalls,
     reset() {
       state.chains = [];
       state.queues = {};
       state.defaults = {};
+      state.rpcQueues = {};
+      state.rpcDefaults = {};
+      state.rpcCalls = [];
     },
     setUser(handler: (token: string) => Promise<any>) {
       state.getUser = handler;
     },
     chains: () => state.chains,
     from: (table: string) => buildChain(table),
-    rpc: () => {
-      throw new Error('rpc no debe invocarse en GET historial');
+    rpc: (fn: string, args: any) => {
+      state.rpcCalls.push({ fn, args });
+      const queue = state.rpcQueues[fn];
+      const result =
+        queue && queue.length > 0
+          ? queue.shift()!
+          : state.rpcDefaults[fn];
+      if (result === undefined) {
+        throw new Error(`rpc no debe invocarse en GET historial: ${fn}`);
+      }
+      return Promise.resolve(result);
     },
     auth: { getUser: (token: string) => state.getUser(token) },
     storage: { from: () => ({}) },
@@ -119,6 +148,8 @@ const RESERVATION_ID = 'rrrrrrrr-rrrr-4rrr-8rrr-rrrrrrrrrrr1';
 const HISTORY_URL = '/api/public/checkout/attempts';
 const FUTURE = '2099-01-01T00:00:00.000Z';
 const PAST = '2020-01-01T00:00:00.000Z';
+// MKT-010.1: RPC de progreso server-side (migración 106).
+const RPC_PROGRESS = 'reservation_payment_progress';
 
 function attemptRow(overrides: Record<string, any> = {}) {
   return {
@@ -145,6 +176,10 @@ function attemptRow(overrides: Record<string, any> = {}) {
     ],
     unit_price: 2020,
     amount_cents: 4040,
+    // MKT-010.1: plan congelado en la creación (106). Por defecto el
+    // plan legado de un solo pago, igual que en la BD.
+    payment_plan: 'single',
+    deposit_cents: null,
     proof_count: 0,
     payment_reference: null,
     bank_origin: null,
@@ -178,7 +213,9 @@ function givenHistory(rows: unknown[]) {
 }
 
 /** Contexto completo (seats, trips, routes, agencies) para un intento. */
-function givenTripContext() {
+function givenTripContext(
+  tripOverrides: Record<string, any> = {},
+) {
   harness.push('seats', {
     data: [
       { id: SEAT_A1, seat_code: 'A1' },
@@ -187,7 +224,17 @@ function givenTripContext() {
     error: null,
   });
   harness.push('trips', {
-    data: [{ id: TRIP_ID, route_id: ROUTE_ID, departure_time: '2026-12-01T08:00:00.000Z' }],
+    data: [
+      {
+        id: TRIP_ID,
+        route_id: ROUTE_ID,
+        departure_time: '2026-12-01T08:00:00.000Z',
+        // MKT-010.1: vencimientos EN VIVO del viaje (plan dos partes).
+        deposit_deadline: null,
+        balance_deadline: null,
+        ...tripOverrides,
+      },
+    ],
     error: null,
   });
   harness.push('routes', {
@@ -209,6 +256,7 @@ function paymentRow(overrides: Record<string, any> = {}) {
     amount_cents: 4040,
     currency: 'COP',
     verified_at: '2026-01-02T10:00:00.000Z',
+    stage: 'full',
     ...overrides,
   };
 }
@@ -222,6 +270,59 @@ function reservationRow(overrides: Record<string, any> = {}) {
     created_at: '2026-01-02T10:00:00.000Z',
     ...overrides,
   };
+}
+
+/**
+ * Payload EXACTO de `reservation_payment_progress` (RPC 106): montos,
+ * porcentajes y vencimientos server-side; `overdue` solo informativo
+ * (nunca cancela) y `seats_held` informa el estado real de los asientos.
+ */
+function progressPayload(overrides: Record<string, any> = {}) {
+  return {
+    reservation_id: RESERVATION_ID,
+    reservation_status: 'confirmed',
+    payment_status: 'partial',
+    plan: 'two_stage',
+    passenger_count: 2,
+    total_cents: 4040,
+    deposit_cents: 2020,
+    deposit_verified_at: '2026-01-02T10:00:00.000Z',
+    paid_cents: 2020,
+    balance_cents: 2020,
+    deposit_pct: 50,
+    balance_pct: 50,
+    deposit_deadline: '2026-12-30T00:00:00.000Z',
+    balance_deadline: '2026-12-31T00:00:00.000Z',
+    deposit_overdue: false,
+    balance_overdue: false,
+    seats_held: true,
+    payments: [
+      {
+        id: 'pay-deposit-1',
+        stage: 'deposit',
+        status: 'verified',
+        amount_cents: 2020,
+        currency: 'COP',
+        external_reference: '00123456789',
+        bank_origin: 'Banco de Venezuela',
+        payment_datetime: '2026-01-02T09:00:00.000Z',
+        submitted_at: '2026-01-02T09:00:00.000Z',
+        verified_at: '2026-01-02T10:00:00.000Z',
+        rejection_reason: null,
+      },
+    ],
+    agency: { id: AGENCY_ID, name: 'Rutas del Sol', whatsapp_phone: null },
+    ...overrides,
+  };
+}
+
+/** Fila de pago de verificación en dos partes (etapa deposit). */
+function depositVerifyPaymentRow(overrides: Record<string, any> = {}) {
+  return paymentRow({
+    amount_cents: 2020,
+    stage: 'deposit',
+    ...overrides,
+  });
 }
 
 async function startServer(): Promise<Server> {
@@ -418,6 +519,7 @@ describe('GET /api/public/checkout/attempts — historial de compras (RT-01)', (
       amount_cents: 4040,
       currency: 'COP',
       aprobado_en: '2026-01-02T10:00:00.000Z',
+      stage: 'full',
     });
     expect(item.trip).toEqual({
       id: TRIP_ID,
@@ -681,6 +783,346 @@ describe('GET /api/public/checkout/attempts — historial de compras (RT-01)', (
     }
     expect(attemptChains[0].calls).toContainEqual({ method: 'range', args: [5, 10] });
     expect(attemptChains[1].calls).toContainEqual({ method: 'range', args: [10, 15] });
+  });
+
+  // ── MKT-010.1 · Plan de pago en dos partes ────────────────────────────────
+
+  it('two_stage sin reserva: snapshot del intento, vencimientos del viaje y SIN invocar la RPC', async () => {
+    givenHistory([
+      attemptRow({
+        payment_plan: 'two_stage',
+        deposit_cents: 1010,
+        amount_cents: 1010,
+      }),
+    ]);
+    givenTripContext({
+      deposit_deadline: '2099-06-30T00:00:00.000Z',
+      balance_deadline: '2099-07-31T00:00:00.000Z',
+    });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    expect(item.plan).toEqual({
+      payment_plan: 'two_stage',
+      deposit_cents: 1010,
+      saldo_cents: 3030,
+      total_cents: 4040,
+      paid_cents: 0,
+      pendiente_cents: 4040,
+      deposit_pct: 25,
+      balance_pct: 75,
+      deposit_deadline: '2099-06-30T00:00:00.000Z',
+      balance_deadline: '2099-07-31T00:00:00.000Z',
+      deposit_overdue: false,
+      balance_overdue: false,
+      seats_held: null,
+      deposit_verified_at: null,
+    });
+    // Sin reserva no hay nada verificado que consultar: la RPC jamás se
+    // invoca y el estado sigue siendo el de siempre.
+    expect(harness.rpcCalls()).toHaveLength(0);
+    expect(item.estado).toBe('pendiente_comprobante');
+    expect(item.accion).toBe('enviar_comprobante');
+    expect(item.pago).toBeNull();
+    expect(item.reserva).toBeNull();
+  });
+
+  it('two_stage con vencimiento vencido NO cancela: el flag es solo informativo', async () => {
+    givenHistory([
+      attemptRow({
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        amount_cents: 2020,
+      }),
+    ]);
+    givenTripContext({
+      deposit_deadline: PAST,
+      balance_deadline: PAST,
+    });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    expect(item.plan.deposit_overdue).toBe(true);
+    expect(item.plan.balance_overdue).toBe(true);
+    // Nunca auto-cancelación: el estado y la acción no cambian por el
+    // retraso; la agencia es quien decide.
+    expect(item.estado).toBe('pendiente_comprobante');
+    expect(item.accion).toBe('enviar_comprobante');
+    expect(item.status).toBe('created');
+    expect(item.reserva).toBeNull();
+    expect(harness.rpcCalls()).toHaveLength(0);
+  });
+
+  it('two_stage con reserva usa la RPC de progreso y ofrece pagar_saldo', async () => {
+    givenHistory([
+      attemptRow({
+        status: 'verified',
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        amount_cents: 2020,
+        proof_count: 1,
+        proof_submitted_at: '2026-01-01T10:05:00.000Z',
+        verified_at: '2026-01-02T10:00:00.000Z',
+        closed_at: '2026-01-02T10:00:00.000Z',
+      }),
+    ]);
+    givenTripContext();
+    harness.push('payments', {
+      data: [depositVerifyPaymentRow()],
+      error: null,
+    });
+    harness.push('reservations', {
+      data: [reservationRow({ payment_status: 'partial' })],
+      error: null,
+    });
+    harness.pushRpc(RPC_PROGRESS, { data: progressPayload(), error: null });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    // La RPC se invoca UNA vez con la reserva derivada en el servidor y
+    // el customer de la sesión (nunca ids del cliente).
+    expect(harness.rpcCalls()).toHaveLength(1);
+    expect(harness.rpcCalls()[0].fn).toBe(RPC_PROGRESS);
+    expect(harness.rpcCalls()[0].args).toEqual({
+      p_reservation_id: RESERVATION_ID,
+      p_customer_id: CUSTOMER_ID,
+    });
+    // El plan espeja el progreso server-side: nada calculado en el cliente.
+    expect(item.plan).toEqual({
+      payment_plan: 'two_stage',
+      deposit_cents: 2020,
+      saldo_cents: 2020,
+      total_cents: 4040,
+      paid_cents: 2020,
+      pendiente_cents: 2020,
+      deposit_pct: 50,
+      balance_pct: 50,
+      deposit_deadline: '2026-12-30T00:00:00.000Z',
+      balance_deadline: '2026-12-31T00:00:00.000Z',
+      deposit_overdue: false,
+      balance_overdue: false,
+      seats_held: true,
+      deposit_verified_at: '2026-01-02T10:00:00.000Z',
+    });
+    // La acción principal pasa a ser el saldo; el estado sigue confirmado.
+    expect(item.estado).toBe('reserva_confirmada');
+    expect(item.accion).toBe('pagar_saldo');
+    expect(item.mensaje).toBe(
+      'Reserva confirmada con depósito aprobado: falta saldar el saldo.',
+    );
+    expect(item.pago.stage).toBe('deposit');
+    expect(item.reserva.payment_status).toBe('partial');
+  });
+
+  it('two_stage con saldo en revisión cambia el mensaje, no la acción', async () => {
+    givenHistory([
+      attemptRow({
+        status: 'verified',
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        amount_cents: 2020,
+        proof_count: 1,
+        verified_at: '2026-01-02T10:00:00.000Z',
+        closed_at: '2026-01-02T10:00:00.000Z',
+      }),
+    ]);
+    givenTripContext();
+    harness.push('payments', {
+      data: [depositVerifyPaymentRow()],
+      error: null,
+    });
+    harness.push('reservations', { data: [reservationRow()], error: null });
+    harness.pushRpc(RPC_PROGRESS, {
+      data: progressPayload({
+        payments: [
+          progressPayload().payments[0],
+          {
+            id: 'pay-balance-1',
+            stage: 'balance',
+            status: 'pending',
+            amount_cents: 2020,
+            currency: 'COP',
+            external_reference: '00987654321',
+            bank_origin: 'Banco de Venezuela',
+            payment_datetime: '2026-01-05T09:00:00.000Z',
+            submitted_at: '2026-01-05T09:30:00.000Z',
+            verified_at: null,
+            rejection_reason: null,
+          },
+        ],
+      }),
+      error: null,
+    });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    expect(item.accion).toBe('pagar_saldo');
+    expect(item.mensaje).toBe(
+      'Reserva confirmada con depósito aprobado: tu comprobante de saldo está en revisión.',
+    );
+    expect(item.plan.pendiente_cents).toBe(2020);
+  });
+
+  it('two_stage con el saldo ya cubierto recupera ver_reserva y el mensaje de pago completo', async () => {
+    givenHistory([
+      attemptRow({
+        status: 'verified',
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        amount_cents: 2020,
+        proof_count: 1,
+        verified_at: '2026-01-02T10:00:00.000Z',
+        closed_at: '2026-01-02T10:00:00.000Z',
+      }),
+    ]);
+    givenTripContext();
+    harness.push('payments', {
+      data: [depositVerifyPaymentRow()],
+      error: null,
+    });
+    harness.push('reservations', {
+      data: [reservationRow({ payment_status: 'fully_paid' })],
+      error: null,
+    });
+    harness.pushRpc(RPC_PROGRESS, {
+      data: progressPayload({
+        payment_status: 'paid',
+        paid_cents: 4040,
+        balance_cents: 0,
+        balance_pct: 0,
+        balance_overdue: false,
+        payments: [
+          progressPayload().payments[0],
+          {
+            id: 'pay-balance-1',
+            stage: 'balance',
+            status: 'verified',
+            amount_cents: 2020,
+            currency: 'COP',
+            external_reference: '00987654321',
+            bank_origin: 'Banco de Venezuela',
+            payment_datetime: '2026-01-05T09:00:00.000Z',
+            submitted_at: '2026-01-05T09:30:00.000Z',
+            verified_at: '2026-01-06T10:00:00.000Z',
+            rejection_reason: null,
+          },
+        ],
+      }),
+      error: null,
+    });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    expect(item.plan.pendiente_cents).toBe(0);
+    expect(item.plan.paid_cents).toBe(4040);
+    expect(item.accion).toBe('ver_reserva');
+    expect(item.mensaje).toBe(
+      'Reserva confirmada: tu pago está completo en su totalidad.',
+    );
+    expect(item.estado).toBe('reserva_confirmada');
+  });
+
+  it('un fallo de la RPC de progreso responde 500 sin montos a medias', async () => {
+    givenHistory([
+      attemptRow({
+        status: 'verified',
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        amount_cents: 2020,
+        proof_count: 1,
+        verified_at: '2026-01-02T10:00:00.000Z',
+        closed_at: '2026-01-02T10:00:00.000Z',
+      }),
+    ]);
+    givenTripContext();
+    harness.push('payments', {
+      data: [depositVerifyPaymentRow()],
+      error: null,
+    });
+    harness.push('reservations', { data: [reservationRow()], error: null });
+    harness.pushRpc(RPC_PROGRESS, {
+      data: null,
+      error: { message: 'ERR_PAYMENT_NOT_OWNER: not yours' },
+    });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(500);
+    expect(body.error.code).toBe('CHECKOUT_ERROR');
+    expect(body.error.message).not.toContain('ERR_');
+    expect(body.error.message).not.toContain('not yours');
+    // Nunca se devuelve un item con plan a medias.
+    expect(body.items).toBeUndefined();
+  });
+
+  it('el plan único legado jamás invoca la RPC de progreso', async () => {
+    givenHistory([
+      attemptRow({
+        status: 'verified',
+        proof_count: 1,
+        verified_at: '2026-01-02T10:00:00.000Z',
+        closed_at: '2026-01-02T10:00:00.000Z',
+      }),
+    ]);
+    givenTripContext();
+    harness.push('payments', { data: [paymentRow()], error: null });
+    harness.push('reservations', { data: [reservationRow()], error: null });
+
+    const { status, body } = await requestJson(port, HISTORY_URL);
+
+    expect(status).toBe(200);
+    const item = body.items[0];
+    expect(harness.rpcCalls()).toHaveLength(0);
+    expect(item.plan).toEqual({
+      payment_plan: 'single',
+      deposit_cents: null,
+      saldo_cents: null,
+      total_cents: 4040,
+      paid_cents: 4040,
+      pendiente_cents: 0,
+      deposit_pct: null,
+      balance_pct: null,
+      deposit_deadline: null,
+      balance_deadline: null,
+      deposit_overdue: false,
+      balance_overdue: false,
+      seats_held: true,
+      deposit_verified_at: null,
+    });
+    expect(item.accion).toBe('ver_reserva');
+    expect(item.pago.stage).toBe('full');
+  });
+
+  it('pago.stage expone la columna etapa y una forma desconocida cae a full', async () => {
+    givenHistory([attemptRow({ status: 'pending_review', proof_count: 1 })]);
+    harness.push('payments', {
+      data: [paymentRow({ status: 'verified', stage: 'deposit' })],
+      error: null,
+    });
+
+    const deposit = await requestJson(port, HISTORY_URL);
+    expect(deposit.body.items[0].pago.stage).toBe('deposit');
+
+    givenHistory([attemptRow({ status: 'pending_review', proof_count: 1 })]);
+    harness.push('payments', {
+      data: [paymentRow({ status: 'verified', stage: 'valor_desconocido' })],
+      error: null,
+    });
+
+    const unknown = await requestJson(port, HISTORY_URL);
+    expect(unknown.body.items[0].pago.stage).toBe('full');
+    // Sin reserva no se invoca la RPC en ninguno de los dos casos.
+    expect(harness.rpcCalls()).toHaveLength(0);
   });
 
   // ── Seguridad ──────────────────────────────────────────────────────────────

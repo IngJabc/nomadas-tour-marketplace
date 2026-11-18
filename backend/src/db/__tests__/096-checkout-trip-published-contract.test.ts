@@ -95,6 +95,12 @@ describe('096 checkout trip published contract (TRIP-PUB-001.2)', () => {
       // comentarios): v_trip_is_published solo existe dentro de
       // create_checkout_attempt si 096 esta aplicado. Una migracion
       // duplicada rompe la asercion.
+      //
+      // MKT-010.1 (106): reemplazar create_checkout_attempt conserva la
+      // validacion DENTRO de la MISMA firma (es la unica forma de no
+      // perder la garantia al migrar la funcion). Se acepta un sucesor
+      // SOLO si la variable vive en su cuerpo de create_checkout_attempt;
+      // jamas en otra funcion ni en una migracion paralela.
       const implementors = readdirSync(tourMigrationsDirectory)
         .filter((filename) => filename.endsWith('.sql'))
         .filter((filename) =>
@@ -104,10 +110,22 @@ describe('096 checkout trip published contract (TRIP-PUB-001.2)', () => {
         );
       expect(
         implementors,
-        `Se esperaba exactamente una implementacion de v_trip_is_published; encontradas: ${
+        `Se esperaba la implementacion canonica de v_trip_is_published; encontradas: ${
           implementors.join(', ') || '(ninguna)'
         }`,
-      ).toEqual([migrationFilename]);
+      ).toContain(migrationFilename);
+
+      for (const filename of implementors) {
+        const sql = readSql(join(tourMigrationsDirectory, filename));
+        const code = stripComments(sql);
+        const total = code.split('v_trip_is_published BOOLEAN').length - 1;
+        const inCreateAttempt =
+          extractCreateAttemptBody(sql).split('v_trip_is_published BOOLEAN').length - 1;
+        expect(
+          inCreateAttempt,
+          `${filename} declara v_trip_is_published fuera de create_checkout_attempt`,
+        ).toBe(total);
+      }
     });
   });
 

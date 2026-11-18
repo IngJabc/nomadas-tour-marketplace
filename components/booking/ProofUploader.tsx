@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { FileText, LoaderCircle, Upload } from 'lucide-react';
 import {
   checkoutApi,
+  type SubmitBalancePaymentResult,
   type SubmitCheckoutProofPayload,
   type SubmitCheckoutProofResult,
 } from '@/lib/api';
@@ -244,7 +245,7 @@ export interface ProofUploaderInitialValues {
   payment_datetime?: string | null;
 }
 
-export interface ProofUploaderProps {
+export interface ProofUploaderProps<R = SubmitCheckoutProofResult> {
   attemptId: string;
   /**
    * Comprobantes que aún puede enviar el cliente (1..3). Se conserva en la
@@ -253,7 +254,7 @@ export interface ProofUploaderProps {
    */
   remainingSubmissions: number;
   /** El envío fue aceptado: persiste el marcador de checkout pendiente. */
-  onSubmitted: (result: SubmitCheckoutProofResult) => void;
+  onSubmitted: (result: R) => void;
   /** El servidor ya tenía un comprobante en revisión (409). */
   onAlreadySubmitted?: () => void;
   /**
@@ -275,6 +276,19 @@ export interface ProofUploaderProps {
    * del CTA, a ancho completo.
    */
   secondaryAction?: React.ReactNode;
+  /**
+   * MKT-010.1: reemplaza el envío por defecto contra `…/proof` por otro
+   * endpoint con el MISMO contrato multipart (p. ej. `…/balance`, el
+   * comprobante del SALDO). La validación, la huella y la `Idempotency-Key`
+   * por contenido son idénticas; solo cambia adónde viaja el resultado,
+   * que llega tal cual a `onSubmitted` (por eso el componente es
+   * genérico en `R`). Ausente = flujo de siempre.
+   */
+  submit?: (
+    file: File,
+    reconciliation: SubmitCheckoutProofPayload,
+    idempotencyKey: string,
+  ) => Promise<R>;
 }
 
 interface IdempotencySlot {
@@ -301,14 +315,15 @@ const LABEL_CLASSES =
  * El cliente solo aporta archivo + conciliación: monto, moneda, ventana,
  * contador y estado los decide el RPC 087.
  */
-export function ProofUploader({
+export function ProofUploader<R = SubmitCheckoutProofResult>({
   attemptId,
   onSubmitted,
   onAlreadySubmitted,
   initialValues,
   onSubmitError,
   secondaryAction,
-}: ProofUploaderProps) {
+  submit,
+}: ProofUploaderProps<R>) {
   const [file, setFile] = useState<File | null>(null);
   // Miniatura del comprobante seleccionado (solo imágenes). El object URL se
   // crea/destruye con el archivo; entornos sin createObjectURL (jsdom) usan
@@ -414,12 +429,18 @@ export function ProofUploader({
     setError(null);
     try {
       const key = await keyFor(file);
-      const result = await checkoutApi.submitProof(
-        attemptId,
-        file,
-        { ...reconciliation, payment_datetime: isoDatetime },
-        key,
-      );
+      const payload = { ...reconciliation, payment_datetime: isoDatetime };
+      // Flujo por defecto: comprobante del intento (…/proof). Con `submit`
+      // (MKT-010.1) el MISMO formulario y la MISMA idempotencia viajan al
+      // endpoint alternativo (…/balance): solo cambia el destino.
+      const result = submit
+        ? await submit(file, payload, key)
+        : ((await checkoutApi.submitProof(
+            attemptId,
+            file,
+            payload,
+            key,
+          )) as unknown as R);
       onSubmitted(result);
     } catch (err) {
       // Cada fallo se notifica ANTES de decidir el copy: la pantalla de
@@ -428,14 +449,22 @@ export function ProofUploader({
       if (
         err instanceof ApiError &&
         (err.code === 'CHECKOUT_PROOF_PENDING' ||
-          err.code === 'CHECKOUT_ATTEMPT_CLOSED')
+          err.code === 'CHECKOUT_ATTEMPT_CLOSED' ||
+          // MKT-010.1: ya hay un comprobante de SALDO en revisión (409 del
+          // RPC de saldo); mismo tratamiento de "ya enviado".
+          err.code === 'BALANCE_PAYMENT_PENDING')
       ) {
         // El servidor ya tenía un comprobante en revisión: pasar a la vista
         // de seguimiento sin afirmar un éxito que esta respuesta no trajo.
         onAlreadySubmitted?.();
         return;
       }
-      if (err instanceof ApiError && err.code === 'CHECKOUT_IDEMPOTENCY_CONFLICT') {
+      if (
+        err instanceof ApiError &&
+        (err.code === 'CHECKOUT_IDEMPOTENCY_CONFLICT' ||
+          // MKT-010.1: conflicto de idempotencia del flujo del saldo.
+          err.code === 'PAYMENT_IDEMPOTENCY_CONFLICT')
+      ) {
         // Conflicto real del servidor con esta MISMA clave: jamás se genera
         // otra clave automáticamente para repetir la operación.
         setError(

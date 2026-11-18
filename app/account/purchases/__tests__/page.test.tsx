@@ -144,6 +144,23 @@ function makeItem(overrides: Partial<PurchaseItemDto> = {}): PurchaseItemDto {
     comprobante: null,
     pago: null,
     reserva: null,
+    // MKT-010.1: plan único por defecto (los tests two_stage lo pisan).
+    plan: {
+      payment_plan: 'single',
+      deposit_cents: null,
+      saldo_cents: null,
+      total_cents: 4040,
+      paid_cents: 0,
+      pendiente_cents: 4040,
+      deposit_pct: null,
+      balance_pct: null,
+      deposit_deadline: null,
+      balance_deadline: null,
+      deposit_overdue: false,
+      balance_overdue: false,
+      seats_held: null,
+      deposit_verified_at: null,
+    },
     ventana: { expires_at: DEPARTURE, vencida: false },
     created_at: CREATED_AT,
     closed_at: null,
@@ -254,6 +271,7 @@ describe('MisComprasPage (RT-02)', () => {
             amount_cents: 5000,
             currency: 'COP',
             aprobado_en: '2026-10-16T12:00:00.000Z',
+            stage: 'full',
           },
           reserva: {
             id: 'res-1',
@@ -846,6 +864,7 @@ describe('MisComprasPage (RT-02)', () => {
             amount_cents: 5000,
             currency: 'COP',
             aprobado_en: '2026-10-16T12:00:00.000Z',
+            stage: 'full',
           },
           reserva: {
             id: 'res-1',
@@ -1039,6 +1058,7 @@ describe('MisComprasPage — compras independientes en paralelo (MKT-009)', () =
         amount_cents: 4040,
         currency: 'COP',
         aprobado_en: '2026-10-16T12:00:00.000Z',
+        stage: 'full',
       },
       reserva: {
         id: 'res-1',
@@ -1775,5 +1795,232 @@ describe('MisComprasPage — notificaciones de pago sin leer (Task 8G)', () => {
     await waitFor(() =>
       expect(screen.queryByText('Notificación nueva')).not.toBeInTheDocument(),
     );
+  });
+});
+
+// ── MKT-010.1 · Plan en dos partes en el historial de compras ─────────────────
+
+describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
+  /** Item two_stage con reserva confirmada y saldo pendiente. */
+  function makeTwoStageItem(
+    overrides: Partial<PurchaseItemDto> = {},
+  ): PurchaseItemDto {
+    return makeItem({
+      attempt_id: 'att-dos',
+      estado: 'reserva_confirmada',
+      status: 'verified',
+      accion: 'pagar_saldo',
+      mensaje: 'Reserva confirmada con depósito aprobado: falta saldar el saldo.',
+      monto: { unit_price: 2020, amount_cents: 2020 },
+      pago: {
+        id: 'pay-dep',
+        estado: 'aprobado',
+        amount_cents: 2020,
+        currency: 'COP',
+        aprobado_en: '2026-01-02T10:00:00.000Z',
+        stage: 'deposit',
+      },
+      reserva: {
+        id: 'res-1',
+        status: 'reserved',
+        payment_status: 'partial',
+        ticket_code: 'ABCD1234',
+        created_at: '2026-01-02T10:00:00.000Z',
+      },
+      plan: {
+        payment_plan: 'two_stage',
+        deposit_cents: 2020,
+        saldo_cents: 2020,
+        total_cents: 4040,
+        paid_cents: 2020,
+        pendiente_cents: 2020,
+        deposit_pct: 50,
+        balance_pct: 50,
+        deposit_deadline: '2026-12-30T00:00:00.000Z',
+        balance_deadline: '2026-12-31T00:00:00.000Z',
+        deposit_overdue: false,
+        balance_overdue: false,
+        seats_held: true,
+        deposit_verified_at: '2026-01-02T10:00:00.000Z',
+      },
+      ...overrides,
+    });
+  }
+
+  it('pinta el bloque con etapas, porcentajes, pagado y falta saldar (server-side)', async () => {
+    listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent('Plan de pago en dos partes');
+    expect(block).toHaveTextContent('Depósito (etapa 1) · 50%');
+    expect(block).toHaveTextContent('Saldo (etapa 2) · 50%');
+    expect(block).toHaveTextContent(formatSeatPrice(2020));
+    expect(block).toHaveTextContent('Pagado');
+    expect(block).toHaveTextContent(formatSeatPrice(2020));
+    expect(block).toHaveTextContent('Falta saldar');
+    // El depósito ya fue aprobado: se muestra su fecha, no un vencimiento.
+    expect(block).toHaveTextContent('Depósito aprobado el');
+    // Los montos del bloque vienen pintados tal cual los calculó el
+    // backend (etapas y pagado); el total vive en el pie de la tarjeta.
+    expect(block).toHaveTextContent(formatSeatPrice(2020));
+  });
+
+  it('enlace "Pagar saldo" hacia la página del saldo con el attempt_id', async () => {
+    listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    const link = await screen.findByRole('link', { name: /Pagar saldo/ });
+    expect(link).toHaveAttribute(
+      'href',
+      '/account/purchases/att-dos/balance',
+    );
+    // Una sola acción principal con este peso visual en la tarjeta.
+    expect(
+      screen.getAllByRole('link', { name: /Pagar saldo/ }),
+    ).toHaveLength(1);
+  });
+
+  it('omite el CTA de saldo cuando el backend no ofrece accion pagar_saldo', async () => {
+    listPurchases.mockResolvedValue(
+      view([makeTwoStageItem({ accion: 'ver_reserva' })]),
+    );
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Pagar saldo/ }),
+    ).not.toBeInTheDocument();
+    // La reserva sigue visible con su acción de boleto.
+    expect(
+      screen.getByRole('link', { name: /Ver boleto/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('el importe total del pie usa plan.total_cents (no el depósito snapshot)', async () => {
+    listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
+    // monto.amount_cents = 2020 (depósito); el total real es 4040.
+    const footer = screen.getByText('Importe total').parentElement!;
+    expect(footer).toHaveTextContent(formatSeatPrice(4040));
+    expect(footer).not.toHaveTextContent(formatSeatPrice(2020));
+  });
+
+  it('prefija el pago con su etapa: Depósito · aprobado', async () => {
+    listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Depósito · Pago aprobado/),
+    ).toBeInTheDocument();
+    // Nunca etiqueta un depósito como pago total.
+    expect(screen.queryByText(/^Pago aprobado/)).not.toBeInTheDocument();
+  });
+
+  it('muestra asientos reservados a la espera del saldo (seats_held)', async () => {
+    listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent(
+      'Asientos reservados a la espera del saldo.',
+    );
+  });
+
+  it('el vencimiento del saldo vencido es INFORMATIVO: nunca pide cancelar', async () => {
+    listPurchases.mockResolvedValue(
+      view([
+        makeTwoStageItem({
+          plan: {
+            ...makeTwoStageItem().plan,
+            balance_overdue: true,
+            deposit_overdue: true,
+          },
+        }),
+      ]),
+    );
+
+    render(<MisComprasPage />);
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent('El plazo del saldo venció.');
+    expect(block).toHaveTextContent(
+      'La agencia decide sobre este pago: tus asientos siguen reservados.',
+    );
+    // Sin acciones destructivas ni textos de cancelación automática.
+    expect(block.textContent).not.toMatch(/cancela/i);
+    expect(
+      screen.queryByRole('link', { name: /Cancelar/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('sin reserva (plan two_stage en creación) no ofrece pagar_saldo', async () => {
+    listPurchases.mockResolvedValue(
+      view([
+        makeTwoStageItem({
+          estado: 'pendiente_comprobante',
+          status: 'created',
+          accion: 'enviar_comprobante',
+          mensaje: 'Compra iniciada: falta enviar el comprobante de pago.',
+          pago: null,
+          reserva: null,
+          plan: {
+            ...makeTwoStageItem().plan,
+            paid_cents: 0,
+            pendiente_cents: 4040,
+            saldo_cents: 3030,
+            deposit_pct: 25,
+            balance_pct: 75,
+            deposit_verified_at: null,
+            seats_held: null,
+          },
+        }),
+      ]),
+    );
+
+    render(<MisComprasPage />);
+
+    const block = await screen.findByTestId('plan-dos-partes');
+    expect(block).toHaveTextContent('Depósito (etapa 1) · 25%');
+    expect(block).toHaveTextContent('Saldo (etapa 2) · 75%');
+    expect(block).toHaveTextContent('Depósito: vence el');
+    // Sin reserva no hay saldo que pagar: el CTA nace solo del backend.
+    expect(
+      screen.queryByRole('link', { name: /Pagar saldo/ }),
+    ).not.toBeInTheDocument();
+    // El estado del comprobante sigue siendo el de siempre.
+    expect(screen.getByText('Comprobante pendiente')).toBeInTheDocument();
+    expect(
+      screen.getByText('Compra iniciada: falta enviar el comprobante de pago.'),
+    ).toBeInTheDocument();
+    // Sin reserva no se inventa boleto ni bloque de "seats held".
+    expect(screen.queryByText(/Boleto/)).not.toBeInTheDocument();
+    expect(block).not.toHaveTextContent('Asientos reservados');
+  });
+
+  it('el plan único jamás renderiza el bloque de dos partes', async () => {
+    listPurchases.mockResolvedValue(view([makeItem()]));
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByText('Barquisimeto → Caracas')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('plan-dos-partes'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Pagar saldo/ }),
+    ).not.toBeInTheDocument();
+    // El pie sigue usando el importe único de siempre.
+    const footer = screen.getByText('Importe total').parentElement!;
+    expect(footer).toHaveTextContent(formatSeatPrice(4040));
   });
 });

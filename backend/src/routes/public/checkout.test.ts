@@ -199,6 +199,10 @@ const RPC_CREATE = 'create_checkout_attempt';
 const RPC_PROOF = 'submit_checkout_proof';
 const RPC_CANCEL = 'cancel_checkout_attempt';
 const RPC_CLEANUP = 'cleanup_expired_checkout_attempts';
+// MKT-010.1: RPCs del plan en dos partes (migración 106).
+const RPC_PROGRESS = 'reservation_payment_progress';
+const RPC_BALANCE = 'submit_reservation_balance_payment';
+const RESERVATION_ID = 'rrrrrrrr-rrrr-4rrr-8rrr-rrrrrrrrrrr1';
 const ALLOWED_ORIGIN = 'http://localhost:3002';
 
 function pngBytes(payload = 48): Buffer {
@@ -314,6 +318,105 @@ function attemptViewRow(overrides: Record<string, any> = {}) {
   };
 }
 
+/**
+ * MKT-010.1: intento elegible para el flujo del SALDO (etapa 2):
+ * verificado por la agencia y con plan en dos partes.
+ */
+function balanceAttemptRow(overrides: Record<string, any> = {}) {
+  return {
+    id: ATTEMPT_ID,
+    customer_id: CUSTOMER_ID,
+    status: 'verified',
+    payment_plan: 'two_stage',
+    ...overrides,
+  };
+}
+
+/**
+ * MKT-010.1: pago de verificación del intento (`mkt007:{attempt}:verify`)
+ * que enlaza el intento con la RESERVA definitiva.
+ */
+function verifyPaymentRow(overrides: Record<string, any> = {}) {
+  return {
+    id: 'pay-verify-1',
+    reservation_id: RESERVATION_ID,
+    status: 'verified',
+    ...overrides,
+  };
+}
+
+/**
+ * Payload EXACTO de `reservation_payment_progress` (RPC 106): montos,
+ * porcentajes y vencimientos server-side; `overdue` solo informativo.
+ */
+function progressPayload(overrides: Record<string, any> = {}) {
+  return {
+    reservation_id: RESERVATION_ID,
+    reservation_status: 'confirmed',
+    payment_status: 'partial',
+    plan: 'two_stage',
+    passenger_count: 2,
+    total_cents: 4040,
+    deposit_cents: 2020,
+    deposit_verified_at: '2026-01-02T10:00:00.000Z',
+    paid_cents: 2020,
+    balance_cents: 2020,
+    deposit_pct: 50,
+    balance_pct: 50,
+    deposit_deadline: '2026-12-30T00:00:00.000Z',
+    balance_deadline: '2026-12-31T00:00:00.000Z',
+    deposit_overdue: false,
+    balance_overdue: false,
+    seats_held: true,
+    payments: [
+      {
+        id: 'pay-deposit-1',
+        stage: 'deposit',
+        status: 'verified',
+        amount_cents: 2020,
+        currency: 'COP',
+        external_reference: '00123456789',
+        bank_origin: 'Banco de Venezuela',
+        payment_datetime: '2026-01-02T09:00:00.000Z',
+        submitted_at: '2026-01-02T09:00:00.000Z',
+        verified_at: '2026-01-02T10:00:00.000Z',
+        rejection_reason: null,
+      },
+    ],
+    agency: {
+      id: AGENCY_ID,
+      name: 'Agencia Central',
+      whatsapp_phone: '+584121234567',
+    },
+    ...overrides,
+  };
+}
+
+/** Respuesta fresca de `submit_reservation_balance_payment` (106). */
+function submittedBalance(overrides: Record<string, any> = {}) {
+  return {
+    data: {
+      payment_id: 'pay-balance-1',
+      reservation_id: RESERVATION_ID,
+      status: 'pending',
+      stage: 'balance',
+      amount_cents: 2020,
+      currency: 'COP',
+      proof_url: `${RESERVATION_ID}/digest.png`,
+      payment_reference: '00123456789',
+      bank_origin: 'Banco de Venezuela',
+      payment_datetime: '2020-01-01T10:00:00.000Z',
+      submitted_at: '2026-01-05T10:00:00.000Z',
+      total_cents: 4040,
+      paid_cents: 2020,
+      balance_cents: 2020,
+      idempotent: false,
+      ...overrides,
+    },
+    error: null,
+  };
+}
+
 function givenAuthAs(userId: string) {
   harness.setUser(() =>
     Promise.resolve({ data: { user: { id: userId } }, error: null }),
@@ -408,6 +511,55 @@ async function postProof(
 
   const res = await fetch(
     `http://127.0.0.1:${port}/api/public/checkout/attempts/${ATTEMPT_ID}/proof`,
+    { method: 'POST', headers, body: form },
+  );
+  return {
+    status: res.status,
+    body: (await res.json()) as Record<string, any>,
+  };
+}
+
+/**
+ * MKT-010.1: multipart del SALDO (etapa 2). Mismo contrato que
+ * /proof: archivo `proof` + los tres datos de conciliación.
+ */
+async function postBalance(
+  port: number,
+  options: {
+    token?: string | null;
+    idempotencyKey?: string | null;
+    file?: { name: string; type: string; data: Buffer } | null;
+    fields?: Record<string, string | null>;
+  } = {},
+) {
+  const form = new FormData();
+  const file = options.file === undefined
+    ? { name: 'comprobante.png', type: 'image/png', data: pngBytes() }
+    : options.file;
+  if (file) {
+    form.append('proof', new Blob([file.data], { type: file.type }), file.name);
+  }
+  const fields = {
+    payment_reference: '00123456789',
+    bank_origin: 'Banco de Venezuela',
+    payment_datetime: '2020-01-01T10:00:00.000Z',
+    ...options.fields,
+  } as Record<string, string | null>;
+  for (const [name, value] of Object.entries(fields)) {
+    if (value === null) continue;
+    form.append(name, value);
+  }
+
+  const headers: Record<string, string> = {};
+  if (options.token !== null) {
+    headers.Authorization = `Bearer ${options.token ?? 'token'}`;
+  }
+  if (options.idempotencyKey) {
+    headers['Idempotency-Key'] = options.idempotencyKey;
+  }
+
+  const res = await fetch(
+    `http://127.0.0.1:${port}/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
     { method: 'POST', headers, body: form },
   );
   return {
@@ -1452,6 +1604,627 @@ describe('API pública de checkout (MKT-007)', () => {
 
       expect(status).toBe(403);
       expect(harness.uploads()).toHaveLength(0);
+    });
+  });
+
+  // ── MKT-010.1 · GET/POST /attempts/:attemptId/balance ─────────────────────
+
+  describe('GET /api/public/checkout/attempts/:attemptId/balance (MKT-010.1)', () => {
+    it('devuelve el progreso server-side del dueño (200)', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_PROGRESS, { data: progressPayload(), error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.reservation_id).toBe(RESERVATION_ID);
+      expect(body.plan).toBe('two_stage');
+      expect(body.total_cents).toBe(4040);
+      expect(body.deposit_cents).toBe(2020);
+      expect(body.deposit_pct).toBe(50);
+      expect(body.balance_cents).toBe(2020);
+      expect(body.balance_pct).toBe(50);
+      expect(body.seats_held).toBe(true);
+      expect(body.agency.whatsapp_phone).toBe('+584121234567');
+      // La reserva se deriva en el SERVIDOR; el cliente jamás la envía.
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(1);
+      expect(lastRpcCall().args).toEqual({
+        p_reservation_id: RESERVATION_ID,
+        p_customer_id: CUSTOMER_ID,
+      });
+    });
+
+    it('resuelve intento → reserva con ownership en el query (404 uniforme)', async () => {
+      // Intento inexistente O de otra persona: la consulta filtra por
+      // customer_id, así que ambos casos devuelven null → mismo 404.
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(404);
+      expect(body.error.code).toBe('CHECKOUT_ATTEMPT_NOT_FOUND');
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+
+      const eqCalls = harness
+        .chains()
+        .filter((chain) => chain.table === 'checkout_attempts')
+        .flatMap((chain) => chain.calls)
+        .filter((call) => call.method === 'eq')
+        .map((call) => call.args);
+      expect(eqCalls).toContainEqual(['id', ATTEMPT_ID]);
+      expect(eqCalls).toContainEqual(['customer_id', CUSTOMER_ID]);
+    });
+
+    it('409 BALANCE_NOT_AVAILABLE si el depósito aún no fue aprobado', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow({ status: 'pending_review' }),
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_NOT_AVAILABLE');
+      // Ni pago de verificación ni progreso: no hay saldo que mostrar.
+      expect(
+        harness.chains().filter((chain) => chain.table === 'payments'),
+      ).toHaveLength(0);
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+    });
+
+    it('409 BALANCE_NOT_AVAILABLE para un intento de plan único', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow({ payment_plan: 'single' }),
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_NOT_AVAILABLE');
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+    });
+
+    it('409 cuando el intento verificado no tiene reserva de verificación', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      // Estado imposible en producción (verified ⇒ pago de verificación):
+      // mismo 409 genérico, sin filtrar el detalle interno.
+      harness.push('payments', { data: null, error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_NOT_AVAILABLE');
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+    });
+
+    it('mapea los RAISE de ownership de la RPC al 404 uniforme', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_PROGRESS, {
+        data: null,
+        error: { message: 'ERR_PAYMENT_NOT_OWNER: not your reservation' },
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(404);
+      expect(body.error.code).toBe('BALANCE_NOT_FOUND');
+      expect(body.error.message).not.toContain('ERR_');
+      expect(body.error.message).not.toContain('not your reservation');
+    });
+
+    it('un payload de progreso vacío responde 500 sin inventar montos', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_PROGRESS, { data: null, error: null });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('CHECKOUT_ERROR');
+    });
+
+    it('un saldo ya saldado responde 200 con balance_cents = 0', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_PROGRESS, {
+        data: progressPayload({
+          paid_cents: 4040,
+          balance_cents: 0,
+          balance_pct: 0,
+          balance_overdue: false,
+          payment_status: 'paid',
+        }),
+        error: null,
+      });
+
+      const { status, body } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(200);
+      expect(body.balance_cents).toBe(0);
+    });
+
+    it('exige autenticación y rol customer', async () => {
+      const anonymous = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+        { token: null },
+      );
+      expect(anonymous.status).toBe(401);
+
+      harness.reset();
+      harness.setUser(() =>
+        Promise.resolve({ data: { user: { id: SUPERADMIN_ID } }, error: null }),
+      );
+      givenUserRole('superadmin');
+      const superadmin = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+      expect(superadmin.status).toBe(403);
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+    });
+
+    it('rechaza un attemptId que no es UUID', async () => {
+      const { status, body } = await requestJson(
+        port,
+        '/api/public/checkout/attempts/no-es-uuid/balance',
+      );
+
+      expect(status).toBe(400);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+      expect(rpcCallsFor(RPC_PROGRESS)).toHaveLength(0);
+    });
+
+    it('nunca escribe reservations, seats ni payments (solo lectura)', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_PROGRESS, { data: progressPayload(), error: null });
+
+      const { status } = await requestJson(
+        port,
+        `/api/public/checkout/attempts/${ATTEMPT_ID}/balance`,
+      );
+
+      expect(status).toBe(200);
+      const writes = harness
+        .chains()
+        .filter((chain) =>
+          ['reservations', 'seats', 'reservation_passengers'].includes(
+            chain.table,
+          ),
+        )
+        .filter((chain) =>
+          chain.calls.some(
+            (call) =>
+              call.method === 'insert' ||
+              call.method === 'update' ||
+              call.method === 'upsert' ||
+              call.method === 'delete',
+          ),
+        );
+      expect(writes).toHaveLength(0);
+      // El progreso es SOLO lectura: el vencimiento del saldo jamás
+      // dispara cancelación ni liberación de asientos desde esta ruta.
+      const rpcFns = harness.rpcCalls().map((call) => call.fn);
+      expect(rpcFns).toEqual([RPC_PROGRESS]);
+    });
+  });
+
+  describe('POST /api/public/checkout/attempts/:attemptId/balance (MKT-010.1)', () => {
+    it('sube el comprobante a la RESERVA y llama al RPC con importe server-side (201)', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_BALANCE, submittedBalance());
+
+      const bytes = pngBytes(72);
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        file: { name: 'atacante.png', type: 'image/png', data: bytes },
+      });
+
+      expect(status).toBe(201);
+      expect(body.payment_id).toBe('pay-balance-1');
+      expect(body.stage).toBe('balance');
+      expect(body.status).toBe('pending');
+      expect(body.amount_cents).toBe(2020);
+      expect(body.balance_cents).toBe(2020);
+      expect(body.idempotent).toBe(false);
+
+      // La ruta del comprobante se deriva de la RESERVA (no del intento).
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      expect(harness.uploads()).toHaveLength(1);
+      expect(harness.uploads()[0].bucket).toBe('payment-proofs');
+      expect(harness.uploads()[0].path).toBe(`${RESERVATION_ID}/${digest}.png`);
+      expect(harness.uploads()[0].upsert).toBe(true);
+
+      const args = lastRpcCall().args;
+      expect(lastRpcCall().fn).toBe(RPC_BALANCE);
+      expect(Object.keys(args).sort()).toEqual(
+        [
+          'p_bank_origin',
+          'p_customer_id',
+          'p_idempotency_key',
+          'p_payment_datetime',
+          'p_payment_reference',
+          'p_proof_path',
+          'p_reservation_id',
+        ].sort(),
+      );
+      expect(args.p_reservation_id).toBe(RESERVATION_ID);
+      expect(args.p_customer_id).toBe(CUSTOMER_ID);
+      expect(args.p_idempotency_key).toBe(IDEMPOTENCY_KEY);
+      expect(args.p_proof_path).toBe(`${RESERVATION_ID}/${digest}.png`);
+      expect(args.p_payment_reference).toBe('00123456789');
+      expect(args.p_bank_origin).toBe('Banco de Venezuela');
+      expect(args.p_payment_datetime).toBe('2020-01-01T10:00:00.000Z');
+      // NUNCA se envía un importe: la RPC calcula total − verificado.
+      expect(JSON.stringify(args)).not.toContain('amount_cents');
+    });
+
+    it('devuelve 200 cuando el reintento es idempotente', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(
+        RPC_BALANCE,
+        submittedBalance({
+          idempotent: true,
+          // La respuesta idempotente no repite los totales recalculados.
+          total_cents: null,
+          paid_cents: null,
+          balance_cents: null,
+        }),
+      );
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(200);
+      expect(body.idempotent).toBe(true);
+      expect(body.total_cents).toBeNull();
+      expect(body.balance_cents).toBeNull();
+    });
+
+    it('pre-chequea la resolución ANTES de subir nada (404 uniforme)', async () => {
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(404);
+      expect(body.error.code).toBe('CHECKOUT_ATTEMPT_NOT_FOUND');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('409 BALANCE_NOT_AVAILABLE sin subir nada si el depósito no está aprobado', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow({ status: 'pending_review' }),
+        error: null,
+      });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_NOT_AVAILABLE');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('409 sin subir nada para un intento de plan único', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow({ payment_plan: 'single' }),
+        error: null,
+      });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_NOT_AVAILABLE');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('exige Idempotency-Key UUID sin tocar storage ni RPC', async () => {
+      const { status, body } = await postBalance(port, { idempotencyKey: null });
+
+      expect(status).toBe(400);
+      expect(body.error.code).toBe('IDEMPOTENCY_KEY_INVALID');
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('exige los tres datos de conciliación junto al archivo', async () => {
+      harness.setDefault('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.setDefault('payments', { data: verifyPaymentRow(), error: null });
+
+      const missingReference = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { payment_reference: null },
+      });
+      expect(missingReference.status).toBe(400);
+      expect(missingReference.body.error.code).toBe(
+        'CHECKOUT_RECONCILIATION_INVALID',
+      );
+
+      const missingBank = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { bank_origin: null },
+      });
+      expect(missingBank.status).toBe(400);
+
+      const missingDatetime = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { payment_datetime: null },
+      });
+      expect(missingDatetime.status).toBe(400);
+
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('rechaza conciliación vacía, malformada o con fecha futura', async () => {
+      harness.setDefault('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.setDefault('payments', { data: verifyPaymentRow(), error: null });
+
+      const emptyReference = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { payment_reference: '   ' },
+      });
+      expect(emptyReference.status).toBe(400);
+      expect(emptyReference.body.error.code).toBe(
+        'CHECKOUT_RECONCILIATION_INVALID',
+      );
+
+      const badDate = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { payment_datetime: 'ayer' },
+      });
+      expect(badDate.status).toBe(400);
+
+      const futureDate = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        fields: { payment_datetime: '2999-01-01T00:00' },
+      });
+      expect(futureDate.status).toBe(400);
+
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('rechaza contenido sin magic bytes y archivos sin adjuntar', async () => {
+      harness.setDefault('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.setDefault('payments', { data: verifyPaymentRow(), error: null });
+
+      const unrecognized = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        file: {
+          name: 'comprobante.png',
+          type: 'image/png',
+          data: Buffer.from('hola mundo'),
+        },
+      });
+      expect(unrecognized.status).toBe(400);
+      expect(unrecognized.body.error.code).toBe('PAYMENT_FILE_INVALID');
+
+      const missingFile = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        file: null,
+      });
+      expect(missingFile.status).toBe(400);
+      expect(missingFile.body.error.code).toBe('PAYMENT_FILE_MISSING');
+
+      expect(harness.uploads()).toHaveLength(0);
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('mapea los RAISE del RPC de saldo a códigos accionables y limpia el objeto', async () => {
+      const cases: Array<[string, number, string]> = [
+        ['ERR_BALANCE_NOT_AVAILABLE: nope', 409, 'BALANCE_NOT_AVAILABLE'],
+        ['ERR_BALANCE_ALREADY_SETTLED: done', 409, 'BALANCE_ALREADY_SETTLED'],
+        ['ERR_BALANCE_PAYMENT_PENDING: wait', 409, 'BALANCE_PAYMENT_PENDING'],
+        ['ERR_PAYMENT_RECONCILIATION: bad', 400, 'PAYMENT_RECONCILIATION_INVALID'],
+        [
+          'ERR_PAYMENT_IDEMPOTENCY_CONFLICT: clash',
+          409,
+          'PAYMENT_IDEMPOTENCY_CONFLICT',
+        ],
+        ['ERR_PAYMENT_RESERVATION_NOT_FOUND: gone', 404, 'BALANCE_NOT_FOUND'],
+        ['ERR_PAYMENT_NOT_OWNER: other', 404, 'BALANCE_NOT_FOUND'],
+        ['ERR_PAYMENT_PROGRESS_NOT_FOUND: none', 404, 'BALANCE_NOT_FOUND'],
+      ];
+
+      for (const [message, expectedStatus, expectedCode] of cases) {
+        const uploadsBefore = harness.uploads().length;
+        const removesBefore = harness.removes().length;
+        harness.push('checkout_attempts', {
+          data: balanceAttemptRow(),
+          error: null,
+        });
+        harness.push('payments', { data: verifyPaymentRow(), error: null });
+        harness.pushRpc(RPC_BALANCE, { data: null, error: { message } });
+        // Chequeos de cleanup: nada referencia el objeto recién subido.
+        harness.push('payments', { data: null, error: null });
+        harness.push('checkout_attempts', { data: null, error: null });
+
+        const { status, body } = await postBalance(port, {
+          idempotencyKey: IDEMPOTENCY_KEY,
+        });
+
+        expect(status).toBe(expectedStatus);
+        expect(body.error.code).toBe(expectedCode);
+        // El mensaje SQL/RAISE jamás llega al cliente.
+        expect(body.error.message).not.toContain('ERR_');
+        // Todo fallo posterior al upload limpia el objeto huérfano.
+        expect(harness.uploads()).toHaveLength(uploadsBefore + 1);
+        expect(harness.removes()).toHaveLength(removesBefore + 1);
+        expect(harness.removes().at(-1)?.[0]).toBe(harness.uploads().at(-1)?.path);
+      }
+    });
+
+    it('limpia el objeto recién subido cuando el RPC falla', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_BALANCE, {
+        data: null,
+        error: { message: 'ERR_DESCONOCIDO: failure mode not mapped' },
+      });
+      harness.push('payments', { data: null, error: null });
+      harness.push('checkout_attempts', { data: null, error: null });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('CHECKOUT_ERROR');
+      expect(harness.uploads()).toHaveLength(1);
+      expect(harness.removes()).toHaveLength(1);
+      expect(harness.removes()[0][0]).toBe(harness.uploads()[0].path);
+    });
+
+    it('nunca borra un objeto que un pago ya referencia', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_BALANCE, {
+        data: null,
+        error: { message: 'ERR_BALANCE_PAYMENT_PENDING: wait' },
+      });
+      // Un pago ya referencia la ruta: el cleanup se abstiene.
+      harness.push('payments', { data: { id: 'pay-1' }, error: null });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(409);
+      expect(body.error.code).toBe('BALANCE_PAYMENT_PENDING');
+      expect(harness.removes()).toHaveLength(0);
+    });
+
+    it('mapea el fallo del storage a error de infraestructura', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.setUploadError({ message: 'bucket offline' });
+
+      const { status, body } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(500);
+      expect(body.error.code).toBe('PAYMENT_STORAGE_ERROR');
+      expect(rpcCallsFor(RPC_BALANCE)).toHaveLength(0);
+    });
+
+    it('exige rol customer también en el envío del saldo', async () => {
+      harness.reset();
+      harness.setUser(() =>
+        Promise.resolve({ data: { user: { id: SUPERADMIN_ID } }, error: null }),
+      );
+      givenUserRole('superadmin');
+
+      const { status } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(403);
+      expect(harness.uploads()).toHaveLength(0);
+    });
+
+    it('nunca escribe reservations ni seats: los asientos siguen reservados', async () => {
+      harness.push('checkout_attempts', {
+        data: balanceAttemptRow(),
+        error: null,
+      });
+      harness.push('payments', { data: verifyPaymentRow(), error: null });
+      harness.pushRpc(RPC_BALANCE, submittedBalance());
+
+      const { status } = await postBalance(port, {
+        idempotencyKey: IDEMPOTENCY_KEY,
+      });
+
+      expect(status).toBe(201);
+      const tables = harness.chains().map((chain) => chain.table);
+      expect(tables).not.toContain('reservations');
+      expect(tables).not.toContain('reservation_passengers');
+      expect(tables).not.toContain('seats');
+      // El único RPC es el de envío: nada de cancelación automática.
+      const rpcFns = harness.rpcCalls().map((call) => call.fn);
+      expect(rpcFns).toEqual([RPC_BALANCE]);
     });
   });
 
