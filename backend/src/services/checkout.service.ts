@@ -550,18 +550,22 @@ function mapRpcError(error: { message: string }): AppError {
         409,
         'CHECKOUT_SEATS_LOST',
       );
-    // ── MKT-010.1: saldo (etapa 2) + progreso de pago ──────────────────────
+    // ── MKT-010.1: pago restante (segunda parte) + progreso de pago ────────
     case 'ERR_BALANCE_NOT_AVAILABLE':
       return checkoutError(
-        'Esta compra aún no tiene saldo disponible para pagar',
+        'Esta compra aún no tiene un pago restante disponible',
         409,
         'BALANCE_NOT_AVAILABLE',
       );
     case 'ERR_BALANCE_ALREADY_SETTLED':
-      return checkoutError('Esta reserva ya está saldada', 409, 'BALANCE_ALREADY_SETTLED');
+      return checkoutError(
+        'Esta reserva ya está pagada por completo',
+        409,
+        'BALANCE_ALREADY_SETTLED',
+      );
     case 'ERR_BALANCE_PAYMENT_PENDING':
       return checkoutError(
-        'Ya tienes un comprobante de saldo esperando revisión',
+        'Ya tienes un comprobante del pago restante esperando revisión',
         409,
         'BALANCE_PAYMENT_PENDING',
       );
@@ -2370,8 +2374,8 @@ export async function listPurchaseHistory(input: {
     });
 
     // MKT-010.1: en dos partes con reserva, la ACCION principal pasa a
-    // ser el saldo mientras falte saldar (o su revisión en curso); el
-    // estado sigue siendo `reserva_confirmada`. Con el saldo ya cubierto
+    // ser el pago restante mientras falte cubrirlo (o su revisión en curso);
+    // el estado sigue siendo `reserva_confirmada`. Con el pago ya cubierto
     // se recupera el mensaje normal de reserva confirmada.
     let mensaje = estado.mensaje;
     let accion = estado.accion;
@@ -2383,8 +2387,8 @@ export async function listPurchaseHistory(input: {
         if (plan.pendiente_cents > 0) {
           accion = 'pagar_saldo';
           mensaje = saldoEnRevision
-            ? 'Reserva confirmada con depósito aprobado: tu comprobante de saldo está en revisión.'
-            : 'Reserva confirmada con depósito aprobado: falta saldar el saldo.';
+            ? 'Primer pago aprobado: tu comprobante del pago restante está en revisión.'
+            : 'Primer pago aprobado: falta completar el pago restante.';
         } else {
           mensaje = 'Reserva confirmada: tu pago está completo en su totalidad.';
         }
@@ -2900,10 +2904,10 @@ async function resolveBalanceAttempt(
   const row = attempt as { status: string; payment_plan: string | null };
 
   if (row.status !== 'verified') {
-    throw balanceNotAvailable('El depósito de esta compra aún no fue aprobado por la agencia');
+    throw balanceNotAvailable('El primer pago de esta compra aún no fue aprobado por la agencia');
   }
   if (row.payment_plan !== 'two_stage') {
-    throw balanceNotAvailable('Esta compra no tiene saldo pendiente de pago');
+    throw balanceNotAvailable('Esta compra no tiene un pago restante pendiente');
   }
 
   const { data: payment, error: paymentError } = await supabaseAdmin
@@ -2920,7 +2924,7 @@ async function resolveBalanceAttempt(
   if (!verify || verify.status !== 'verified' || !verify.reservation_id) {
     // Estado imposible (verified ⇒ su reserva de verificación existe):
     // mismo 409 genérico, sin filtrar el detalle interno.
-    throw balanceNotAvailable('Esta compra aún no tiene saldo disponible para pagar');
+    throw balanceNotAvailable('Esta compra aún no tiene un pago restante disponible');
   }
 
   return { reservationId: verify.reservation_id };

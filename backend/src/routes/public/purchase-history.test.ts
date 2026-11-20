@@ -914,7 +914,7 @@ describe('GET /api/public/checkout/attempts — historial de compras (RT-01)', (
     expect(item.estado).toBe('reserva_confirmada');
     expect(item.accion).toBe('pagar_saldo');
     expect(item.mensaje).toBe(
-      'Reserva confirmada con depósito aprobado: falta saldar el saldo.',
+      'Primer pago aprobado: falta completar el pago restante.',
     );
     expect(item.pago.stage).toBe('deposit');
     expect(item.reserva.payment_status).toBe('partial');
@@ -966,7 +966,7 @@ describe('GET /api/public/checkout/attempts — historial de compras (RT-01)', (
     const item = body.items[0];
     expect(item.accion).toBe('pagar_saldo');
     expect(item.mensaje).toBe(
-      'Reserva confirmada con depósito aprobado: tu comprobante de saldo está en revisión.',
+      'Primer pago aprobado: tu comprobante del pago restante está en revisión.',
     );
     expect(item.plan.pendiente_cents).toBe(2020);
   });

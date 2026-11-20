@@ -86,8 +86,8 @@ function esReintentoDisponible(item: PurchaseItemDto): boolean {
 }
 
 /**
- * MKT-010.1 · Pago del SALDO (etapa 2): la acción la decide el BACKEND
- * (`accion: 'pagar_saldo'`, solo en dos partes con reserva y saldo > 0).
+ * MKT-010.1 · Pago restante (segunda parte): la acción la decide el BACKEND
+ * (`accion: 'pagar_saldo'`, solo en dos partes con reserva y monto > 0).
  * Esta pantalla no calcula nada: solo pinta el enlace mientras exista.
  */
 function esSaldoDisponible(item: PurchaseItemDto): boolean {
@@ -150,16 +150,73 @@ function estadoMeta(estado: PurchaseEstado | string): EstadoMeta {
   );
 }
 
+/**
+ * Q3 — Tres estados de pago en la tarjeta (PRESENTACIÓN solo de frontend).
+ * El backend SIGUE determinando `item.estado`; aquí únicamente se elige un
+ * texto más claro para los estados del plan de dos partes. Prioridad:
+ * vencido → apartado → confirmado → resto (badge y mensaje del backend).
+ */
+interface PresentacionPago {
+  badge: string;
+  badgeClassName: string;
+  titulo: string;
+  mensaje: string;
+}
+
+function presentacionPago(item: PurchaseItemDto): PresentacionPago | null {
+  const plan = item.plan;
+  const montoRestante = formatSeatPrice(plan.pendiente_cents);
+
+  if (
+    plan.payment_plan === 'two_stage' &&
+    plan.balance_overdue &&
+    plan.pendiente_cents > 0
+  ) {
+    return {
+      badge: 'Pago vencido',
+      badgeClassName: 'bg-[#fef2f2] text-[#ef4444]',
+      titulo: 'El plazo para completar tu pago ha vencido.',
+      mensaje:
+        'Contacta con la agencia para conocer el estado de tus asientos.',
+    };
+  }
+
+  if (
+    plan.payment_plan === 'two_stage' &&
+    plan.deposit_verified_at !== null &&
+    plan.pendiente_cents > 0 &&
+    plan.seats_held === true
+  ) {
+    return {
+      badge: 'Apartada',
+      badgeClassName: 'bg-[#fffbeb] text-[#92400e]',
+      titulo: 'Reserva apartada.',
+      mensaje: `Tus asientos están apartados. Completa el pago restante de ${montoRestante} antes de la fecha indicada para confirmar tu reserva.`,
+    };
+  }
+
+  if (item.estado === 'reserva_confirmada') {
+    return {
+      badge: 'Confirmada',
+      badgeClassName: 'bg-[#ecfdf5] text-[#059669]',
+      titulo: 'Reserva confirmada.',
+      mensaje: 'Tu reserva está confirmada. Has completado el pago de tu viaje.',
+    };
+  }
+
+  return null;
+}
+
 /** Orden fijo de los chips de estado (mismo orden que el badge). */
 const ESTADO_ORDER = Object.keys(ESTADO_META) as PurchaseEstado[];
 
 /** payment_status de reservations, traducido; valor desconocido → crudo. */
 const PAGO_RESERVA_LABELS: Record<string, string> = {
-  pending: 'pendiente',
+  pending: 'pago pendiente',
   partial: 'pago parcial',
-  fully_paid: 'totalmente pagada',
-  refunded: 'reembolsada',
-  cancelled: 'cancelada',
+  fully_paid: 'Reserva pagada por completo',
+  refunded: 'pago reembolsado',
+  cancelled: 'pago cancelado',
 };
 
 const PAGO_ESTADO_LABELS: Record<string, string> = {
@@ -906,6 +963,10 @@ export default function MisComprasPage() {
             <div className="grid gap-4">
               {visibleItems.map((item) => {
                 const meta = estadoMeta(item.estado);
+                // Q3 — presentación de los tres estados de pago. El badge
+                // de la tarjeta se sustituye SOLO aquí; los chips/filtros
+                // siguen usando ESTADO_META y `item.estado` sin cambios.
+                const pago = presentacionPago(item);
                 // Notificación de pago sin leer sobre ESTA compra (resaltado
                 // Task 8G): indicador sutil, no un contador de pendientes.
                 const notice =
@@ -944,9 +1005,11 @@ export default function MisComprasPage() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <span
-                          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${meta.className}`}
+                          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                            pago?.badgeClassName ?? meta.className
+                          }`}
                         >
-                          {meta.label}
+                          {pago?.badge ?? meta.label}
                         </span>
                         {notice && (
                           <PillBadge className="inline-flex rounded-full bg-[var(--color-cyan-bg)] px-2.5 py-0.5 text-[11px] font-semibold text-brand-cyan">
@@ -956,7 +1019,7 @@ export default function MisComprasPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-[11px] font-medium uppercase text-brand-muted">
-                          Operación iniciada
+                          Compra iniciada
                         </p>
                         <time
                           dateTime={item.created_at}
@@ -1017,9 +1080,18 @@ export default function MisComprasPage() {
                       )}
                     </div>
 
-                    <p className="mt-4 text-sm text-brand-navy">
-                      {item.mensaje}
-                    </p>
+                    {pago ? (
+                      <div className="mt-4 text-sm">
+                        <p className="font-semibold text-brand-navy">
+                          {pago.titulo}
+                        </p>
+                        <p className="mt-1 text-brand-muted">{pago.mensaje}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-4 text-sm text-brand-navy">
+                        {item.mensaje}
+                      </p>
+                    )}
 
                     {/* ── MKT-010.1: progreso del plan en dos partes ──
                         Montos, porcentajes y vencimientos llegan ya
@@ -1032,12 +1104,12 @@ export default function MisComprasPage() {
                         data-testid="plan-dos-partes"
                       >
                         <p className="text-[11px] font-medium uppercase text-brand-muted">
-                          Plan de pago en dos partes
+                          Detalle de los pagos
                         </p>
                         <div className="mt-2 space-y-1.5">
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-brand-muted">
-                              Depósito (etapa 1)
+                              Primer pago
                               {item.plan.deposit_pct != null
                                 ? ` · ${item.plan.deposit_pct}%`
                                 : ''}
@@ -1050,7 +1122,7 @@ export default function MisComprasPage() {
                           </div>
                           <div className="flex items-center justify-between gap-3">
                             <span className="text-brand-muted">
-                              Saldo (etapa 2)
+                              Pago restante
                               {item.plan.balance_pct != null
                                 ? ` · ${item.plan.balance_pct}%`
                                 : ''}
@@ -1063,7 +1135,7 @@ export default function MisComprasPage() {
                           </div>
                           <div className="flex items-center justify-between gap-3 border-t border-black/[0.06] pt-1.5">
                             <span className="font-semibold text-brand-navy">
-                              Pagado
+                              Total pagado
                             </span>
                             <span className="font-semibold text-[#059669]">
                               {formatSeatPrice(item.plan.paid_cents)}
@@ -1071,7 +1143,7 @@ export default function MisComprasPage() {
                           </div>
                           <div className="flex items-center justify-between gap-3">
                             <span className="font-semibold text-brand-navy">
-                              Falta saldar
+                              Pago restante
                             </span>
                             <span className="text-[17px] font-extrabold leading-none text-brand-navy">
                               {formatSeatPrice(item.plan.pendiente_cents)}
@@ -1080,47 +1152,52 @@ export default function MisComprasPage() {
                         </div>
                         {item.plan.deposit_verified_at ? (
                           <p className="mt-2 text-xs text-brand-muted">
-                            Depósito aprobado el{' '}
+                            Primer pago aprobado el{' '}
                             {formatDateTimeShort(item.plan.deposit_verified_at)}
                           </p>
                         ) : item.plan.deposit_deadline ? (
                           <p className="mt-2 text-xs text-brand-muted">
-                            Depósito: vence el{' '}
+                            Fecha límite del primer pago:{' '}
                             {formatDateTimeShort(item.plan.deposit_deadline)}
                           </p>
                         ) : null}
                         {item.plan.pendiente_cents > 0 &&
                           item.plan.balance_deadline && (
                             <p className="text-xs text-brand-muted">
-                              Saldo: vence el{' '}
+                              Fecha límite del pago restante:{' '}
                               {formatDateTimeShort(item.plan.balance_deadline)}
                             </p>
                           )}
-                        {item.plan.balance_overdue &&
+                        {/* El estado vencido/apartado ya se explica arriba:
+                            no repetir aquí ese mensaje. Fuera de esos tres
+                            estados, el aviso sigue siendo informativo. */}
+                        {!pago &&
+                          item.plan.balance_overdue &&
                           item.plan.pendiente_cents > 0 && (
                             <p className="mt-2 rounded-[10px] bg-[#fffbeb] px-3 py-2 text-xs font-medium text-[#92400e]">
-                              El plazo del saldo venció. La agencia decide
-                              sobre este pago: tus asientos siguen reservados.
+                              La fecha límite de pago venció. La agencia decide
+                              sobre este pago: tus asientos siguen apartados.
                             </p>
                           )}
-                        {item.plan.seats_held === true && (
+                        {!pago && item.plan.seats_held === true && (
                           <p className="mt-2 text-xs font-medium text-[#176B62]">
-                            Asientos reservados a la espera del saldo.
+                            Tus asientos siguen apartados a la espera del pago
+                            restante.
                           </p>
                         )}
                       </div>
                     )}
 
-                    {/* MKT-010.1: CTA principal mientras quede saldo por
-                        saldar (decisión server-side). La página del saldo
-                        revalida progreso y elegibilidad contra el backend. */}
+                    {/* MKT-010.1: CTA principal mientras quede pago restante
+                        (decisión server-side). La página del pago revalida
+                        progreso y elegibilidad contra el backend. */}
                     {esSaldoDisponible(item) && (
                       <Link
                         href={`${COMPRAS_PATH}/${item.attempt_id}/balance`}
                         className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-brand-cyan px-6 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-brand-blue"
                       >
                         <CreditCard size={16} strokeWidth={1.75} aria-hidden />
-                        Pagar saldo
+                        Completar el pago restante
                       </Link>
                     )}
 
@@ -1201,14 +1278,14 @@ export default function MisComprasPage() {
                     {item.pago && (
                       <div className="mt-3 rounded-[10px] bg-[#f1f5f9] px-4 py-3 text-sm">
                         <p className="text-[11px] font-medium uppercase text-brand-muted">
-                          Pago
+                          Detalle de pagos
                         </p>
                         <p className="mt-1 text-brand-navy">
-                          {/* MKT-010.1: etapa del pago (server-side). */}
+                          {/* MKT-010.1: parte del pago (server-side). */}
                           {item.pago.stage === 'deposit'
-                            ? 'Depósito · '
+                            ? 'Primer pago · '
                             : item.pago.stage === 'balance'
-                              ? 'Saldo · '
+                              ? 'Pago restante · '
                               : ''}
                           {PAGO_ESTADO_LABELS[item.pago.estado] ??
                             `Pago ${item.pago.estado}`}{' '}
@@ -1237,7 +1314,7 @@ export default function MisComprasPage() {
                         <p className="text-xs text-brand-muted">
                           Creada el{' '}
                           {formatDateTimeShort(item.reserva.created_at)}
-                          {paymentStatus ? ` · pago ${paymentStatus}` : ''}
+                          {paymentStatus ? ` · ${paymentStatus}` : ''}
                         </p>
 
                         {esBoletoDisponible(item) && (
@@ -1277,11 +1354,11 @@ export default function MisComprasPage() {
 
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[10px] bg-[#f1f5f9] px-3 py-2">
                       <span className="text-[11px] font-medium uppercase text-brand-muted">
-                        Importe total
+                        Precio total
                       </span>
                       <span className="text-[17px] font-extrabold leading-none text-brand-navy">
                         {/* MKT-010.1: en dos partes `monto.amount_cents` es
-                            solo el depósito (snapshot del intento); el total
+                            solo el primer pago (snapshot del intento); el total
                             real de la compra lo da el plan server-side. */}
                         {formatSeatPrice(
                           item.plan.payment_plan === 'two_stage'
