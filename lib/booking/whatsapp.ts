@@ -95,12 +95,12 @@ export interface BalanceWhatsAppInput {
   departureLabel?: string | null;
   /** Código de boleto/reserva cuando existe. */
   ticketCode?: string | null;
-  /** Saldo pendiente ya formateado (el dinero lo decide el servidor). */
+  /** Pago restante ya formateado (el dinero lo decide el servidor). */
   balanceAmount: string;
 }
 
 /**
- * Mensaje de solicitud de pago del saldo (etapa 2). Solo incluye datos
+ * Mensaje de solicitud del pago restante (segunda parte). Solo incluye datos
  * que el backend ya expuso para ESTA reserva: nunca se inventa un monto
  * ni un destinatario. `balanceAmount` llega formateado desde la UI con el
  * importe server-side; esta función solo compone texto.
@@ -108,14 +108,14 @@ export interface BalanceWhatsAppInput {
 export function buildBalanceWhatsAppMessage(input: BalanceWhatsAppInput): string {
   const lines = [
     input.agencyName?.trim()
-      ? `Hola, quiero pagar el saldo de mi reserva con ${input.agencyName.trim()}.`
-      : 'Hola, quiero pagar el saldo de mi reserva.',
+      ? `Hola, quiero completar el pago restante de mi reserva con ${input.agencyName.trim()}.`
+      : 'Hola, quiero completar el pago restante de mi reserva.',
   ];
   const details: string[] = [];
   if (input.routeLabel?.trim()) details.push(`Ruta: ${input.routeLabel.trim()}`);
   if (input.departureLabel?.trim()) details.push(`Salida: ${input.departureLabel.trim()}`);
   if (input.ticketCode?.trim()) details.push(`Reserva: ${input.ticketCode.trim()}`);
   if (details.length > 0) lines.push('', ...details);
-  lines.push('', `Saldo pendiente: ${input.balanceAmount}`);
+  lines.push('', `Pago restante: ${input.balanceAmount}`);
   return lines.join('\n');
 }

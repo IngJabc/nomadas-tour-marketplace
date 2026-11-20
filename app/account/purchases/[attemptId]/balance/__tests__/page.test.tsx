@@ -126,7 +126,7 @@ function makeProgressRejected(
         payment_datetime: '2026-11-01T11:30:00.000Z',
         submitted_at: '2026-11-01T11:35:00.000Z',
         verified_at: null,
-        rejection_reason: 'La referencia no coincide con el saldo',
+        rejection_reason: 'La referencia no coincide con el pago restante',
       }),
     ],
     ...overrides,
@@ -276,7 +276,7 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
     render(<PagarSaldoPage />);
 
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Cargando el saldo de tu compra',
+      'Cargando el pago restante de tu compra',
     );
     expect(tripDetail).not.toHaveBeenCalled();
   });
@@ -288,31 +288,40 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
     expect(getAttempt).toHaveBeenCalledWith('att-1');
     expect(tripDetail).toHaveBeenCalledWith('trip-1');
 
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: 'Completar el pago restante',
+      }),
+    ).toBeInTheDocument();
+
     // Resumen de la compra.
     expect(screen.getByText('Barquisimeto → Caracas')).toBeInTheDocument();
     expect(screen.getByText(formatDateTimeShort(DEPARTURE))).toBeInTheDocument();
     expect(screen.getByText('Bianchi travels')).toBeInTheDocument();
     expect(screen.getByText('2 pasajeros · asientos A2, A10')).toBeInTheDocument();
 
-    // Plan server-side: montos, etapas y porcentajes tal cual los envía la RPC.
-    expect(block).toHaveTextContent('Plan de pago en dos partes');
+    // Plan server-side: montos, partes y porcentajes tal cual los envía la RPC.
+    expect(block).toHaveTextContent('Detalle de los pagos');
     expect(block).toHaveTextContent(
       `Total de la compra${formatSeatPrice(4040)}`,
     );
-    expect(block).toHaveTextContent('Depósito (etapa 1) · 50%');
+    expect(block).toHaveTextContent('Primer pago · 50%');
     expect(block).toHaveTextContent(formatSeatPrice(2020));
-    expect(block).toHaveTextContent('Depósito aprobado el');
-    expect(block).toHaveTextContent('Pagado');
-    expect(block).toHaveTextContent('Falta saldar (etapa 2) · 50%');
-    expect(block).toHaveTextContent(/El saldo vence el/);
+    expect(block).toHaveTextContent('Primer pago aprobado el');
+    expect(block).toHaveTextContent('Total pagado');
+    expect(block).toHaveTextContent('Pago restante · 50%');
+    expect(block).toHaveTextContent(/Fecha límite de pago:/);
     expect(block).toHaveTextContent(
-      'Asientos reservados a la espera del saldo.',
+      'Tus asientos siguen apartados a la espera del pago restante.',
     );
-    expect(block).not.toHaveTextContent('El plazo del saldo venció.');
+    expect(block).not.toHaveTextContent('La fecha límite de pago venció.');
 
-    // Formulario del comprobante del saldo.
+    // Formulario del comprobante del pago restante.
     expect(
-      screen.getByRole('heading', { name: 'Enviar comprobante del saldo' }),
+      screen.getByRole('heading', {
+        name: 'Enviar comprobante del pago restante',
+      }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('proof-file-input')).toBeInTheDocument();
     expect(screen.getByLabelText('Referencia')).toBeInTheDocument();
@@ -322,7 +331,7 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
     await renderForm();
 
     const link = screen.getByRole('link', {
-      name: /Solicitar el saldo por WhatsApp/,
+      name: /Solicitar el pago restante por WhatsApp/,
     });
     const expectedMessage = buildBalanceWhatsAppMessage({
       agencyName: 'Bianchi travels',
@@ -348,7 +357,7 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
     await renderForm();
 
     expect(
-      screen.queryByRole('link', { name: /Solicitar el saldo por WhatsApp/ }),
+      screen.queryByRole('link', { name: /Solicitar el pago restante por WhatsApp/ }),
     ).not.toBeInTheDocument();
     // El pago no depende del canal de contacto.
     expect(screen.getByTestId('proof-file-input')).toBeInTheDocument();
@@ -361,12 +370,12 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
 
     const block = await renderForm();
 
-    expect(block).toHaveTextContent('El plazo del saldo venció.');
+    expect(block).toHaveTextContent('La fecha límite de pago venció.');
     expect(block).toHaveTextContent(
-      'no se cancela nada automáticamente y tus asientos siguen reservados',
+      'no se cancela nada automáticamente y tus asientos siguen apartados',
     );
     expect(block).toHaveTextContent(
-      'Asientos reservados a la espera del saldo.',
+      'Tus asientos siguen apartados a la espera del pago restante.',
     );
     // Sin acciones destructivas en toda la pantalla.
     expect(
@@ -384,7 +393,7 @@ describe('PagarSaldoPage — progreso server-side (MKT-010.1)', () => {
 
     expect(
       screen.getByText(
-        /Motivo del rechazo anterior: La referencia no coincide con el saldo/,
+        /Motivo del rechazo anterior: La referencia no coincide con el pago restante/,
       ),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Referencia')).toHaveValue('555666777');
@@ -431,7 +440,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
       .mockResolvedValueOnce(makeProgressPending());
     submitBalanceProof.mockRejectedValue(
       new ApiError(
-        'Ya hay un comprobante de saldo en revisión',
+        'Ya hay un comprobante del pago restante en revisión',
         'BALANCE_PAYMENT_PENDING',
         409,
       ),
@@ -449,7 +458,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
     expect(await screen.findByText('Pago en revisión')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Comprobante de saldo enviado. La agencia lo está revisando.',
+        'Comprobante del pago restante enviado. La agencia lo está revisando.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -484,7 +493,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
       );
     submitBalanceProof.mockRejectedValue(
       new ApiError(
-        'El saldo ya está saldado',
+        'La reserva ya está pagada por completo',
         'BALANCE_ALREADY_SETTLED',
         409,
       ),
@@ -499,7 +508,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
       );
     });
 
-    expect(await screen.findByText('Saldo saldado')).toBeInTheDocument();
+    expect(await screen.findByText('Pago completado')).toBeInTheDocument();
     expect(getBalanceProgress).toHaveBeenCalledTimes(2);
     expect(screen.queryByTestId('proof-file-input')).not.toBeInTheDocument();
   });
@@ -512,7 +521,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
       );
     submitBalanceProof.mockRejectedValue(
       new ApiError(
-        'Esta compra no tiene saldo disponible',
+        'Esta compra no tiene un pago restante disponible',
         'BALANCE_NOT_AVAILABLE',
         409,
       ),
@@ -527,7 +536,7 @@ describe('PagarSaldoPage — envío del comprobante del saldo (MKT-010.1)', () =
       );
     });
 
-    expect(await screen.findByText('Saldo saldado')).toBeInTheDocument();
+    expect(await screen.findByText('Pago completado')).toBeInTheDocument();
     expect(getBalanceProgress).toHaveBeenCalledTimes(2);
   });
 });
@@ -536,7 +545,7 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
   it('409 BALANCE_NOT_AVAILABLE al cargar muestra el mensaje del servidor', async () => {
     getBalanceProgress.mockRejectedValue(
       new ApiError(
-        'Esta compra es de pago único: no tiene saldo pendiente.',
+        'Esta compra es de pago único: no tiene un pago restante.',
         'BALANCE_NOT_AVAILABLE',
         409,
       ),
@@ -549,7 +558,7 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Esta compra es de pago único: no tiene saldo pendiente.',
+        'Esta compra es de pago único: no tiene un pago restante.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -597,7 +606,9 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
 
     render(<PagarSaldoPage />);
 
-    expect(await screen.findByText('No pudimos cargar el saldo')).toBeInTheDocument();
+    expect(
+      await screen.findByText('No pudimos cargar el pago restante'),
+    ).toBeInTheDocument();
     expect(
       screen.getByText('No pudimos conectar con el servicio. Inténtalo nuevamente.'),
     ).toBeInTheDocument();
@@ -634,7 +645,7 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
 
     expect(
       await screen.findByText(
-        'Solo las cuentas de cliente pueden pagar sus saldos.',
+        'Solo las cuentas de cliente pueden completar su pago restante.',
       ),
     ).toBeInTheDocument();
     expect(
@@ -681,7 +692,7 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
 
     render(<PagarSaldoPage />);
 
-    expect(await screen.findByText('Saldo saldado')).toBeInTheDocument();
+    expect(await screen.findByText('Pago completado')).toBeInTheDocument();
     expect(
       screen.getByRole('link', { name: /Volver a mis compras/ }),
     ).toHaveAttribute('href', '/account/purchases');
@@ -702,6 +713,6 @@ describe('PagarSaldoPage — estados del backend y permisos (MKT-010.1)', () => 
     // La agencia viene del progreso (no del viaje) y sigue visible.
     expect(screen.getByText('Bianchi travels')).toBeInTheDocument();
     expect(screen.getByTestId('proof-file-input')).toBeInTheDocument();
-    expect(block).toHaveTextContent('Falta saldar (etapa 2) · 50%');
+    expect(block).toHaveTextContent('Pago restante · 50%');
   });
 });

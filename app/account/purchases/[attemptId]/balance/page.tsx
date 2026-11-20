@@ -51,7 +51,7 @@ const CATALOG_HREF = '/trips';
 function SkeletonSaldo() {
   return (
     <div role="status" className="space-y-4">
-      <span className="sr-only">Cargando el saldo de tu compra…</span>
+      <span className="sr-only">Cargando el pago restante de tu compra…</span>
       <div className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
         <div className="h-5 w-52 rounded-full bg-black/[0.06]" />
         <div className="mt-4 h-5 w-2/3 rounded bg-black/[0.06]" />
@@ -144,14 +144,14 @@ export default function PagarSaldoPage() {
         setUnsupported(
           getApiErrorMessage(
             e,
-            'Esta compra aún no tiene saldo disponible para pagar.',
+            'Esta compra aún no tiene un pago restante disponible.',
           ),
         );
       } else {
         setError(
           getApiErrorMessage(
             e,
-            'No pudimos cargar el saldo de tu compra. Intenta de nuevo.',
+            'No pudimos cargar el pago restante de tu compra. Intenta de nuevo.',
           ),
         );
       }
@@ -336,11 +336,11 @@ export default function PagarSaldoPage() {
       {/* Encabezado en el contenedor 7xl: mismo margen izquierdo que el
           resto de páginas (el documento se centra más abajo). */}
       <div className="border-l-4 border-brand-cyan pl-3">
-        <h1 className="text-[28px] font-extrabold">Pagar saldo</h1>
+        <h1 className="text-[28px] font-extrabold">Completar el pago restante</h1>
         <p className="mt-1 text-sm text-brand-muted">
           Este es el segundo pago de tu reserva en dos partes: primero se
-          aprobó tu depósito y ahora falta saldar el saldo. Tus asientos
-          siguen reservados mientras el saldo espera revisión.
+          aprobó tu primer pago y ahora falta completar el pago restante. Tus
+          asientos siguen apartados mientras el pago espera revisión.
         </p>
       </div>
 
@@ -357,7 +357,7 @@ export default function PagarSaldoPage() {
                 Tu sesión ya no está activa
               </h2>
               <p className="mt-2 max-w-md text-sm text-brand-muted">
-                Inicia sesión de nuevo para pagar el saldo de tu compra.
+                Inicia sesión de nuevo para completar el pago restante de tu compra.
               </p>
               <Link
                 href={LOGIN_PATH}
@@ -373,7 +373,7 @@ export default function PagarSaldoPage() {
             <div className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
               <div className="rounded-[10px] bg-[#fffbeb] px-4 py-3">
                 <p className="text-sm font-semibold text-[#92400e]">
-                  Solo las cuentas de cliente pueden pagar sus saldos.
+                  Solo las cuentas de cliente pueden completar su pago restante.
                 </p>
                 <p className="mt-1 text-xs text-brand-muted">
                   Tu sesión actual no es una cuenta de cliente, así que esta
@@ -421,7 +421,7 @@ export default function PagarSaldoPage() {
                 <AlertTriangle size={24} strokeWidth={1.75} aria-hidden />
               </div>
               <h2 className="mt-4 text-lg font-semibold">
-                No pudimos cargar el saldo
+                No pudimos cargar el pago restante
               </h2>
               <p className="mt-2 max-w-md text-sm text-brand-muted">{error}</p>
               <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -442,10 +442,11 @@ export default function PagarSaldoPage() {
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#ecfdf5] text-[#059669]">
                 <CheckCircle2 size={24} strokeWidth={1.75} aria-hidden />
               </div>
-              <h2 className="mt-4 text-lg font-semibold">Saldo saldado</h2>
+              <h2 className="mt-4 text-lg font-semibold">Pago completado</h2>
               <p className="mt-2 max-w-md text-sm text-brand-muted">
-                El saldo de esta reserva ya está cubierto en su totalidad. El
-                estado completo de tu reserva aparece en Mis compras.
+                El pago restante de esta reserva ya está cubierto en su
+                totalidad. El estado completo de tu reserva aparece en Mis
+                compras.
               </p>
               <div className="mt-6">{backLink('Volver a mis compras', true)}</div>
             </div>
@@ -459,7 +460,8 @@ export default function PagarSaldoPage() {
               <div className="mt-4 rounded-[10px] bg-[#ecfdf5] px-4 py-4">
                 <p className="flex items-center gap-2 text-sm font-semibold text-[#059669]">
                   <CheckCircle2 size={18} strokeWidth={1.75} aria-hidden />
-                  Comprobante de saldo enviado. La agencia lo está revisando.
+                  Comprobante del pago restante enviado. La agencia lo está
+                  revisando.
                 </p>
                 <p className="mt-1 text-xs text-brand-muted">
                   Recibimos el comprobante por{' '}
@@ -473,8 +475,9 @@ export default function PagarSaldoPage() {
                 )}
               </div>
               <p className="mt-4 text-xs text-brand-muted">
-                Mientras la agencia no decida, no se admite otro comprobante de
-                saldo para esta reserva. Tus asientos permanecen reservados.
+                Mientras la agencia no decida, no se admite otro comprobante
+                del pago restante para esta reserva. Tus asientos permanecen
+                apartados.
               </p>
               <div className="mt-4">{backLink('Volver a mis compras', true)}</div>
             </section>
@@ -506,7 +509,7 @@ export default function PagarSaldoPage() {
                     Resumen de la compra
                   </h2>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fffbeb] px-2.5 py-0.5 text-[11px] font-semibold text-[#92400e]">
-                    Saldo pendiente
+                    Pago restante
                   </span>
                 </div>
 
@@ -543,7 +546,7 @@ export default function PagarSaldoPage() {
                 data-testid="plan-dos-partes"
               >
                 <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
-                  Plan de pago en dos partes
+                  Detalle de los pagos
                 </h2>
 
                 <div className="mt-4 space-y-2 text-sm">
@@ -555,7 +558,7 @@ export default function PagarSaldoPage() {
                   </div>
                   <div className="flex items-center justify-between gap-3 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
                     <span className="text-brand-muted">
-                      Depósito (etapa 1)
+                      Primer pago
                       {progress.deposit_pct != null
                         ? ` · ${progress.deposit_pct}%`
                         : ''}
@@ -568,19 +571,19 @@ export default function PagarSaldoPage() {
                   </div>
                   {progress.deposit_verified_at && (
                     <p className="px-1 text-xs text-[#059669]">
-                      Depósito aprobado el{' '}
+                      Primer pago aprobado el{' '}
                       {formatDateTimeShort(progress.deposit_verified_at)}
                     </p>
                   )}
                   <div className="flex items-center justify-between gap-3 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
-                    <span className="text-brand-muted">Pagado</span>
+                    <span className="text-brand-muted">Total pagado</span>
                     <span className="font-semibold text-[#059669]">
                       {formatSeatPrice(progress.paid_cents)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3 rounded-[10px] border border-brand-cyan/40 bg-white px-4 py-3">
                     <span className="font-semibold text-brand-navy">
-                      Falta saldar (etapa 2)
+                      Pago restante
                       {progress.balance_pct != null
                         ? ` · ${progress.balance_pct}%`
                         : ''}
@@ -591,7 +594,7 @@ export default function PagarSaldoPage() {
                   </div>
                   {progress.balance_deadline && (
                     <p className="px-1 text-xs text-brand-muted">
-                      El saldo vence el{' '}
+                      Fecha límite de pago:{' '}
                       {formatDateTimeShort(progress.balance_deadline)}
                     </p>
                   )}
@@ -599,14 +602,14 @@ export default function PagarSaldoPage() {
 
                 {progress.balance_overdue && progress.balance_cents > 0 && (
                   <p className="mt-3 rounded-[10px] bg-[#fffbeb] px-4 py-3 text-xs font-medium text-[#92400e]">
-                    El plazo del saldo venció. La agencia decide sobre este
-                    pago: no se cancela nada automáticamente y tus asientos
-                    siguen reservados.
+                    La fecha límite de pago venció. La agencia decide sobre
+                    este pago: no se cancela nada automáticamente y tus asientos
+                    siguen apartados.
                   </p>
                 )}
                 {progress.seats_held && (
                   <p className="mt-3 text-xs font-medium text-[#176B62]">
-                    Asientos reservados a la espera del saldo.
+                    Tus asientos siguen apartados a la espera del pago restante.
                   </p>
                 )}
 
@@ -625,19 +628,19 @@ export default function PagarSaldoPage() {
                     className="mt-4 inline-flex items-center gap-2 rounded-[10px] bg-[#F5F1EC] px-4 py-2.5 text-sm font-semibold text-brand-navy transition-colors duration-200 hover:bg-[#e2e8f0]"
                   >
                     <MessageCircle size={16} strokeWidth={1.75} aria-hidden />
-                    Solicitar el saldo por WhatsApp
+                    Solicitar el pago restante por WhatsApp
                   </a>
                 )}
               </section>
 
               <section className="rounded-2xl border border-black/[0.06] bg-brand-surface p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
                 <h2 className="border-l-4 border-brand-cyan pl-3 text-[20px] font-bold text-brand-navy">
-                  Enviar comprobante del saldo
+                  Enviar comprobante del pago restante
                 </h2>
                 <p className="mt-3 text-sm text-brand-muted">
-                  Adjunta el comprobante de la transferencia por el saldo
-                  pendiente. El importe lo valida el servidor: no se aceptan
-                  montos parciales ni de otra etapa.
+                  Adjunta el comprobante de la transferencia por el pago
+                  restante. El importe lo valida el servidor: no se aceptan
+                  montos parciales ni de otro pago.
                 </p>
 
                 <ProofUploader<SubmitBalancePaymentResult>

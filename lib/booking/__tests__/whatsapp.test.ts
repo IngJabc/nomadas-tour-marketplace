@@ -93,16 +93,16 @@ describe('whatsappMessageHref (MKT-010.1)', () => {
   it('compone wa.me con el mensaje URL-encoded', () => {
     const href = whatsappMessageHref(
       '04121234567',
-      'Hola, quiero pagar el saldo de mi reserva.',
+      'Hola, quiero completar el pago restante de mi reserva.',
     );
     expect(href).toBe(
       'https://wa.me/584121234567?text=' +
-        encodeURIComponent('Hola, quiero pagar el saldo de mi reserva.'),
+        encodeURIComponent('Hola, quiero completar el pago restante de mi reserva.'),
     );
   });
 
   it('codifica saltos de línea y caracteres especiales', () => {
-    const message = 'Saldo pendiente: 20.20 €\nRuta: Caracas → Maracaibo';
+    const message = 'Pago restante: 20.20 €\nRuta: Caracas → Maracaibo';
     const href = whatsappMessageHref('+58 412 123 4567', message);
     expect(href).toContain('https://wa.me/584121234567?text=');
     expect(href).toBe(
@@ -136,13 +136,13 @@ describe('buildBalanceWhatsAppMessage (MKT-010.1)', () => {
 
     expect(message).toBe(
       [
-        'Hola, quiero pagar el saldo de mi reserva con Rutas del Sol.',
+        'Hola, quiero completar el pago restante de mi reserva con Rutas del Sol.',
         '',
         'Ruta: Caracas → Maracaibo',
         'Salida: 1 dic 2026, 08:00',
         'Reserva: ABCD1234',
         '',
-        'Saldo pendiente: Bs. 20,20',
+        'Pago restante: Bs. 20,20',
       ].join('\n'),
     );
   });
@@ -153,7 +153,7 @@ describe('buildBalanceWhatsAppMessage (MKT-010.1)', () => {
     });
 
     expect(message).toBe(
-      ['Hola, quiero pagar el saldo de mi reserva.', '', 'Saldo pendiente: Bs. 20,20'].join(
+      ['Hola, quiero completar el pago restante de mi reserva.', '', 'Pago restante: Bs. 20,20'].join(
         '\n',
       ),
     );
@@ -174,7 +174,7 @@ describe('buildBalanceWhatsAppMessage (MKT-010.1)', () => {
     });
 
     expect(message).toBe(
-      ['Hola, quiero pagar el saldo de mi reserva.', '', 'Saldo pendiente: Bs. 20,20'].join(
+      ['Hola, quiero completar el pago restante de mi reserva.', '', 'Pago restante: Bs. 20,20'].join(
         '\n',
       ),
     );
@@ -185,8 +185,8 @@ describe('buildBalanceWhatsAppMessage (MKT-010.1)', () => {
       agencyName: 'Rutas del Sol',
       balanceAmount: 'Bs. 1.234,56',
     });
-    expect(message).toContain('Saldo pendiente: Bs. 1.234,56');
+    expect(message).toContain('Pago restante: Bs. 1.234,56');
     // Nunca calcula ni reformatea el importe: es un string de entrada.
-    expect(message.match(/Saldo pendiente:/g)).toHaveLength(1);
+    expect(message.match(/Pago restante:/g)).toHaveLength(1);
   });
 });

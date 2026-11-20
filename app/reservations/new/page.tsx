@@ -2126,7 +2126,7 @@ function NewReservationContent() {
 
               <div className="mt-5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-[10px] bg-[#f1f5f9] px-4 py-3">
                 <span className="text-sm font-semibold text-brand-navy">
-                  Importe
+                  Precio del asiento
                 </span>
                 <span className="text-[17px] font-extrabold leading-tight text-brand-navy sm:leading-none">
                   {totalCents !== null
@@ -2138,20 +2138,20 @@ function NewReservationContent() {
               {/* ── MKT-010.1: desglose del plan en dos partes ──
                   Montos, porcentajes y vencimientos salen del SERVIDOR
                   (RPC 106 vía create/getAttempt); aquí solo se pintan.
-                  El saldo se paga DESPUÉS de que la agencia apruebe el
-                  depósito, desde Mis compras. */}
+                  El pago restante se paga DESPUÉS de que la agencia apruebe
+                  el primer pago, desde Mis compras. */}
               {attemptPlan?.payment_plan === 'two_stage' && (
                 <div
                   className="mt-3 rounded-[10px] border border-black/[0.06] bg-[#f8fafc] px-4 py-3"
                   data-testid="plan-dos-partes"
                 >
                   <p className="text-[11px] font-medium uppercase text-brand-muted">
-                    Plan de pago en dos partes
+                    Detalle de los pagos
                   </p>
                   <div className="mt-2 space-y-1.5 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-brand-muted">
-                        Depósito (etapa 1)
+                        Primer pago
                         {attemptPlan.deposit_pct != null
                           ? ` · ${attemptPlan.deposit_pct}%`
                           : ''}
@@ -2164,7 +2164,7 @@ function NewReservationContent() {
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-brand-muted">
-                        Saldo (etapa 2)
+                        Pago restante
                         {attemptPlan.balance_pct != null
                           ? ` · ${attemptPlan.balance_pct}%`
                           : ''}
@@ -2175,7 +2175,7 @@ function NewReservationContent() {
                     </div>
                     <div className="flex items-center justify-between gap-3 border-t border-black/[0.06] pt-1.5">
                       <span className="font-semibold text-brand-navy">
-                        Total
+                        Precio total
                       </span>
                       <span className="font-extrabold text-brand-navy">
                         {formatSeatPrice(attemptPlan.total_cents)}
@@ -2184,20 +2184,20 @@ function NewReservationContent() {
                   </div>
                   {attemptPlan.deposit_deadline && (
                     <p className="mt-2 text-xs text-brand-muted">
-                      Depósito: vence el{' '}
+                      Fecha límite del primer pago:{' '}
                       {formatDateTimeShort(attemptPlan.deposit_deadline)}
                     </p>
                   )}
                   {attemptPlan.balance_deadline && (
                     <p className="text-xs text-brand-muted">
-                      Saldo: vence el{' '}
+                      Fecha límite del pago restante:{' '}
                       {formatDateTimeShort(attemptPlan.balance_deadline)}
                     </p>
                   )}
                   <p className="mt-2 text-xs text-brand-muted">
-                    Primero pagas el depósito y la agencia lo revisa; el saldo
-                    se paga después desde Mis compras. Tus asientos permanecen
-                    reservados mientras tanto.
+                    Completa el pago restante de{' '}
+                    {formatSeatPrice(attemptPlan.balance_cents)} antes de la
+                    fecha indicada.
                   </p>
                 </div>
               )}

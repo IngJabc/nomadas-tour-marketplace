@@ -4735,36 +4735,31 @@ describe('Wizard de reserva — plan de pago en dos partes (MKT-010.1)', () => {
     return view;
   }
 
-  it('pinta etapas, porcentajes, montos y total del plan server-side', async () => {
+  it('pinta partes, porcentajes, montos y precio total del plan server-side', async () => {
     await startAttemptWithPlan();
 
     const block = await screen.findByTestId('plan-dos-partes');
-    expect(block).toHaveTextContent('Plan de pago en dos partes');
-    expect(block).toHaveTextContent('Depósito (etapa 1) · 25%');
-    expect(block).toHaveTextContent('Saldo (etapa 2) · 75%');
+    expect(block).toHaveTextContent('Detalle de los pagos');
+    expect(block).toHaveTextContent('Primer pago · 25%');
+    expect(block).toHaveTextContent('Pago restante · 75%');
     expect(block).toHaveTextContent(formatSeatPrice(1010));
     expect(block).toHaveTextContent(formatSeatPrice(3030));
-    expect(block).toHaveTextContent('Total');
+    expect(block).toHaveTextContent('Precio total');
     expect(block).toHaveTextContent(formatSeatPrice(4040));
     // Los montos NO se recalculan en el cliente: coinciden con lo devuelto
-    // por createAttempt (depósito + saldo = total).
+    // por createAttempt (primer pago + pago restante = total).
     expect(1010 + 3030).toBe(4040);
   });
 
-  it('muestra ambos vencimientos y explica que los asientos permanecen reservados', async () => {
+  it('muestra ambas fechas límite y el recordatorio del pago restante', async () => {
     await startAttemptWithPlan();
 
     const block = await screen.findByTestId('plan-dos-partes');
-    expect(block).toHaveTextContent('Depósito: vence el');
-    expect(block).toHaveTextContent('Saldo: vence el');
+    expect(block).toHaveTextContent('Fecha límite del primer pago:');
+    expect(block).toHaveTextContent('Fecha límite del pago restante:');
     expect(block).toHaveTextContent(
-      'Primero pagas el depósito y la agencia lo revisa',
+      `Completa el pago restante de ${formatSeatPrice(3030)} antes de la fecha indicada.`,
     );
-    expect(block).toHaveTextContent(
-      'Tus asientos permanecen reservados mientras tanto.',
-    );
-    // Copia de flujo único: el saldo se paga después desde Mis compras.
-    expect(block).toHaveTextContent('el saldo se paga después desde Mis compras');
   });
 
   it('el plan único jamás renderiza el desglose de dos partes', async () => {
@@ -4779,8 +4774,8 @@ describe('Wizard de reserva — plan de pago en dos partes (MKT-010.1)', () => {
     expect(
       screen.queryByTestId('plan-dos-partes'),
     ).not.toBeInTheDocument();
-    // El importe de siempre sigue en su fila.
-    expect(screen.getByText('Importe')).toBeInTheDocument();
+    // El precio del asiento sigue en su fila.
+    expect(screen.getByText('Precio del asiento')).toBeInTheDocument();
     expect(screen.getByText(/por 2 asientos/)).toBeInTheDocument();
   });
 });

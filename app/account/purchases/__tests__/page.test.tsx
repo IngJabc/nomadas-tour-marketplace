@@ -235,7 +235,7 @@ describe('MisComprasPage (RT-02)', () => {
     ).toBeInTheDocument();
     expect(screen.getByText(formatSeatPrice(4040))).toBeInTheDocument();
     // La fecha de operación explica para qué sirve.
-    expect(screen.getByText('Operación iniciada')).toBeInTheDocument();
+    expect(screen.getByText('Compra iniciada')).toBeInTheDocument();
     expect(
       screen.getByText(formatDateTimeShort(CREATED_AT)),
     ).toBeInTheDocument();
@@ -292,9 +292,15 @@ describe('MisComprasPage (RT-02)', () => {
     expect(
       screen.getByText('Comprobante rechazado: puedes enviar uno nuevo.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Reserva confirmada')).toBeInTheDocument();
+    expect(screen.getByText('Confirmada')).toBeInTheDocument();
+    expect(screen.getByText('Reserva confirmada.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Tu reserva está confirmada. Has completado el pago de tu viaje.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText('Boleto TCK-9')).toBeInTheDocument();
-    expect(screen.getByText(/pago totalmente pagada/)).toBeInTheDocument();
+    expect(screen.getByText(/Reserva pagada por completo/)).toBeInTheDocument();
     expect(screen.getByText(/Pago aprobado/)).toBeInTheDocument();
     expect(document.body.textContent).toContain(formatSeatPrice(5000));
   });
@@ -338,7 +344,7 @@ describe('MisComprasPage (RT-02)', () => {
     render(<MisComprasPage />);
 
     // Dos compras con reserva_confirmada (una con código, otra sin él).
-    expect(await screen.findAllByText('Reserva confirmada')).toHaveLength(2);
+    expect(await screen.findAllByText('Confirmada')).toHaveLength(2);
 
     const links = screen.getAllByRole('link', { name: /Ver boleto/ });
     expect(links).toHaveLength(1);
@@ -879,7 +885,7 @@ describe('MisComprasPage (RT-02)', () => {
 
     render(<MisComprasPage />);
 
-    expect(await screen.findByText('Reserva confirmada')).toBeInTheDocument();
+    expect(await screen.findByText('Confirmada')).toBeInTheDocument();
     expect(document.body.textContent).toContain(formatSeatPrice(5000));
     expect(document.body.textContent).toContain('$40,40');
     expect(document.body.textContent).not.toContain('COP');
@@ -1095,7 +1101,7 @@ describe('MisComprasPage — compras independientes en paralelo (MKT-009)', () =
     expect(listPurchases).toHaveBeenCalledTimes(2);
 
     // La compra que cambió se pinta con su nuevo estado…
-    expect(screen.getByText('Reserva confirmada')).toBeInTheDocument();
+    expect(screen.getByText('Confirmada')).toBeInTheDocument();
     // …y la otra conserva su tarjeta intacta: estado, ruta, mensaje e
     // importe siguen siendo los de ella, sin heredar el cambio.
     expect(screen.getByText('Mérida → San Cristóbal')).toBeInTheDocument();
@@ -1534,7 +1540,7 @@ describe('MisComprasPage — CTA de reseña (REV-001)', () => {
 
     render(<MisComprasPage />);
 
-    expect(await screen.findAllByText('Reserva confirmada')).toHaveLength(2);
+    expect(await screen.findAllByText('Confirmada')).toHaveLength(2);
     const links = screen.getAllByRole('link', {
       name: /Calificar viaje y agencia/,
     });
@@ -1555,7 +1561,7 @@ describe('MisComprasPage — CTA de reseña (REV-001)', () => {
 
     render(<MisComprasPage />);
 
-    expect(await screen.findAllByText('Reserva confirmada')).toHaveLength(2);
+    expect(await screen.findAllByText('Confirmada')).toHaveLength(2);
     expect(
       screen.queryByRole('link', { name: /Calificar viaje y agencia/ }),
     ).not.toBeInTheDocument();
@@ -1810,7 +1816,7 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
       estado: 'reserva_confirmada',
       status: 'verified',
       accion: 'pagar_saldo',
-      mensaje: 'Reserva confirmada con depósito aprobado: falta saldar el saldo.',
+      mensaje: 'Primer pago aprobado: falta completar el pago restante.',
       monto: { unit_price: 2020, amount_cents: 2020 },
       pago: {
         id: 'pay-dep',
@@ -1847,39 +1853,41 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
     });
   }
 
-  it('pinta el bloque con etapas, porcentajes, pagado y falta saldar (server-side)', async () => {
+  it('pinta el detalle de pagos con partes, porcentajes y total pagado (server-side)', async () => {
     listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
 
     render(<MisComprasPage />);
 
     const block = await screen.findByTestId('plan-dos-partes');
-    expect(block).toHaveTextContent('Plan de pago en dos partes');
-    expect(block).toHaveTextContent('Depósito (etapa 1) · 50%');
-    expect(block).toHaveTextContent('Saldo (etapa 2) · 50%');
+    expect(block).toHaveTextContent('Detalle de los pagos');
+    expect(block).toHaveTextContent('Primer pago · 50%');
+    expect(block).toHaveTextContent('Pago restante · 50%');
     expect(block).toHaveTextContent(formatSeatPrice(2020));
-    expect(block).toHaveTextContent('Pagado');
+    expect(block).toHaveTextContent('Total pagado');
     expect(block).toHaveTextContent(formatSeatPrice(2020));
-    expect(block).toHaveTextContent('Falta saldar');
-    // El depósito ya fue aprobado: se muestra su fecha, no un vencimiento.
-    expect(block).toHaveTextContent('Depósito aprobado el');
+    expect(block).toHaveTextContent('Pago restante');
+    // El primer pago ya fue aprobado: se muestra su fecha, no un vencimiento.
+    expect(block).toHaveTextContent('Primer pago aprobado el');
     // Los montos del bloque vienen pintados tal cual los calculó el
-    // backend (etapas y pagado); el total vive en el pie de la tarjeta.
+    // backend (partes y pagado); el total vive en el pie de la tarjeta.
     expect(block).toHaveTextContent(formatSeatPrice(2020));
   });
 
-  it('enlace "Pagar saldo" hacia la página del saldo con el attempt_id', async () => {
+  it('enlace "Completar el pago restante" hacia la página del pago con el attempt_id', async () => {
     listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
 
     render(<MisComprasPage />);
 
-    const link = await screen.findByRole('link', { name: /Pagar saldo/ });
+    const link = await screen.findByRole('link', {
+      name: /Completar el pago restante/,
+    });
     expect(link).toHaveAttribute(
       'href',
       '/account/purchases/att-dos/balance',
     );
     // Una sola acción principal con este peso visual en la tarjeta.
     expect(
-      screen.getAllByRole('link', { name: /Pagar saldo/ }),
+      screen.getAllByRole('link', { name: /Completar el pago restante/ }),
     ).toHaveLength(1);
   });
 
@@ -1892,7 +1900,7 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
 
     expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
     expect(
-      screen.queryByRole('link', { name: /Pagar saldo/ }),
+      screen.queryByRole('link', { name: /Completar el pago restante/ }),
     ).not.toBeInTheDocument();
     // La reserva sigue visible con su acción de boleto.
     expect(
@@ -1907,36 +1915,65 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
 
     expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
     // monto.amount_cents = 2020 (depósito); el total real es 4040.
-    const footer = screen.getByText('Importe total').parentElement!;
+    const footer = screen.getByText('Precio total').parentElement!;
     expect(footer).toHaveTextContent(formatSeatPrice(4040));
     expect(footer).not.toHaveTextContent(formatSeatPrice(2020));
   });
 
-  it('prefija el pago con su etapa: Depósito · aprobado', async () => {
+  it('prefija el pago con su parte: Primer pago · Pago aprobado', async () => {
     listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
 
     render(<MisComprasPage />);
 
     expect(await screen.findByTestId('plan-dos-partes')).toBeInTheDocument();
     expect(
-      screen.getByText(/Depósito · Pago aprobado/),
+      screen.getByText(/Primer pago · Pago aprobado/),
     ).toBeInTheDocument();
-    // Nunca etiqueta un depósito como pago total.
+    // Nunca etiqueta el primer pago como pago total.
     expect(screen.queryByText(/^Pago aprobado/)).not.toBeInTheDocument();
   });
 
-  it('muestra asientos reservados a la espera del saldo (seats_held)', async () => {
+  it('muestra la reserva apartada con el monto restante y su fecha límite', async () => {
     listPurchases.mockResolvedValue(view([makeTwoStageItem()]));
+
+    render(<MisComprasPage />);
+
+    expect(await screen.findByText('Apartada')).toBeInTheDocument();
+    expect(screen.getByText('Reserva apartada.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Tus asientos están apartados. Completa el pago restante de ${formatSeatPrice(2020)} antes de la fecha indicada para confirmar tu reserva.`,
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByTestId('plan-dos-partes')).toHaveTextContent(
+      'Fecha límite del pago restante:',
+    );
+  });
+
+  it('fuera de los tres estados, el aviso de asientos apartados sigue informativo', async () => {
+    listPurchases.mockResolvedValue(
+      view([
+        makeTwoStageItem({
+          estado: 'en_revision',
+          status: 'under_review',
+          plan: {
+            ...makeTwoStageItem().plan,
+            deposit_verified_at: null,
+            seats_held: true,
+          },
+        }),
+      ]),
+    );
 
     render(<MisComprasPage />);
 
     const block = await screen.findByTestId('plan-dos-partes');
     expect(block).toHaveTextContent(
-      'Asientos reservados a la espera del saldo.',
+      'Tus asientos siguen apartados a la espera del pago restante.',
     );
   });
 
-  it('el vencimiento del saldo vencido es INFORMATIVO: nunca pide cancelar', async () => {
+  it('el vencimiento del pago restante es INFORMATIVO: nunca pide cancelar', async () => {
     listPurchases.mockResolvedValue(
       view([
         makeTwoStageItem({
@@ -1951,13 +1988,16 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
 
     render(<MisComprasPage />);
 
-    const block = await screen.findByTestId('plan-dos-partes');
-    expect(block).toHaveTextContent('El plazo del saldo venció.');
-    expect(block).toHaveTextContent(
-      'La agencia decide sobre este pago: tus asientos siguen reservados.',
+    expect(await screen.findByText('Pago vencido')).toBeInTheDocument();
+    expect(
+      screen.getByText('El plazo para completar tu pago ha vencido.'),
+    ).toBeInTheDocument();
+    const aviso = screen.getByText(
+      'Contacta con la agencia para conocer el estado de tus asientos.',
     );
-    // Sin acciones destructivas ni textos de cancelación automática.
-    expect(block.textContent).not.toMatch(/cancela/i);
+    // No debe dar por liberados los asientos ni pedir una cancelación.
+    expect(aviso.textContent).not.toMatch(/liberad/i);
+    expect(aviso.textContent).not.toMatch(/cancela/i);
     expect(
       screen.queryByRole('link', { name: /Cancelar/i }),
     ).not.toBeInTheDocument();
@@ -1990,12 +2030,12 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
     render(<MisComprasPage />);
 
     const block = await screen.findByTestId('plan-dos-partes');
-    expect(block).toHaveTextContent('Depósito (etapa 1) · 25%');
-    expect(block).toHaveTextContent('Saldo (etapa 2) · 75%');
-    expect(block).toHaveTextContent('Depósito: vence el');
+    expect(block).toHaveTextContent('Primer pago · 25%');
+    expect(block).toHaveTextContent('Pago restante · 75%');
+    expect(block).toHaveTextContent('Fecha límite del primer pago:');
     // Sin reserva no hay saldo que pagar: el CTA nace solo del backend.
     expect(
-      screen.queryByRole('link', { name: /Pagar saldo/ }),
+      screen.queryByRole('link', { name: /Completar el pago restante/ }),
     ).not.toBeInTheDocument();
     // El estado del comprobante sigue siendo el de siempre.
     expect(screen.getByText('Comprobante pendiente')).toBeInTheDocument();
@@ -2004,7 +2044,7 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
     ).toBeInTheDocument();
     // Sin reserva no se inventa boleto ni bloque de "seats held".
     expect(screen.queryByText(/Boleto/)).not.toBeInTheDocument();
-    expect(block).not.toHaveTextContent('Asientos reservados');
+    expect(block).not.toHaveTextContent('Tus asientos siguen apartados');
   });
 
   it('el plan único jamás renderiza el bloque de dos partes', async () => {
@@ -2017,10 +2057,10 @@ describe('MisComprasPage — plan de pago en dos partes (MKT-010.1)', () => {
       screen.queryByTestId('plan-dos-partes'),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('link', { name: /Pagar saldo/ }),
+      screen.queryByRole('link', { name: /Completar el pago restante/ }),
     ).not.toBeInTheDocument();
     // El pie sigue usando el importe único de siempre.
-    const footer = screen.getByText('Importe total').parentElement!;
+    const footer = screen.getByText('Precio total').parentElement!;
     expect(footer).toHaveTextContent(formatSeatPrice(4040));
   });
 });
